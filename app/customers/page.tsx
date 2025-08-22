@@ -1,25 +1,28 @@
 // app/customers/page.tsx
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 
-export const dynamic = "force-dynamic";
-
-export default async function CustomersPage({ searchParams }: { searchParams?: { q?: string } }) {
+export default async function CustomersPage({
+  searchParams,
+}: { searchParams?: { q?: string } }) {
   const q = (searchParams?.q ?? "").trim();
 
-  const where = q
-    ? {
-        OR: [
-          { salonName: { contains: q, mode: "insensitive" } },
-          { customerName: { contains: q, mode: "insensitive" } },
-          { customerEmailAddress: { contains: q, mode: "insensitive" } },
-          { town: { contains: q, mode: "insensitive" } },
-          { county: { contains: q, mode: "insensitive" } },
-          { postCode: { contains: q, mode: "insensitive" } },
-          { brandsInterestedIn: { contains: q, mode: "insensitive" } },
-        ],
-      }
-    : {};
+  let where: Prisma.CustomerWhereInput = {};
+  if (q) {
+    const ic = "insensitive" as const; // Prisma.QueryMode
+    where = {
+      OR: [
+        { salonName:            { contains: q, mode: ic } },
+        { customerName:         { contains: q, mode: ic } },
+        { customerEmailAddress: { contains: q, mode: ic } },
+        { town:                 { contains: q, mode: ic } },
+        { county:               { contains: q, mode: ic } },
+        { postCode:             { contains: q, mode: ic } },
+        { brandsInterestedIn:   { contains: q, mode: ic } },
+      ],
+    };
+  }
 
   const customers = await prisma.customer.findMany({
     where,
@@ -29,32 +32,24 @@ export default async function CustomersPage({ searchParams }: { searchParams?: {
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <div className="card">
-        <form className="row" style={{ gap: 8 }} action="/customers" method="GET">
-          <input name="q" placeholder="Search by salon, person, email, town…" defaultValue={q} />
-          <button type="submit">Search</button>
-          <Link className="button" href="/customers/new">New Customer</Link>
-        </form>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <h2>Customers</h2>
+        <Link className="primary" href="/customers/new">New Customer</Link>
       </div>
 
+      <form action="/customers" method="get" className="row" style={{ gap: 8 }}>
+        <input name="q" placeholder="Search name, email, town…" defaultValue={q} />
+        <button type="submit">Search</button>
+      </form>
+
       <div className="card">
-        <h3>Results ({customers.length})</h3>
         {customers.length === 0 ? (
           <p className="small">No customers found.</p>
         ) : (
-          <div className="grid" style={{ gap: 8 }}>
+          <ul className="list">
             {customers.map((c) => (
-              <div key={c.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
-                <div>
-                  <div><b>{c.salonName}</b> — {c.customerName}</div>
-                  <div className="small">{c.customerEmailAddress || "-"} • {c.town || "-"} {c.postCode ? `• ${c.postCode}` : ""}</div>
-                </div>
-                <Link className="button" href={`/customers/${c.id}`}>Open</Link>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+              <li
+                key={c.id}
+                className="row"
+                style={{
+                  justifyContent: "space-between",
