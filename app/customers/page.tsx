@@ -3,26 +3,29 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 
-export default async function CustomersPage({
-  searchParams,
-}: { searchParams?: { q?: string } }) {
+type PageProps = {
+  searchParams?: { q?: string };
+};
+
+export default async function CustomersPage({ searchParams }: PageProps) {
   const q = (searchParams?.q ?? "").trim();
 
-  let where: Prisma.CustomerWhereInput = {};
-  if (q) {
-    const ic = "insensitive" as const; // Prisma.QueryMode
-    where = {
-      OR: [
-        { salonName:            { contains: q, mode: ic } },
-        { customerName:         { contains: q, mode: ic } },
-        { customerEmailAddress: { contains: q, mode: ic } },
-        { town:                 { contains: q, mode: ic } },
-        { county:               { contains: q, mode: ic } },
-        { postCode:             { contains: q, mode: ic } },
-        { brandsInterestedIn:   { contains: q, mode: ic } },
-      ],
-    };
-  }
+  // helper to keep Prisma typing happy
+  const ci = (value: string) => ({ contains: value, mode: "insensitive" as const });
+
+  const where: Prisma.CustomerWhereInput = q
+    ? {
+        OR: [
+          { salonName: ci(q) },
+          { customerName: ci(q) },
+          { customerEmailAddress: ci(q) },
+          { town: ci(q) },
+          { county: ci(q) },
+          { postCode: ci(q) },
+          { brandsInterestedIn: ci(q) },
+        ],
+      }
+    : {};
 
   const customers = await prisma.customer.findMany({
     where,
@@ -39,11 +42,13 @@ export default async function CustomersPage({
         </Link>
       </div>
 
-      <form action="/customers" method="get" className="row" style={{ gap: 8 }}>
+      <form className="row" action="/customers" method="get" style={{ gap: 8 }}>
         <input
+          type="text"
           name="q"
           placeholder="Search name, email, town…"
           defaultValue={q}
+          style={{ flex: 1 }}
         />
         <button type="submit">Search</button>
       </form>
@@ -65,7 +70,23 @@ export default async function CustomersPage({
               >
                 <div>
                   <div>
-                    <Link href={`/customers/${c.id}`} className="link">
-                      {c.salonName}
-                    </Link>
+                    <Link href={`/customers/${c.id}`}>{c.salonName}</Link>
                   </div>
+                  <div className="small">
+                    {c.customerName}
+                    {c.town ? ` • ${c.town}` : ""}
+                  </div>
+                </div>
+                <div className="small" style={{ textAlign: "right" }}>
+                  {c.customerEmailAddress ?? "-"}
+                  <br />
+                  {c.customerNumber ?? "-"}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
