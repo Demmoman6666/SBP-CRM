@@ -2,65 +2,84 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-// Small helper
-function trimOrNull(v: unknown): string | null {
+function coerceString(v: FormDataEntryValue | null): string | null {
   if (v == null) return null;
   const s = String(v).trim();
   return s === "" ? null : s;
+}
+function coerceInt(v: FormDataEntryValue | null): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function readBody(req: Request): Promise<Record<string, any>> {
+  const type = (req.headers.get("content-type") || "").toLowerCase();
+
+  // JSON payload
+  if (type.includes("application/json")) {
+    return await req.json();
+  }
+
+  // URL-encoded payload
+  if (type.includes("application/x-www-form-urlencoded")) {
+    const text = await req.text();
+    const params = new URLSearchParams(text);
+    const get = (k: string) => coerceString(params.get(k));
+    const getInt = (k: string) => {
+      const val = params.get(k);
+      return val == null ? null : coerceInt(val);
+    };
+
+    return {
+      salonName: get("salonName"),
+      customerName: get("customerName"),
+      addressLine1: get("addressLine1") ?? get("address1"),
+      addressLine2: get("addressLine2") ?? get("address2"),
+      town: get("town"),
+      county: get("county"),
+      postCode: get("postCode") ?? get("postcode"),
+      daysOpen: get("daysOpen"),
+      brandsInterestedIn: get("brandsInterestedIn") ?? get("brands"),
+      notes: get("notes"),
+      salesRep: get("salesRep"),
+      customerNumber: get("customerNumber"),
+      customerEmailAddress: get("customerEmailAddress") ?? get("email"),
+      openingHours: get("openingHours"),
+      numberOfChairs: getInt("numberOfChairs"),
+    };
+  }
+
+  // multipart/form-data (file-safe) or anything else we can parse via formData()
+  try {
+    const form = await req.formData();
+    const get = (k: string) => coerceString(form.get(k));
+    const getInt = (k: string) => coerceInt(form.get(k));
+    return {
+      salonName: get("salonName"),
+      customerName: get("customerName"),
+      addressLine1: get("addressLine1") ?? get("address1"),
+      addressLine2: get("addressLine2") ?? get("address2"),
+      town: get("town"),
+      county: get("county"),
+      postCode: get("postCode") ?? get("postcode"),
+      daysOpen: get("daysOpen"),
+      brandsInterestedIn: get("brandsInterestedIn") ?? get("brands"),
+      notes: get("notes"),
+      salesRep: get("salesRep"),
+      customerNumber: get("customerNumber"),
+      customerEmailAddress: get("customerEmailAddress") ?? get("email"),
+      openingHours: get("openingHours"),
+      numberOfChairs: getInt("numberOfChairs"),
+    };
+  } catch {
+    // last resort
+    try { return await req.json(); } catch { return {}; }
+  }
 }
 
 export async function GET() {
   const customers = await prisma.customer.findMany({
     orderBy: { createdAt: "desc" },
   });
-  return NextResponse.json(customers);
-}
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-
-    // Backwards-compatible mapping for older field names (address1/address2/email)
-    const pick = <T>(...vals: T[]) => vals.find(v => v !== undefined && v !== null);
-
-    const data = {
-      salonName: String(body.salonName ?? "").trim(),
-      customerName: String(body.customerName ?? "").trim(),
-      addressLine1: pick(trimOrNull(body.addressLine1), trimOrNull(body.address1)),
-      addressLine2: pick(trimOrNull(body.addressLine2), trimOrNull(body.address2)),
-      town: trimOrNull(body.town),
-      county: trimOrNull(body.county),
-      postCode: trimOrNull(body.postCode),
-      daysOpen: trimOrNull(body.daysOpen),
-      brandsInterestedIn: trimOrNull(body.brandsInterestedIn),
-      notes: trimOrNull(body.notes),
-      salesRep: trimOrNull(body.salesRep),
-      customerNumber: trimOrNull(body.customerNumber),
-      customerEmailAddress: pick(
-        trimOrNull(body.customerEmailAddress),
-        trimOrNull(body.email)
-      ),
-      openingHours: trimOrNull(body.openingHours),
-      numberOfChairs:
-        body.numberOfChairs === "" || body.numberOfChairs == null
-          ? null
-          : Number(body.numberOfChairs),
-    };
-
-    if (!data.salonName || !data.customerName || !data.addressLine1) {
-      return NextResponse.json(
-        { error: "Missing required fields: salonName, customerName, addressLine1" },
-        { status: 400 }
-      );
-    }
-
-    const created = await prisma.customer.create({ data });
-    return NextResponse.json(created, { status: 201 });
-  } catch (err: any) {
-    console.error(err);
-    return NextResponse.json(
-      { error: err?.message ?? "Unexpected error" },
-      { status: 500 }
-    );
-  }
-}
+  return NextResponse.json(customers)
