@@ -2,7 +2,11 @@
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 
-export default function NewCustomerPage() {
+export default function NewCustomerPage({
+  searchParams,
+}: {
+  searchParams?: { error?: string };
+}) {
   async function createCustomer(formData: FormData) {
     "use server";
 
@@ -35,16 +39,30 @@ export default function NewCustomerPage() {
     };
 
     if (!data.salonName || !data.customerName || !data.addressLine1) {
-      throw new Error("Salon Name, Customer Name and Address Line 1 are required.");
+      redirect(`/customers/new?error=${encodeURIComponent(
+        "Salon Name, Customer Name and Address Line 1 are required."
+      )}`);
     }
 
-    const created = await prisma.customer.create({ data });
-    redirect(`/customers/${created.id}`);
+    try {
+      const created = await prisma.customer.create({ data });
+      redirect(`/customers/${created.id}`);
+    } catch (err) {
+      console.error("createCustomer failed:", err);
+      redirect(`/customers/new?error=${encodeURIComponent("Could not save customer")}`);
+    }
   }
 
   return (
     <div className="card">
       <h2>Create Customer</h2>
+
+      {searchParams?.error && (
+        <p className="small" style={{ color: "#ff8a8a", marginTop: 8 }}>
+          {searchParams.error}
+        </p>
+      )}
+
       <form action={createCustomer} className="grid" style={{ gap: 12 }}>
         <div className="grid grid-2">
           <div><label>Salon Name*</label><input name="salonName" required /></div>
