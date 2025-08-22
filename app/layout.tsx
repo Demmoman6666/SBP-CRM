@@ -1,22 +1,45 @@
 // app/layout.tsx
 import "./globals.css";
+import Link from "next/link";
+import Image from "next/image";
 
-export const metadata = { title: "SBP CRM" };
+export const metadata = {
+  title: "SBP CRM",
+  description: "Salon Brands Pro — simple CRM",
+  themeColor: "#FEB3E4",
+};
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <nav className="navbar">
-          <div className="container row" style={{ justifyContent: "space-between" }}>
-            <a href="/" className="brand">SBP CRM</a>
-            <div className="row" style={{ gap: 12 }}>
-              <a href="/customers" className="link">Customers</a>
-              <a href="/customers/new" className="button">New Customer</a>
-            </div>
+        <header className="topbar">
+          <div className="container topbar-inner">
+            <Link href="/" className="brand" aria-label="Salon Brands Pro Home">
+              {/* Put your logo at /public/sbp-logo.png */}
+              <Image
+                src="/sbp-logo.png"
+                alt="Salon Brands Pro"
+                width={220}
+                height={48}
+                priority
+              />
+            </Link>
+
+            <nav className="nav">
+              <Link href="/customers">Customers</Link>
+              <Link className="btn btn-sm primary" href="/customers/new">
+                New Customer
+              </Link>
+            </nav>
           </div>
-        </nav>
+        </header>
+
         <main className="container">{children}</main>
+
+        <footer className="footer">
+          <div className="container">© Salon Brands Pro</div>
+        </footer>
       </body>
     </html>
   );
