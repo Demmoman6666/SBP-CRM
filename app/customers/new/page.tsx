@@ -45,7 +45,6 @@ export default function NewCustomerPage() {
   return (
     <div className="card">
       <h2>Create Customer</h2>
-      {/* IMPORTANT: no onSubmit/JS handler. Uses server action above. */}
       <form action={createCustomer} className="grid" style={{ gap: 12 }}>
         <div className="grid grid-2">
           <div><label>Salon Name*</label><input name="salonName" required /></div>
