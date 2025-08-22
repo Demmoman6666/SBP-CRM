@@ -1,7 +1,8 @@
+// app/api/customers/[id]/visits/route.ts
 import { NextResponse } from 'next/server';
-import { prisma } from '../../../lib/prisma';
+import { prisma } from '@/lib/prisma';
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_req: Request, { params }: { params: { id: string } }) {
   const visits = await prisma.visit.findMany({
     where: { customerId: params.id },
     orderBy: { date: 'desc' },
