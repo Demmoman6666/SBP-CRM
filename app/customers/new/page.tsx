@@ -2,22 +2,18 @@
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 
-export default function NewCustomerPage({
-  searchParams,
-}: {
-  searchParams?: { error?: string };
-}) {
+export default function NewCustomerPage() {
   async function createCustomer(formData: FormData) {
     "use server";
-
-    const s = (name: string) =>
-      (String(formData.get(name) ?? "").trim() || null) as string | null;
-
-    const toInt = (name: string) => {
-      const v = formData.get(name);
+    const s = (n: string) => {
+      const v = String(formData.get(n) ?? "").trim();
+      return v ? v : null;
+    };
+    const toInt = (n: string) => {
+      const v = formData.get(n);
       if (v == null || v === "") return null;
-      const n = Number(v);
-      return Number.isFinite(n) ? n : null;
+      const num = Number(v);
+      return Number.isFinite(num) ? num : null;
     };
 
     const data = {
@@ -38,31 +34,13 @@ export default function NewCustomerPage({
       numberOfChairs: toInt("numberOfChairs"),
     };
 
-    if (!data.salonName || !data.customerName || !data.addressLine1) {
-      redirect(`/customers/new?error=${encodeURIComponent(
-        "Salon Name, Customer Name and Address Line 1 are required."
-      )}`);
-    }
-
-    try {
-      const created = await prisma.customer.create({ data });
-      redirect(`/customers/${created.id}`);
-    } catch (err) {
-      console.error("createCustomer failed:", err);
-      redirect(`/customers/new?error=${encodeURIComponent("Could not save customer")}`);
-    }
+    const created = await prisma.customer.create({ data });
+    redirect(`/customers/${created.id}`);
   }
 
   return (
     <div className="card">
       <h2>Create Customer</h2>
-
-      {searchParams?.error && (
-        <p className="small" style={{ color: "#ff8a8a", marginTop: 8 }}>
-          {searchParams.error}
-        </p>
-      )}
-
       <form action={createCustomer} className="grid" style={{ gap: 12 }}>
         <div className="grid grid-2">
           <div><label>Salon Name*</label><input name="salonName" required /></div>
