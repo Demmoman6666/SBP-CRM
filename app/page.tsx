@@ -1,3 +1,9 @@
-export default function HomePage() {
-  return <div>SBP CRM — Home</div>
+// app/page.tsx
+export default function Home() {
+  return (
+    <main style={{ padding: 24 }}>
+      <h1>SBP CRM</h1>
+      <p>Welcome.</p>
+    </main>
+  );
 }
