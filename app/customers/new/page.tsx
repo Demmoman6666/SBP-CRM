@@ -1,112 +1,82 @@
 // app/customers/new/page.tsx
-"use client";
-import { useState } from "react";
+import { prisma } from "@/lib/prisma";
+import { redirect } from "next/navigation";
 
 export default function NewCustomerPage() {
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string>("");
+  async function createCustomer(formData: FormData) {
+    "use server";
 
-  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setSaving(true);
-    setError("");
-
-    const f = new FormData(e.currentTarget);
-    const toStr = (k: string) => (String(f.get(k) ?? "").trim());
-    const toNull = (k: string) => {
-      const v = toStr(k);
-      return v === "" ? null : v;
+    const numberOrNull = (v: FormDataEntryValue | null) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
     };
-    const toIntNull = (k: string) => {
-      const v = toStr(k);
-      return v === "" ? null : Number(v);
-    };
+    const str = (name: string) => String(formData.get(name) ?? "").trim() || null;
 
-    const payload = {
-      salonName: toStr("salonName"),
-      customerName: toStr("customerName"),
-      addressLine1: toStr("addressLine1"),
-      addressLine2: toNull("addressLine2"),
-      town: toNull("town"),
-      county: toNull("county"),
-      postCode: toNull("postCode"),
-      daysOpen: toNull("daysOpen"),
-      brandsInterestedIn: toNull("brandsInterestedIn"),
-      notes: toNull("notes"),
-      salesRep: toNull("salesRep"),
-      customerNumber: toNull("customerNumber"),
-      customerEmailAddress: toNull("customerEmailAddress"),
-      openingHours: toNull("openingHours"),
-      numberOfChairs: toIntNull("numberOfChairs"),
+    // Map EXACTLY to prisma/schema.prisma fields
+    const data = {
+      salonName: str("salonName")!,            // required
+      customerName: str("customerName")!,      // required
+      addressLine1: str("addressLine1")!,      // required
+      addressLine2: str("addressLine2"),
+      town: str("town"),
+      county: str("county"),
+      postCode: str("postCode"),
+      daysOpen: str("daysOpen"),
+      brandsInterestedIn: str("brandsInterestedIn"),
+      notes: str("notes"),
+      salesRep: str("salesRep"),
+      customerNumber: str("customerNumber"),
+      customerEmailAddress: str("customerEmailAddress"),
+      openingHours: str("openingHours"),
+      numberOfChairs: numberOrNull(formData.get("numberOfChairs")),
     };
 
-    try {
-      const res = await fetch("/api/customers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.error || `Failed to save (HTTP ${res.status})`);
-      }
-
-      const created = await res.json();
-      window.location.href = `/customers/${created.id}`;
-    } catch (err: any) {
-      setError(err?.message || "Failed to save");
-      setSaving(false);
+    // Minimal required validation
+    if (!data.salonName || !data.customerName || !data.addressLine1) {
+      throw new Error("Salon Name, Customer Name and Address Line 1 are required.");
     }
+
+    const created = await prisma.customer.create({ data });
+    redirect(`/customers/${created.id}`);
   }
 
   return (
-    <div className="grid" style={{ gap: 16 }}>
-      <div className="card">
-        <h2>New Customer</h2>
+    <div className="card">
+      <h2>New Customer</h2>
+      <form action={createCustomer} className="grid" style={{ gap: 10 }}>
+        <div className="grid grid-2">
+          <div><label>Salon Name*</label><input name="salonName" required /></div>
+          <div><label>Customer Name*</label><input name="customerName" required /></div>
+        </div>
 
-        {error && (
-          <div className="card" style={{ borderColor: "#8b0000", background: "#2a1b1b", marginTop: 8 }}>
-            <b>Couldn’t save</b>
-            <div className="small" style={{ marginTop: 4 }}>{error}</div>
-          </div>
-        )}
-
-        <form onSubmit={onSubmit} className="grid grid-2" style={{ gap: 12, marginTop: 12 }}>
-          <div><label>Salon Name *</label><input name="salonName" required /></div>
-          <div><label>Customer Name *</label><input name="customerName" required /></div>
-
-          <div><label>Address Line 1 *</label><input name="addressLine1" required /></div>
+        <div className="grid grid-2">
+          <div><label>Address Line 1*</label><input name="addressLine1" required /></div>
           <div><label>Address Line 2</label><input name="addressLine2" /></div>
+        </div>
 
+        <div className="grid grid-3">
           <div><label>Town</label><input name="town" /></div>
           <div><label>County</label><input name="county" /></div>
-
           <div><label>Post Code</label><input name="postCode" /></div>
+        </div>
+
+        <div className="grid grid-3">
           <div><label>Days Open</label><input name="daysOpen" placeholder="e.g. Mon–Sat" /></div>
-
-          <div><label>Brands Interested in</label><input name="brandsInterestedIn" /></div>
+          <div><label>Number of Chairs</label><input name="numberOfChairs" type="number" min={0} /></div>
           <div><label>Sales Rep</label><input name="salesRep" /></div>
+        </div>
 
+        <div className="grid grid-2">
           <div><label>Customer Number</label><input name="customerNumber" /></div>
-          <div><label>Customer Email Address</label><input name="customerEmailAddress" type="email" /></div>
+          <div><label>Customer Email Address</label><input type="email" name="customerEmailAddress" /></div>
+        </div>
 
-          <div><label>Opening Hours</label><input name="openingHours" placeholder="e.g. 9–5" /></div>
-          <div><label>Number of Chairs</label><input name="numberOfChairs" type="number" min="0" /></div>
+        <div><label>Opening Hours</label><input name="openingHours" placeholder="e.g. 9–5 Mon–Sat" /></div>
+        <div><label>Brands Interested in</label><input name="brandsInterestedIn" placeholder="Comma separated" /></div>
+        <div><label>Notes</label><textarea name="notes" rows={3} /></div>
 
-          <div className="grid" style={{ gridColumn: "1 / -1" }}>
-            <label>Notes</label>
-            <textarea name="notes" rows={4} />
-          </div>
-
-          <div className="row" style={{ gap: 8, gridColumn: "1 / -1" }}>
-            <button className="primary" disabled={saving} type="submit">
-              {saving ? "Saving…" : "Save"}
-            </button>
-            <a href="/customers" className="link">Cancel</a>
-          </div>
-        </form>
-      </div>
+        <button className="primary" type="submit">Save</button>
+      </form>
     </div>
   );
 }
