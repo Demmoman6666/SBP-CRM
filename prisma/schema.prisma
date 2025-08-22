@@ -1,57 +1,42 @@
-// prisma/schema.prisma
-generator client {
-  provider = "prisma-client-js"
-}
-
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-
 model Customer {
   id              String   @id @default(cuid())
   salonName       String?
   customerName    String?
-  address1        String?
-  address2        String?
+  addressLine1    String?
+  addressLine2    String?
   town            String?
   county          String?
   postCode        String?
   daysOpen        String?
-  brandsInterested String?
-  notes           String?   // general notes field
+  brandsInterestedIn String?
+  notesField      String?   // optional free-text “Notes” field if you keep one
   salesRep        String?
   customerNumber  String?
-  email           String?
+  customerEmail   String?
   openingHours    String?
   numberOfChairs  Int?
-
+  // relations
+  notes           Note[]     @relation("CustomerNotes")
   visits          Visit[]
-  customerNotes   Note[]    // relation to Note
-
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-}
-
-model Visit {
-  id          String   @id @default(cuid())
-  customerId  String
-  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  date        DateTime
-  notes       String?
-
-  createdAt   DateTime @default(now())
-
-  @@index([customerId, date])
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 }
 
 model Note {
-  id          String   @id @default(cuid())
-  customerId  String
-  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  text        String
-  staff       String?
-  createdAt   DateTime @default(now())
+  id         String   @id @default(cuid())
+  text       String
+  staff      String?
+  createdAt  DateTime @default(now())
+  customer   Customer @relation("CustomerNotes", fields: [customerId], references: [id])
+  customerId String
+}
 
-  @@index([customerId, createdAt])
+model Visit {
+  id         String   @id @default(cuid())
+  date       DateTime @default(now())
+  notes      String?
+  staff      String?
+  createdAt  DateTime @default(now())
+  customer   Customer @relation(fields: [customerId], references: [id])
+  customerId String
 }
