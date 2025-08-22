@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -8,32 +9,49 @@ datasource db {
 }
 
 model Customer {
-  id              String   @id @default(uuid())
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  salonName       String
-  customerName    String
+  id              String   @id @default(cuid())
+  salonName       String?
+  customerName    String?
   address1        String?
   address2        String?
   town            String?
   county          String?
   postCode        String?
-  daysOpen        Int?
+  daysOpen        String?
   brandsInterested String?
-  notes           String?
+  notes           String?   // general notes field
   salesRep        String?
   customerNumber  String?
   email           String?
   openingHours    String?
   numberOfChairs  Int?
+
   visits          Visit[]
+  customerNotes   Note[]    // relation to Note
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }
 
 model Visit {
-  id         String   @id @default(uuid())
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  note       String?
-  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  customerId String
+  id          String   @id @default(cuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  date        DateTime
+  notes       String?
+
+  createdAt   DateTime @default(now())
+
+  @@index([customerId, date])
+}
+
+model Note {
+  id          String   @id @default(cuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  text        String
+  staff       String?
+  createdAt   DateTime @default(now())
+
+  @@index([customerId, createdAt])
 }
