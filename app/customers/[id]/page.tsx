@@ -37,7 +37,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         <div className="grid grid-2" style={{ marginTop: 10 }}>
           <div>
             <b>Contact</b>
-            <p className="small">{customer.email || "-"}<br/>{customer.customerNumber || "-"}</p>
+<p className="small">{customer.customerEmailAddress || "-"}<br/>{customer.customerNumber || "-"}</p>
           </div>
           <div>
             <b>Location</b>
