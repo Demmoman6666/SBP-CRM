@@ -34,11 +34,17 @@ export default async function CustomersPage({
     <div className="grid" style={{ gap: 16 }}>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h2>Customers</h2>
-        <Link className="primary" href="/customers/new">New Customer</Link>
+        <Link className="primary" href="/customers/new">
+          New Customer
+        </Link>
       </div>
 
       <form action="/customers" method="get" className="row" style={{ gap: 8 }}>
-        <input name="q" placeholder="Search name, email, town…" defaultValue={q} />
+        <input
+          name="q"
+          placeholder="Search name, email, town…"
+          defaultValue={q}
+        />
         <button type="submit">Search</button>
       </form>
 
@@ -53,3 +59,13 @@ export default async function CustomersPage({
                 className="row"
                 style={{
                   justifyContent: "space-between",
+                  padding: "8px 0",
+                  borderBottom: "1px solid #2a2e42",
+                }}
+              >
+                <div>
+                  <div>
+                    <Link href={`/customers/${c.id}`} className="link">
+                      {c.salonName}
+                    </Link>
+                  </div>
