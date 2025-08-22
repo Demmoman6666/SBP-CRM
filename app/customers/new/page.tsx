@@ -1,44 +1,78 @@
 // app/customers/new/page.tsx
-import { prisma } from "@/lib/prisma";
-import { redirect } from "next/navigation";
+"use client";
+import { useState } from "react";
 
 export default function NewCustomerPage() {
-  async function createCustomer(formData: FormData) {
-    "use server";
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>("");
 
-    const toStr = (k: string) => String(formData.get(k) ?? "").trim() || null;
-    const toInt = (k: string) => {
-      const v = String(formData.get(k) ?? "").trim();
-      return v ? parseInt(v, 10) : null;
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+
+    const f = new FormData(e.currentTarget);
+    const toStr = (k: string) => (String(f.get(k) ?? "").trim());
+    const toNull = (k: string) => {
+      const v = toStr(k);
+      return v === "" ? null : v;
+    };
+    const toIntNull = (k: string) => {
+      const v = toStr(k);
+      return v === "" ? null : Number(v);
     };
 
-    const data = {
-      salonName: toStr("salonName")!,
-      customerName: toStr("customerName")!,
-      addressLine1: toStr("addressLine1")!,
-      addressLine2: toStr("addressLine2"),
-      town: toStr("town"),
-      county: toStr("county"),
-      postCode: toStr("postCode"),
-      daysOpen: toStr("daysOpen"),
-      brandsInterestedIn: toStr("brandsInterestedIn"),
-      notes: toStr("notes"),
-      salesRep: toStr("salesRep"),
-      customerNumber: toStr("customerNumber"),
-      customerEmailAddress: toStr("customerEmailAddress"),
-      openingHours: toStr("openingHours"),
-      numberOfChairs: toInt("numberOfChairs"),
+    const payload = {
+      salonName: toStr("salonName"),
+      customerName: toStr("customerName"),
+      addressLine1: toStr("addressLine1"),
+      addressLine2: toNull("addressLine2"),
+      town: toNull("town"),
+      county: toNull("county"),
+      postCode: toNull("postCode"),
+      daysOpen: toNull("daysOpen"),
+      brandsInterestedIn: toNull("brandsInterestedIn"),
+      notes: toNull("notes"),
+      salesRep: toNull("salesRep"),
+      customerNumber: toNull("customerNumber"),
+      customerEmailAddress: toNull("customerEmailAddress"),
+      openingHours: toNull("openingHours"),
+      numberOfChairs: toIntNull("numberOfChairs"),
     };
 
-    await prisma.customer.create({ data: data as any });
-    redirect("/customers");
+    try {
+      const res = await fetch("/api/customers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || `Failed to save (HTTP ${res.status})`);
+      }
+
+      const created = await res.json();
+      window.location.href = `/customers/${created.id}`;
+    } catch (err: any) {
+      setError(err?.message || "Failed to save");
+      setSaving(false);
+    }
   }
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <div className="card">
         <h2>New Customer</h2>
-        <form action={createCustomer} className="grid grid-2" style={{ gap: 12 }}>
+
+        {error && (
+          <div className="card" style={{ borderColor: "#8b0000", background: "#2a1b1b", marginTop: 8 }}>
+            <b>Couldn’t save</b>
+            <div className="small" style={{ marginTop: 4 }}>{error}</div>
+          </div>
+        )}
+
+        <form onSubmit={onSubmit} className="grid grid-2" style={{ gap: 12, marginTop: 12 }}>
           <div><label>Salon Name *</label><input name="salonName" required /></div>
           <div><label>Customer Name *</label><input name="customerName" required /></div>
 
@@ -66,7 +100,9 @@ export default function NewCustomerPage() {
           </div>
 
           <div className="row" style={{ gap: 8, gridColumn: "1 / -1" }}>
-            <button type="submit" className="primary">Save</button>
+            <button className="primary" disabled={saving} type="submit">
+              {saving ? "Saving…" : "Save"}
+            </button>
             <a href="/customers" className="link">Cancel</a>
           </div>
         </form>
