@@ -1,6 +1,6 @@
 // app/api/visits/route.ts
 import { NextResponse } from 'next/server';
-import prisma from '../../../lib/prisma'; // ← if you use "@/lib/prisma" alias, switch to that
+import { prisma } from '../../../lib/prisma'; // use the named export
 
 export async function GET(req: Request) {
   try {
@@ -49,4 +49,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Failed to create visit' }, { status: 500 });
   }
 }
-
