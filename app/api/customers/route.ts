@@ -2,114 +2,65 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-// Helpers
-function coerceString(v: FormDataEntryValue | null): string | null {
-  if (v == null) return null;
-  const s = String(v).trim();
-  return s === "" ? null : s;
-}
-function coerceInt(v: FormDataEntryValue | null): number | null {
-  if (v == null || v === "") return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
+async function readBody(req: Request) {
+  const contentType = (req.headers.get("content-type") || "").toLowerCase();
 
-async function readBody(req: Request): Promise<Record<string, any>> {
-  const type = (req.headers.get("content-type") || "").toLowerCase();
-
-  // JSON payloads
-  if (type.includes("application/json")) {
+  if (contentType.includes("application/json")) {
     return await req.json();
   }
 
-  // URL-encoded payloads
-  if (type.includes("application/x-www-form-urlencoded")) {
+  if (contentType.includes("application/x-www-form-urlencoded")) {
     const text = await req.text();
-    const params = new URLSearchParams(text);
-    const get = (k: string) => coerceString(params.get(k));
-    const getInt = (k: string) => {
-      const val = params.get(k);
-      return val == null ? null : coerceInt(val);
-    };
-    return {
-      salonName: get("salonName"),
-      customerName: get("customerName"),
-      addressLine1: get("addressLine1") ?? get("address1"),
-      addressLine2: get("addressLine2") ?? get("address2"),
-      town: get("town"),
-      county: get("county"),
-      postCode: get("postCode") ?? get("postcode"),
-      daysOpen: get("daysOpen"),
-      brandsInterestedIn: get("brandsInterestedIn") ?? get("brands"),
-      notes: get("notes"),
-      salesRep: get("salesRep"),
-      customerNumber: get("customerNumber"),
-      customerEmailAddress: get("customerEmailAddress") ?? get("email"),
-      openingHours: get("openingHours"),
-      numberOfChairs: getInt("numberOfChairs"),
-    };
+    return Object.fromEntries(new URLSearchParams(text));
   }
 
-  // multipart/form-data or fallback to formData()
-  try {
+  if (contentType.includes("multipart/form-data")) {
     const form = await req.formData();
-    const get = (k: string) => coerceString(form.get(k));
-    const getInt = (k: string) => coerceInt(form.get(k));
-    return {
-      salonName: get("salonName"),
-      customerName: get("customerName"),
-      addressLine1: get("addressLine1") ?? get("address1"),
-      addressLine2: get("addressLine2") ?? get("address2"),
-      town: get("town"),
-      county: get("county"),
-      postCode: get("postCode") ?? get("postcode"),
-      daysOpen: get("daysOpen"),
-      brandsInterestedIn: get("brandsInterestedIn") ?? get("brands"),
-      notes: get("notes"),
-      salesRep: get("salesRep"),
-      customerNumber: get("customerNumber"),
-      customerEmailAddress: get("customerEmailAddress") ?? get("email"),
-      openingHours: get("openingHours"),
-      numberOfChairs: getInt("numberOfChairs"),
-    };
-  } catch {
-    try {
-      return await req.json();
-    } catch {
-      return {};
-    }
+    return Object.fromEntries(
+      Array.from(form.entries()).map(([k, v]) => [k, typeof v === "string" ? v : v.name])
+    );
   }
+
+  // Fallbacks
+  try { return await req.json(); } catch {}
+  try {
+    const text = await req.text();
+    return Object.fromEntries(new URLSearchParams(text));
+  } catch {}
+  return {};
 }
 
-// GET /api/customers
-export async function GET() {
-  const customers = await prisma.customer.findMany({
-    orderBy: { createdAt: "desc" },
-  });
-  return NextResponse.json(customers);
-}
-
-// POST /api/customers
 export async function POST(req: Request) {
   try {
+    const contentType = (req.headers.get("content-type") || "").toLowerCase();
+    const isForm =
+      contentType.includes("application/x-www-form-urlencoded") ||
+      contentType.includes("multipart/form-data");
+
     const body = await readBody(req);
 
+    const toInt = (v: unknown) => {
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+
     const data = {
-      salonName: body.salonName ?? null,
-      customerName: body.customerName ?? null,
-      addressLine1: body.addressLine1 ?? null,
-      addressLine2: body.addressLine2 ?? null,
-      town: body.town ?? null,
-      county: body.county ?? null,
-      postCode: body.postCode ?? null,
-      daysOpen: body.daysOpen ?? null,
-      brandsInterestedIn: body.brandsInterestedIn ?? null,
-      notes: body.notes ?? null,
-      salesRep: body.salesRep ?? null,
-      customerNumber: body.customerNumber ?? null,
-      customerEmailAddress: body.customerEmailAddress ?? null,
-      openingHours: body.openingHours ?? null,
-      numberOfChairs: body.numberOfChairs ?? null,
+      salonName: (body.salonName ?? null) as string | null,
+      customerName: (body.customerName ?? null) as string | null,
+      addressLine1: (body.addressLine1 ?? null) as string | null,
+      addressLine2: (body.addressLine2 ?? null) as string | null,
+      town: (body.town ?? null) as string | null,
+      county: (body.county ?? null) as string | null,
+      postCode: (body.postCode ?? null) as string | null,
+      daysOpen: (body.daysOpen ?? null) as string | null,
+      brandsInterestedIn: (body.brandsInterestedIn ?? null) as string | null,
+      notes: (body.notes ?? null) as string | null,
+      salesRep: (body.salesRep ?? null) as string | null,
+      customerNumber: (body.customerNumber ?? null) as string | null,
+      customerEmailAddress: (body.customerEmailAddress ?? null) as string | null,
+      openingHours: (body.openingHours ?? null) as string | null,
+      numberOfChairs: toInt(body.numberOfChairs),
     };
 
     if (!data.salonName || !data.customerName || !data.addressLine1) {
@@ -120,12 +71,23 @@ export async function POST(req: Request) {
     }
 
     const created = await prisma.customer.create({ data });
+
+    if (isForm) {
+      // Redirect browsers that submitted a regular HTML form
+      return NextResponse.redirect(new URL(`/customers/${created.id}`, req.url), { status: 303 });
+    }
+
+    // Programmatic clients get JSON
     return NextResponse.json(created, { status: 201 });
   } catch (err: any) {
     console.error("Create customer error:", err);
-    return NextResponse.json(
-      { error: err?.message ?? "Internal error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err?.message ?? "Internal error" }, { status: 500 });
   }
+}
+
+export async function GET() {
+  const customers = await prisma.customer.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+  return NextResponse.json(customers);
 }
