@@ -1,21 +1,22 @@
-import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+// app/api/customers/[id]/route.ts
+import { NextResponse } from 'next/server';
+import { prisma } from '../../../../lib/prisma';
 
-type Params = { params: { id: string } };
-
-// Get by id
-export async function GET(_req: Request, { params }: Params) {
+export async function GET(
+  _req: Request,
+  { params }: { params: { id: string } }
+) {
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
-    include: { visits: { orderBy: { date: "desc" } }, notesLog: { orderBy: { createdAt: "desc" } } }
+    include: {
+      visits: { orderBy: { date: 'desc' } },
+      notes: { orderBy: { createdAt: 'desc' } }, // <-- use "notes", not "notesLog"
+    },
   });
-  if (!customer) return new NextResponse("Not found", { status: 404 });
-  return NextResponse.json(customer);
-}
 
-// Update basic fields (partial)
-export async function PATCH(req: Request, { params }: Params) {
-  const data = await req.json();
-  const customer = await prisma.customer.update({ where: { id: params.id }, data });
+  if (!customer) {
+    return new NextResponse('Not found', { status: 404 });
+  }
+
   return NextResponse.json(customer);
 }
