@@ -1,7 +1,7 @@
-// next.config.mjs
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: { serverActions: false }
+  experimental: {
+    serverActions: { allowedOrigins: ["*"] }
+  }
 };
-export default nextConfig;
-
+module.exports = nextConfig;
