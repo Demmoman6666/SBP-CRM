@@ -1,29 +1,23 @@
-// package.json
 {
-  "name": "basic-crm",
+  "name": "sbp-crm",
   "private": true,
-  "type": "module",
+  "version": "0.1.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "postinstall": "prisma generate",
-    "db:push": "prisma db push",
-    "db:deploy": "prisma migrate deploy",
-    "seed": "node prisma/seed.mjs"
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
+    "vercel-build": "prisma generate && prisma migrate deploy && next build"
   },
   "dependencies": {
-    "@prisma/client": "5.17.0",
+    "@prisma/client": "^5.17.0",
     "next": "14.2.5",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
   "devDependencies": {
-    "prisma": "5.17.0",
-    "@types/node": "20.11.30",
-    "@types/react": "18.2.66",
-    "@types/react-dom": "18.2.22",
-    "typescript": "5.4.5"
+    "prisma": "^5.17.0",
+    "typescript": "^5.6.2"
   }
 }
-
