@@ -2,73 +2,73 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-/** Read body as JSON or form-data */
+// Read JSON or form-data bodies
 async function readBody(req: Request) {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
     return (await req.json()) as Record<string, any>;
   }
   const fd = await req.formData();
-  const obj: Record<string, any> = {};
-  fd.forEach((v, k) => (obj[k] = typeof v === "string" ? v : String(v)));
-  return obj;
+  const o: Record<string, any> = {};
+  fd.forEach((v, k) => (o[k] = typeof v === "string" ? v : String(v)));
+  return o;
 }
-
-/** First non-empty key from the list */
-function first(body: Record<string, any>, ...keys: string[]) {
-  for (const k of keys) {
-    const v = body[k];
-    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v);
-  }
-  return null;
-}
-function toInt(v: any) {
+const norm = (v: unknown) =>
+  v === undefined || v === null ? null : String(v).trim() || null;
+const toInt = (v: unknown) => {
   if (v === undefined || v === null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
-}
+};
 
 export async function GET() {
-  const customers = await prisma.customer.findMany({ orderBy: { createdAt: "desc" } });
+  const customers = await prisma.customer.findMany({
+    orderBy: { createdAt: "desc" },
+  });
   return NextResponse.json(customers);
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await readBody(req);
+    const b = await readBody(req);
 
-    // DEBUG logs will show in Vercel "Function Logs"
-    console.log("POST /api/customers incoming keys:", Object.keys(body));
-
-    // Map old -> new keys
+    // Map legacy -> new names (address1->addressLine1, address2->addressLine2, email->customerEmailAddress)
     const data = {
-      salonName: first(body, "salonName"),
-      customerName: first(body, "customerName"),
-      addressLine1: first(body, "addressLine1", "address1"),
-      addressLine2: first(body, "addressLine2", "address2"),
-      town: first(body, "town"),
-      county: first(body, "county"),
-      postCode: first(body, "postCode"),
-      daysOpen: first(body, "daysOpen"),
-      brandsInterestedIn: first(body, "brandsInterestedIn", "brands"),
-      notes: first(body, "notes"),
-      salesRep: first(body, "salesRep"),
-      customerNumber: first(body, "customerNumber"),
-      customerEmailAddress: first(body, "customerEmailAddress", "email"),
-      openingHours: first(body, "openingHours"),
-      numberOfChairs: toInt(first(body, "numberOfChairs", "chairs")),
+      salonName: norm(b.salonName),
+      customerName: norm(b.customerName),
+
+      addressLine1: norm(b.addressLine1 ?? b.address1),
+      addressLine2: norm(b.addressLine2 ?? b.address2),
+
+      town: norm(b.town),
+      county: norm(b.county),
+      postCode: norm(b.postCode),
+
+      daysOpen: norm(b.daysOpen),
+      brandsInterestedIn: norm(b.brandsInterestedIn ?? b.brands),
+
+      notes: norm(b.notes),
+      salesRep: norm(b.salesRep),
+      customerNumber: norm(b.customerNumber),
+      customerEmailAddress: norm(b.customerEmailAddress ?? b.email),
+      openingHours: norm(b.openingHours),
+      numberOfChairs: toInt(b.numberOfChairs ?? b.chairs),
     };
 
-    console.log("POST /api/customers normalized data:", data);
-
-    // Validate required
+    // Validate required fields
     if (!data.salonName || !data.customerName || !data.addressLine1) {
       return NextResponse.json(
-        { error: "Missing required: salonName, customerName, addressLine1" },
+        {
+          error:
+            "Missing required fields. Need salonName, customerName, addressLine1.",
+          receivedKeys: Object.keys(b),
+          normalized: data,
+        },
         { status: 400 }
       );
     }
 
+    // Only the whitelisted keys above are sent to Prisma (so legacy keys cannot sneak in)
     const created = await prisma.customer.create({ data });
     return NextResponse.json(created, { status: 201 });
   } catch (err: any) {
