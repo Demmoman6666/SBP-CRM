@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+// Helpers
 function coerceString(v: FormDataEntryValue | null): string | null {
   if (v == null) return null;
   const s = String(v).trim();
@@ -16,12 +17,12 @@ function coerceInt(v: FormDataEntryValue | null): number | null {
 async function readBody(req: Request): Promise<Record<string, any>> {
   const type = (req.headers.get("content-type") || "").toLowerCase();
 
-  // JSON payload
+  // JSON payloads
   if (type.includes("application/json")) {
     return await req.json();
   }
 
-  // URL-encoded payload
+  // URL-encoded payloads
   if (type.includes("application/x-www-form-urlencoded")) {
     const text = await req.text();
     const params = new URLSearchParams(text);
@@ -30,7 +31,6 @@ async function readBody(req: Request): Promise<Record<string, any>> {
       const val = params.get(k);
       return val == null ? null : coerceInt(val);
     };
-
     return {
       salonName: get("salonName"),
       customerName: get("customerName"),
@@ -50,7 +50,7 @@ async function readBody(req: Request): Promise<Record<string, any>> {
     };
   }
 
-  // multipart/form-data (file-safe) or anything else we can parse via formData()
+  // multipart/form-data or fallback to formData()
   try {
     const form = await req.formData();
     const get = (k: string) => coerceString(form.get(k));
@@ -73,13 +73,59 @@ async function readBody(req: Request): Promise<Record<string, any>> {
       numberOfChairs: getInt("numberOfChairs"),
     };
   } catch {
-    // last resort
-    try { return await req.json(); } catch { return {}; }
+    try {
+      return await req.json();
+    } catch {
+      return {};
+    }
   }
 }
 
+// GET /api/customers
 export async function GET() {
   const customers = await prisma.customer.findMany({
     orderBy: { createdAt: "desc" },
   });
-  return NextResponse.json(customers)
+  return NextResponse.json(customers);
+}
+
+// POST /api/customers
+export async function POST(req: Request) {
+  try {
+    const body = await readBody(req);
+
+    const data = {
+      salonName: body.salonName ?? null,
+      customerName: body.customerName ?? null,
+      addressLine1: body.addressLine1 ?? null,
+      addressLine2: body.addressLine2 ?? null,
+      town: body.town ?? null,
+      county: body.county ?? null,
+      postCode: body.postCode ?? null,
+      daysOpen: body.daysOpen ?? null,
+      brandsInterestedIn: body.brandsInterestedIn ?? null,
+      notes: body.notes ?? null,
+      salesRep: body.salesRep ?? null,
+      customerNumber: body.customerNumber ?? null,
+      customerEmailAddress: body.customerEmailAddress ?? null,
+      openingHours: body.openingHours ?? null,
+      numberOfChairs: body.numberOfChairs ?? null,
+    };
+
+    if (!data.salonName || !data.customerName || !data.addressLine1) {
+      return NextResponse.json(
+        { error: "Missing required fields: salonName, customerName, addressLine1" },
+        { status: 400 }
+      );
+    }
+
+    const created = await prisma.customer.create({ data });
+    return NextResponse.json(created, { status: 201 });
+  } catch (err: any) {
+    console.error("Create customer error:", err);
+    return NextResponse.json(
+      { error: err?.message ?? "Internal error" },
+      { status: 500 }
+    );
+  }
+}
