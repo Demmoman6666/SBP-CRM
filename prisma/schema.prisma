@@ -8,44 +8,32 @@ datasource db {
 }
 
 model Customer {
-  id                  String   @id @default(cuid())
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-  salonName           String
-  customerName        String
-  address1            String?
-  address2            String?
-  town                String?
-  county              String?
-  postCode            String?
-  daysOpen            Int?
-  brandsInterestedIn  String?
-  salesRep            String?
-  customerNumber      String?
-  email               String?
-  openingHours        String?
-  numberOfChairs      Int?
-  notes               String?
-
-  visits              Visit[]
-  notesLog            Note[]
+  id              String   @id @default(uuid())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  salonName       String
+  customerName    String
+  address1        String?
+  address2        String?
+  town            String?
+  county          String?
+  postCode        String?
+  daysOpen        Int?
+  brandsInterested String?
+  notes           String?
+  salesRep        String?
+  customerNumber  String?
+  email           String?
+  openingHours    String?
+  numberOfChairs  Int?
+  visits          Visit[]
 }
 
 model Visit {
-  id         String   @id @default(cuid())
+  id         String   @id @default(uuid())
   createdAt  DateTime @default(now())
-  date       DateTime @default(now())
-  summary    String?
-  staff      String?
-  customer   Customer @relation(fields: [customerId], references: [id])
-  customerId String
-}
-
-model Note {
-  id         String   @id @default(cuid())
-  createdAt  DateTime @default(now())
-  text       String
-  staff      String?
-  customer   Customer @relation(fields: [customerId], references: [id])
+  updatedAt  DateTime @updatedAt
+  note       String?
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
   customerId String
 }
