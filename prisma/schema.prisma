@@ -1,13 +1,64 @@
-model Visit {
-  id          String   @id @default(cuid())
-  customerId  String
-  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-
-  date        DateTime @default(now())
-  summary     String?   // <-- add this
-  staff       String?   // optional is fine
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
 }
 
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // Set this in Vercel envs to your Neon connection string
+}
+
+model Customer {
+  id                   String    @id @default(cuid())
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  salonName            String
+  customerName         String
+  addressLine1         String
+  addressLine2         String?
+  town                 String?
+  county               String?
+  postCode             String?
+  daysOpen             String?     // keep simple for now
+  brandsInterestedIn   String?
+  notes                String?
+  salesRep             String?
+  customerNumber       String?
+  customerEmailAddress String?
+  openingHours         String?
+  numberOfChairs       Int?
+
+  // Relations
+  visits               Visit[]
+  notesLog             Note[]
+
+  @@index([customerEmailAddress])
+}
+
+model Visit {
+  id          String    @id @default(cuid())
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  date        DateTime  @default(now())
+  summary     String?
+  staff       String?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([customerId, date])
+}
+
+model Note {
+  id          String    @id @default(cuid())
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  text        String
+  staff       String?
+  createdAt   DateTime  @default(now())
+
+  @@index([customerId, createdAt])
+}
