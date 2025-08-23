@@ -246,3 +246,60 @@ footer small { color: var(--muted); }
 .right  { display: flex; justify-content: flex-end; }
 .nowrap { white-space: nowrap; }
 .hidden { display: none !important; }
+
+/* 14) Home action tiles */
+.home-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.action-tile {
+  aspect-ratio: 1 / 1;              /* square */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 20px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 12px rgba(0,0,0,.04);
+  text-decoration: none;
+  color: #111;
+  position: relative;
+  overflow: hidden;
+  transition: transform .15s ease, box-shadow .2s ease, border-color .2s ease;
+}
+
+.action-tile:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px rgba(0,0,0,.08);
+  border-color: #f8d2ea;            /* light pink border on hover */
+}
+
+.action-tile::after {
+  content: "";
+  position: absolute;
+  right: -30px;
+  bottom: -30px;
+  width: 120px;
+  height: 120px;
+  background: var(--pink);
+  opacity: .25;
+  border-radius: 50%;
+  filter: blur(12px);
+  pointer-events: none;
+}
+
+.action-title {
+  font-weight: 800;
+  font-size: 1.1rem;
+  letter-spacing: .2px;
+  margin-bottom: 4px;
+}
+
+.action-sub {
+  font-size: .875rem;
+  color: var(--muted);
+}
