@@ -25,7 +25,7 @@ model Customer {
   notes                String?
   salesRep             String?
   customerNumber       String?     // “Contact Number”
-  customerTelephone    String?     // NEW: “Customer Telephone Number”
+  customerTelephone    String?     // “Customer Telephone Number”
   customerEmailAddress String?
   openingHours         String?
   numberOfChairs       Int?
@@ -33,7 +33,7 @@ model Customer {
   // Relations
   visits               Visit[]
   notesLog             Note[]
-  callLogs             CallLog[]   // <-- NEW
+  callLogs             CallLog[]   // Link to call logs
 
   @@index([customerEmailAddress])
 }
@@ -82,13 +82,13 @@ model Brand {
   createdAt DateTime @default(now())
 }
 
-/* ======================
-   NEW: CallLog model
-   ====================== */
+// ======================
+// NEW: CallLog model
+// ======================
 model CallLog {
-  id                 String   @id @default(cuid())
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id                 String    @id @default(cuid())
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   // Required split: is it about an existing customer?
   isExistingCustomer Boolean
