@@ -8,12 +8,10 @@ async function readBody(req: Request) {
   if (contentType.includes("application/json")) {
     return await req.json();
   }
-
   if (contentType.includes("application/x-www-form-urlencoded")) {
     const text = await req.text();
     return Object.fromEntries(new URLSearchParams(text));
   }
-
   if (contentType.includes("multipart/form-data")) {
     const form = await req.formData();
     return Object.fromEntries(
@@ -30,6 +28,10 @@ async function readBody(req: Request) {
   return {};
 }
 
+/* -----------------------------
+   POST /api/customers
+   Create customer (JSON or form)
+------------------------------ */
 export async function POST(req: Request) {
   try {
     const contentType = (req.headers.get("content-type") || "").toLowerCase();
@@ -73,11 +75,9 @@ export async function POST(req: Request) {
     const created = await prisma.customer.create({ data });
 
     if (isForm) {
-      // Redirect browsers that submitted a regular HTML form
       return NextResponse.redirect(new URL(`/customers/${created.id}`, req.url), { status: 303 });
     }
 
-    // Programmatic clients get JSON
     return NextResponse.json(created, { status: 201 });
   } catch (err: any) {
     console.error("Create customer error:", err);
@@ -85,9 +85,48 @@ export async function POST(req: Request) {
   }
 }
 
-export async function GET() {
+/* -----------------------------
+   GET /api/customers
+   Search (for pickers) and list
+   - ?search= / ?q=  : query string
+   - ?take=number    : limit (default 20; max 50)
+------------------------------ */
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const q = (searchParams.get("search") || searchParams.get("q") || "").trim();
+  const takeParam = Number(searchParams.get("take") || 20);
+  const take = Math.min(Math.max(takeParam, 1), 50);
+
+  const where = q
+    ? {
+        OR: [
+          { salonName: { contains: q, mode: "insensitive" as const } },
+          { customerName: { contains: q, mode: "insensitive" as const } },
+          { customerEmailAddress: { contains: q, mode: "insensitive" as const } },
+          { town: { contains: q, mode: "insensitive" as const } },
+          { county: { contains: q, mode: "insensitive" as const } },
+          { postCode: { contains: q, mode: "insensitive" as const } },
+        ],
+      }
+    : {};
+
   const customers = await prisma.customer.findMany({
-    orderBy: { createdAt: "desc" },
+    where,
+    orderBy: q ? { salonName: "asc" } : { createdAt: "desc" },
+    take: q ? take : 50,
+    // Keep response light; includes address for preview in the picker
+    select: {
+      id: true,
+      salonName: true,
+      customerName: true,
+      addressLine1: true,
+      addressLine2: true,
+      town: true,
+      county: true,
+      postCode: true,
+      customerEmailAddress: true,
+    },
   });
+
   return NextResponse.json(customers);
 }
