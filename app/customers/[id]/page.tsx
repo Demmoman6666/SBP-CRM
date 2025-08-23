@@ -3,6 +3,11 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import VisitForm from "@/components/VisitForm";
 
+type OpeningDay = { open: boolean; from?: string; to?: string };
+type OpeningHours = Record<"Mon"|"Tue"|"Wed"|"Thu"|"Fri"|"Sat"|"Sun", OpeningDay>;
+
+const DAYS: Array<keyof OpeningHours> = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
 export default async function CustomerDetail({ params }: { params: { id: string } }) {
   const [customer, salesReps] = await Promise.all([
     prisma.customer.findUnique({
@@ -17,7 +22,33 @@ export default async function CustomerDetail({ params }: { params: { id: string 
 
   if (!customer) return <div className="card">Not found.</div>;
 
-  // -------- Server Actions --------
+  // ---------- helpers ----------
+  const repNames = salesReps.map(r => r.name);
+
+  const addressLines = [
+    customer.addressLine1,
+    customer.addressLine2,
+    customer.town,
+    customer.county,
+    customer.postCode,
+  ].filter(Boolean) as string[];
+
+  const parseOpening = (json?: string | null): OpeningHours | null => {
+    if (!json) return null;
+    try {
+      return JSON.parse(json) as OpeningHours;
+    } catch {
+      return null;
+    }
+  };
+
+  const opening = parseOpening(customer.openingHours);
+
+  const fmtTime = (val?: Date | null) =>
+    val ? new Date(val).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-";
+  // ---------- /helpers ----------
+
+  // ---------- server actions ----------
   async function addNote(formData: FormData) {
     "use server";
     const text = String(formData.get("text") || "");
@@ -64,28 +95,13 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         endTime,
         durationMinutes,
         summary: summary || null,
-        staff: staff || null, // stores the selected Sales Rep name
+        staff: staff || null, // selected rep name
       },
     });
 
     revalidatePath(`/customers/${customer.id}`);
   }
-  // -------- /Server Actions --------
-
-  const address = [
-    customer.addressLine1,
-    customer.addressLine2,
-    customer.town,
-    customer.county,
-    customer.postCode,
-  ]
-    .filter(Boolean)
-    .join(", ");
-
-  const fmtTime = (val?: Date | null) =>
-    val ? new Date(val).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-";
-
-  const repNames = salesReps.map((r) => r.name);
+  // ---------- /server actions ----------
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -97,15 +113,20 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           <div>
             <b>Contact</b>
             <p className="small">
-              {customer.customerEmailAddress || "-"}
-              <br />
+              {customer.customerEmailAddress || "-"}<br />
               {customer.customerNumber || "-"}
             </p>
           </div>
+
           <div>
             <b>Location</b>
-            <p className="small">{address || "-"}</p>
+            <div className="small">
+              {addressLines.length
+                ? addressLines.map((line, i) => <div key={i}>{line}</div>)
+                : "-"}
+            </div>
           </div>
+
           <div>
             <b>Salon</b>
             <p className="small">
@@ -114,9 +135,24 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             <p className="small">Brands Used: {customer.brandsInterestedIn || "-"}</p>
             <p className="small">Sales Rep: {customer.salesRep || "-"}</p>
           </div>
+
           <div>
             <b>Opening Hours</b>
-            <p className="small">{customer.openingHours || "-"}</p>
+            {opening ? (
+              <ul className="small" style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                {DAYS.map((d) => {
+                  const v = opening[d];
+                  return (
+                    <li key={d}>
+                      <span style={{ display: "inline-block", width: 38 }}>{d}</span>{" "}
+                      {v?.open ? `${v.from ?? "—"} – ${v.to ?? "—"}` : "Closed"}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="small">-</p>
+            )}
           </div>
         </div>
 
@@ -138,9 +174,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
               <select name="staff" defaultValue="">
                 <option value="">— Select Sales Rep —</option>
                 {repNames.map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
+                  <option key={n} value={n}>{n}</option>
                 ))}
               </select>
             </div>
@@ -148,9 +182,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
               <label>Note</label>
               <textarea name="text" rows={3} required />
             </div>
-            <button className="primary" type="submit">
-              Save Note
-            </button>
+            <button className="primary" type="submit">Save Note</button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Notes</h3>
@@ -158,15 +190,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             <p className="small">No notes yet.</p>
           ) : (
             customer.notesLog.map((n) => (
-              <div
-                key={n.id}
-                className="row"
-                style={{
-                  justifyContent: "space-between",
-                  borderBottom: "1px solid var(--border)",
-                  padding: "8px 0",
-                }}
-              >
+              <div key={n.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "8px 0" }}>
                 <div>
                   <div className="small">
                     {new Date(n.createdAt).toLocaleString()} {n.staff ? `• ${n.staff}` : ""}
@@ -181,7 +205,6 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         {/* Visits */}
         <div className="card">
           <h3>Log Visit</h3>
-          {/* Pass Sales Rep names to the client form for the dropdown */}
           <VisitForm reps={repNames} onSubmit={addVisit as any} />
 
           <h3 style={{ marginTop: 16 }}>Visits</h3>
@@ -189,15 +212,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             <p className="small">No visits yet.</p>
           ) : (
             customer.visits.map((v) => (
-              <div
-                key={v.id}
-                className="row"
-                style={{
-                  justifyContent: "space-between",
-                  borderBottom: "1px solid var(--border)",
-                  padding: "8px 0",
-                }}
-              >
+              <div key={v.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "8px 0" }}>
                 <div>
                   <div className="small">
                     {new Date(v.date).toLocaleDateString()} {v.staff ? `• ${v.staff}` : ""}
