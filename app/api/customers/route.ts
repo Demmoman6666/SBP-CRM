@@ -5,17 +5,17 @@ import { prisma } from "@/lib/prisma";
 async function readBody(req: Request) {
   const contentType = (req.headers.get("content-type") || "").toLowerCase();
 
-  if (contentType.includes("application/json")) {
-    return await req.json();
-  }
+  if (contentType.includes("application/json")) return await req.json();
+
   if (contentType.includes("application/x-www-form-urlencoded")) {
     const text = await req.text();
     return Object.fromEntries(new URLSearchParams(text));
   }
+
   if (contentType.includes("multipart/form-data")) {
     const form = await req.formData();
     return Object.fromEntries(
-      Array.from(form.entries()).map(([k, v]) => [k, typeof v === "string" ? v : v.name])
+      Array.from(form.entries()).map(([k, v]) => [k, typeof v === "string" ? v : v.name]),
     );
   }
 
@@ -56,11 +56,11 @@ export async function POST(req: Request) {
       county: (body.county ?? null) as string | null,
       postCode: (body.postCode ?? null) as string | null,
       daysOpen: (body.daysOpen ?? null) as string | null,
-      brandsInterestedIn: (body.brandsInterestedIn ?? null) as string | null,
+      brandsInterestedIn: (body.brandsInterestedIn ?? null) as string | null, // "Brands Used"
       notes: (body.notes ?? null) as string | null,
       salesRep: (body.salesRep ?? null) as string | null,
-      customerNumber: (body.customerNumber ?? null) as string | null,
-      customerTelephone: (body.customerTelephone ?? null) as string | null,
+      customerNumber: (body.customerNumber ?? null) as string | null,          // Contact Number
+      customerTelephone: (body.customerTelephone ?? null) as string | null,    // Customer Telephone Number
       customerEmailAddress: (body.customerEmailAddress ?? null) as string | null,
       openingHours: (body.openingHours ?? null) as string | null,
       numberOfChairs: toInt(body.numberOfChairs),
@@ -69,16 +69,18 @@ export async function POST(req: Request) {
     if (!data.salonName || !data.customerName || !data.addressLine1) {
       return NextResponse.json(
         { error: "Missing required fields: salonName, customerName, addressLine1" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     const created = await prisma.customer.create({ data });
 
     if (isForm) {
+      // Redirect browsers that posted a regular HTML form
       return NextResponse.redirect(new URL(`/customers/${created.id}`, req.url), { status: 303 });
     }
 
+    // Programmatic clients
     return NextResponse.json(created, { status: 201 });
   } catch (err: any) {
     console.error("Create customer error:", err);
@@ -113,4 +115,24 @@ export async function GET(req: Request) {
 
   const customers = await prisma.customer.findMany({
     where,
-    orderBy: q ? { sa
+    orderBy: q ? { salonName: "asc" } : { createdAt: "desc" },
+    take: q ? take : 50,
+    // Include fields needed for pickers and previews
+    select: {
+      id: true,
+      salonName: true,
+      customerName: true,
+      addressLine1: true,
+      addressLine2: true,
+      town: true,
+      county: true,
+      postCode: true,
+      customerEmailAddress: true,
+      customerNumber: true,
+      customerTelephone: true,
+      salesRep: true, // <-- used to auto-fill Sales Rep on Log Call
+    },
+  });
+
+  return NextResponse.json(customers);
+}
