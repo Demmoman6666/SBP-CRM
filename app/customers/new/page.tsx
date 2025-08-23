@@ -129,7 +129,7 @@ export default async function NewCustomerPage() {
         {/* Selects */}
         <div className="grid-2">
           <div className="field">
-            <label>Brands Interested in</label>
+            <label>Brands Used</label>
             <select name="brand" defaultValue="">
               <option value="" disabled>
                 Select a brand
