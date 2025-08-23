@@ -2,10 +2,7 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import Link from "next/link";
-import Image from "next/image";
-
-// ⬇️ Put your logo file at public/sbp-logo.png
-import sbpLogo from "@/public/sbp-logo.png";
+import SettingsMenu from "@/components/SettingsMenu";
 
 export const metadata: Metadata = {
   title: "Salon Brands Pro CRM",
@@ -37,33 +34,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             }}
           >
             <Link href="/" className="row" style={{ alignItems: "center", gap: 10 }}>
-              <Image
-                src={sbpLogo}
-                alt="Salon Brands Pro"
-                className="brand-logo"
-                priority
-              />
+              <img src="/logo-sbp.png" alt="Salon Brands Pro" className="brand-logo" />
+              <span className="sr-only">Salon Brands Pro CRM</span>
             </Link>
 
-            <nav className="row" style={{ alignItems: "center", gap: 12 }}>
-              <Link href="/customers" style={{ textDecoration: "none", color: "#111" }}>
-                Customers
-              </Link>
-              <Link
-                href="/customers/new"
-                className="primary"
-                style={{
-                  textDecoration: "none",
-                  padding: "8px 12px",
-                  borderRadius: 8,
-                  background: "#FEB3E4",
-                  color: "#111",
-                  fontWeight: 600,
-                }}
-              >
-                New Customer
-              </Link>
-            </nav>
+            {/* Settings menu (Add Sales Rep / Add Brand) */}
+            <SettingsMenu />
           </div>
         </header>
 
