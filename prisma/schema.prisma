@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL") // Set this in Vercel envs to your Neon connection string
+  url      = env("DATABASE_URL")
 }
 
 model Customer {
@@ -20,20 +20,19 @@ model Customer {
   town                 String?
   county               String?
   postCode             String?
-  daysOpen             String?     // optional; not used in the form
+  daysOpen             String?
   brandsInterestedIn   String?
   notes                String?
   salesRep             String?
-  customerNumber       String?     // “Contact Number”
-  customerTelephone    String?     // “Customer Telephone Number”
+  customerNumber       String?
+  customerTelephone    String?
   customerEmailAddress String?
   openingHours         String?
   numberOfChairs       Int?
 
-  // Relations
   visits               Visit[]
   notesLog             Note[]
-  callLogs             CallLog[]   // Link to call logs
+  callLogs             CallLog[]
 
   @@index([customerEmailAddress])
 }
@@ -82,34 +81,33 @@ model Brand {
   createdAt DateTime @default(now())
 }
 
-// ======================
-// NEW: CallLog model
-// ======================
 model CallLog {
-  id                 String    @id @default(cuid())
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  id                 String   @id @default(cuid())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
-  // Required split: is it about an existing customer?
   isExistingCustomer Boolean
 
-  // If existing customer
   customerId         String?
   customer           Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
-  // If not existing, keep a lead-style snapshot
   customerName       String?
-  contactName        String?
   contactPhone       String?
   contactEmail       String?
 
-  // Common meta
   callType           String?
   summary            String?
   outcome            String?
-  staff              String?   // Sales Rep (by name)
+  staff              String?
+
   followUpRequired   Boolean   @default(false)
   followUpAt         DateTime?
+
+  // NEW:
+  startTime          DateTime?
+  endTime            DateTime?
+  durationMinutes    Int?
+  appointmentBooked  Boolean?  @default(false)
 
   @@index([createdAt])
   @@index([isExistingCustomer, customerId])
