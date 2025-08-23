@@ -1,44 +1,75 @@
 // app/layout.tsx
 import "./globals.css";
+import type { Metadata } from "next";
 import Link from "next/link";
-import Image from "next/image";
 
-export const metadata = {
-  title: "SBP CRM",
-  description: "Salon Brands Pro — simple CRM",
-  themeColor: "#FEB3E4",
+export const metadata: Metadata = {
+  title: "Salon Brands Pro CRM",
+  description: "Lightweight CRM for Salon Brands Pro.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <header className="topbar">
-          <div className="container topbar-inner">
-            <Link href="/" className="brand" aria-label="Salon Brands Pro Home">
-              {/* Put your logo at /public/sbp-logo.png */}
-              <Image
-                src="/sbp-logo.png"
-                alt="Salon Brands Pro"
-                width={220}
-                height={48}
-                priority
-              />
+        <header
+          style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 50,
+            background: "#ffffff",
+            borderBottom: "1px solid #eee",
+          }}
+        >
+          <div
+            className="container row"
+            style={{
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+              padding: "10px 16px",
+              maxWidth: 1100,
+              margin: "0 auto",
+            }}
+          >
+            <Link href="/" className="row" style={{ alignItems: "center", gap: 10 }}>
+              {/* Keep logo proportions via .brand-logo in globals.css */}
+              <img src="/logo-sbp.png" alt="Salon Brands Pro" className="brand-logo" />
             </Link>
 
-            <nav className="nav">
-              <Link href="/customers">Customers</Link>
-              <Link className="btn btn-sm primary" href="/customers/new">
+            <nav className="row" style={{ alignItems: "center", gap: 12 }}>
+              <Link href="/customers" style={{ textDecoration: "none", color: "#111" }}>
+                Customers
+              </Link>
+              <Link
+                href="/customers/new"
+                className="primary"
+                style={{
+                  textDecoration: "none",
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  background: "#FEB3E4",
+                  color: "#111",
+                  fontWeight: 600,
+                }}
+              >
                 New Customer
               </Link>
             </nav>
           </div>
         </header>
 
-        <main className="container">{children}</main>
+        <main
+          className="container"
+          style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}
+        >
+          {children}
+        </main>
 
-        <footer className="footer">
-          <div className="container">© Salon Brands Pro</div>
+        <footer style={{ borderTop: "1px solid #eee", padding: "16px 0" }}>
+          <div className="container" style={{ maxWidth: 1100, margin: "0 auto", padding: "0 16px" }}>
+            <small>© Salon Brands Pro</small>
+          </div>
         </footer>
       </body>
     </html>
