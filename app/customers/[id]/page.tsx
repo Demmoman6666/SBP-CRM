@@ -1,6 +1,7 @@
 // app/customers/[id]/page.tsx
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import VisitForm from "@/components/VisitForm";
 
 export default async function CustomerDetail({ params }: { params: { id: string } }) {
   const customer = await prisma.customer.findUnique({
@@ -13,6 +14,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
 
   if (!customer) return <div className="card">Not found.</div>;
 
+  // -------- Server Actions --------
   async function addNote(formData: FormData) {
     "use server";
     const text = String(formData.get("text") || "");
@@ -27,16 +29,45 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     const dateStr = String(formData.get("date") || "");
     const summary = String(formData.get("summary") || "");
     const staff = String(formData.get("staff") || "");
+    const startStr = String(formData.get("startTime") || "");
+    const endStr = String(formData.get("endTime") || "");
+
+    const toDateOnly = (ds: string) =>
+      ds ? new Date(`${ds}T00:00:00`) : new Date();
+
+    const combineDateTime = (dateOnlyStr: string, timeStr: string | null) => {
+      if (!timeStr) return null;
+      const base = toDateOnly(dateOnlyStr);
+      const [h, m] = timeStr.split(":").map((n) => Number(n));
+      const d = new Date(base);
+      d.setHours(Number.isFinite(h) ? h : 0, Number.isFinite(m) ? m : 0, 0, 0);
+      return d;
+    };
+
+    const startTime = startStr ? combineDateTime(dateStr, startStr) : null;
+    const endTime = endStr ? combineDateTime(dateStr, endStr) : null;
+
+    let durationMinutes: number | null = null;
+    if (startTime && endTime) {
+      const diffMs = endTime.getTime() - startTime.getTime();
+      durationMinutes = diffMs >= 0 ? Math.round(diffMs / 60000) : null;
+    }
+
     await prisma.visit.create({
       data: {
         customerId: customer.id,
         date: dateStr ? new Date(dateStr) : new Date(),
+        startTime,
+        endTime,
+        durationMinutes,
         summary: summary || null,
         staff: staff || null,
       },
     });
+
     revalidatePath(`/customers/${customer.id}`);
   }
+  // -------- /Server Actions --------
 
   const address = [
     customer.addressLine1,
@@ -44,7 +75,14 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     customer.town,
     customer.county,
     customer.postCode,
-  ].filter(Boolean).join(", ");
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  const fmtTime = (val?: Date | null) =>
+    val
+      ? new Date(val).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "-";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -56,7 +94,8 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           <div>
             <b>Contact</b>
             <p className="small">
-              {customer.customerEmailAddress || "-"}<br />
+              {customer.customerEmailAddress || "-"}
+              <br />
               {customer.customerNumber || "-"}
             </p>
           </div>
@@ -66,7 +105,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           </div>
           <div>
             <b>Salon</b>
-            <p className="small">Days Open: {customer.daysOpen ?? "-"} | Chairs: {customer.numberOfChairs ?? "-"}</p>
+            <p className="small">
+              Days Open: {customer.daysOpen ?? "-"} | Chairs: {customer.numberOfChairs ?? "-"}
+            </p>
             <p className="small">Brands Used: {customer.brandsInterestedIn || "-"}</p>
             <p className="small">Sales Rep: {customer.salesRep || "-"}</p>
           </div>
@@ -85,49 +126,89 @@ export default async function CustomerDetail({ params }: { params: { id: string 
       </div>
 
       <div className="grid grid-2">
+        {/* Notes */}
         <div className="card">
           <h3>Add Note</h3>
           <form action={addNote} className="grid" style={{ gap: 8 }}>
-            <div><label>Staff (optional)</label><input name="staff" placeholder="Your name" /></div>
-            <div><label>Note</label><textarea name="text" rows={3} required /></div>
-            <button className="primary" type="submit">Save Note</button>
+            <div>
+              <label>Staff (optional)</label>
+              <input name="staff" placeholder="Your name" />
+            </div>
+            <div>
+              <label>Note</label>
+              <textarea name="text" rows={3} required />
+            </div>
+            <button className="primary" type="submit">
+              Save Note
+            </button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Notes</h3>
-          {customer.notesLog.length === 0 ? <p className="small">No notes yet.</p> :
-            customer.notesLog.map(n => (
-              <div key={n.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "8px 0" }}>
+          {customer.notesLog.length === 0 ? (
+            <p className="small">No notes yet.</p>
+          ) : (
+            customer.notesLog.map((n) => (
+              <div
+                key={n.id}
+                className="row"
+                style={{
+                  justifyContent: "space-between",
+                  borderBottom: "1px solid var(--border)",
+                  padding: "8px 0",
+                }}
+              >
                 <div>
-                  <div className="small">{new Date(n.createdAt).toLocaleString()} {n.staff ? `• ${n.staff}` : ""}</div>
+                  <div className="small">
+                    {new Date(n.createdAt).toLocaleString()} {n.staff ? `• ${n.staff}` : ""}
+                  </div>
                   <div>{n.text}</div>
                 </div>
               </div>
             ))
-          }
+          )}
         </div>
 
+        {/* Visits */}
         <div className="card">
           <h3>Log Visit</h3>
-          <form action={addVisit} className="grid" style={{ gap: 8 }}>
-            <div className="grid grid-2">
-              <div><label>Date</label><input type="date" name="date" /></div>
-              <div><label>Staff (optional)</label><input name="staff" placeholder="Your name" /></div>
-            </div>
-            <div><label>Summary</label><textarea name="summary" rows={3} placeholder="What happened?" /></div>
-            <button className="primary" type="submit">Save Visit</button>
-          </form>
+          {/* Client component handles live duration display; server action persists */}
+          <VisitForm onSubmit={addVisit as any} />
 
           <h3 style={{ marginTop: 16 }}>Visits</h3>
-          {customer.visits.length === 0 ? <p className="small">No visits yet.</p> :
-            customer.visits.map(v => (
-              <div key={v.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "8px 0" }}>
+          {customer.visits.length === 0 ? (
+            <p className="small">No visits yet.</p>
+          ) : (
+            customer.visits.map((v) => (
+              <div
+                key={v.id}
+                className="row"
+                style={{
+                  justifyContent: "space-between",
+                  borderBottom: "1px solid var(--border)",
+                  padding: "8px 0",
+                }}
+              >
                 <div>
-                  <div className="small">{new Date(v.date).toLocaleDateString()} {v.staff ? `• ${v.staff}` : ""}</div>
+                  <div className="small">
+                    {new Date(v.date).toLocaleDateString()} {v.staff ? `• ${v.staff}` : ""}
+                  </div>
+                  <div className="small">
+                    {v.startTime || v.endTime ? (
+                      <>
+                        {fmtTime(v.startTime)} – {fmtTime(v.endTime)}
+                        {typeof v.durationMinutes === "number"
+                          ? ` • ${v.durationMinutes} min`
+                          : ""}
+                      </>
+                    ) : (
+                      "-"
+                    )}
+                  </div>
                   <div>{v.summary || "-"}</div>
                 </div>
               </div>
             ))
-          }
+          )}
         </div>
       </div>
     </div>
