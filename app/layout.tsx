@@ -34,7 +34,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             }}
           >
             <Link href="/" className="row" style={{ alignItems: "center", gap: 10 }}>
-              <img src="/logo-sbp.png" alt="Salon Brands Pro" className="brand-logo" />
+              {/* NOTE: file lives at /public/sbp-logo.png */}
+              <img src="/sbp-logo.png" alt="Salon Brands Pro" className="brand-logo" />
               <span className="sr-only">Salon Brands Pro CRM</span>
             </Link>
 
