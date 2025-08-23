@@ -4,13 +4,16 @@ import { revalidatePath } from "next/cache";
 import VisitForm from "@/components/VisitForm";
 
 export default async function CustomerDetail({ params }: { params: { id: string } }) {
-  const customer = await prisma.customer.findUnique({
-    where: { id: params.id },
-    include: {
-      visits: { orderBy: { date: "desc" } },
-      notesLog: { orderBy: { createdAt: "desc" } },
-    },
-  });
+  const [customer, salesReps] = await Promise.all([
+    prisma.customer.findUnique({
+      where: { id: params.id },
+      include: {
+        visits: { orderBy: { date: "desc" } },
+        notesLog: { orderBy: { createdAt: "desc" } },
+      },
+    }),
+    prisma.salesRep.findMany({ orderBy: { name: "asc" } }),
+  ]);
 
   if (!customer) return <div className="card">Not found.</div>;
 
@@ -20,7 +23,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     const text = String(formData.get("text") || "");
     const staff = String(formData.get("staff") || "");
     if (!text.trim()) return;
-    await prisma.note.create({ data: { text, staff: staff || null, customerId: customer.id } });
+    await prisma.note.create({
+      data: { text, staff: staff || null, customerId: customer.id },
+    });
     revalidatePath(`/customers/${customer.id}`);
   }
 
@@ -32,13 +37,11 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     const startStr = String(formData.get("startTime") || "");
     const endStr = String(formData.get("endTime") || "");
 
-    const toDateOnly = (ds: string) =>
-      ds ? new Date(`${ds}T00:00:00`) : new Date();
-
+    const toDateOnly = (ds: string) => (ds ? new Date(`${ds}T00:00:00`) : new Date());
     const combineDateTime = (dateOnlyStr: string, timeStr: string | null) => {
       if (!timeStr) return null;
       const base = toDateOnly(dateOnlyStr);
-      const [h, m] = timeStr.split(":").map((n) => Number(n));
+      const [h, m] = timeStr.split(":").map(Number);
       const d = new Date(base);
       d.setHours(Number.isFinite(h) ? h : 0, Number.isFinite(m) ? m : 0, 0, 0);
       return d;
@@ -61,7 +64,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         endTime,
         durationMinutes,
         summary: summary || null,
-        staff: staff || null,
+        staff: staff || null, // stores the selected Sales Rep name
       },
     });
 
@@ -80,9 +83,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     .join(", ");
 
   const fmtTime = (val?: Date | null) =>
-    val
-      ? new Date(val).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      : "-";
+    val ? new Date(val).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-";
+
+  const repNames = salesReps.map((r) => r.name);
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -131,8 +134,15 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           <h3>Add Note</h3>
           <form action={addNote} className="grid" style={{ gap: 8 }}>
             <div>
-              <label>Staff (optional)</label>
-              <input name="staff" placeholder="Your name" />
+              <label>Sales Rep (optional)</label>
+              <select name="staff" defaultValue="">
+                <option value="">— Select Sales Rep —</option>
+                {repNames.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label>Note</label>
@@ -171,8 +181,8 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         {/* Visits */}
         <div className="card">
           <h3>Log Visit</h3>
-          {/* Client component handles live duration display; server action persists */}
-          <VisitForm onSubmit={addVisit as any} />
+          {/* Pass Sales Rep names to the client form for the dropdown */}
+          <VisitForm reps={repNames} onSubmit={addVisit as any} />
 
           <h3 style={{ marginTop: 16 }}>Visits</h3>
           {customer.visits.length === 0 ? (
@@ -196,9 +206,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
                     {v.startTime || v.endTime ? (
                       <>
                         {fmtTime(v.startTime)} – {fmtTime(v.endTime)}
-                        {typeof v.durationMinutes === "number"
-                          ? ` • ${v.durationMinutes} min`
-                          : ""}
+                        {typeof v.durationMinutes === "number" ? ` • ${v.durationMinutes} min` : ""}
                       </>
                     ) : (
                       "-"
