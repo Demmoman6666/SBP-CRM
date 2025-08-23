@@ -95,13 +95,13 @@ a:hover { text-decoration: underline; }
 
 /* 6) Header + Logo */
 .brand-logo {
-  height: 44px;        /* Adjust logo size here */
+  height: 55px;        /* Adjust logo size here */
   width: auto;         /* Maintain aspect ratio */
   display: block;
   image-rendering: -webkit-optimize-contrast;
 }
 @media (min-width: 1024px) {
-  .brand-logo { height: 52px; }
+  .brand-logo { height: 60px; }
 }
 
 /* 7) Cards */
