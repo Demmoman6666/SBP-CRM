@@ -20,11 +20,12 @@ model Customer {
   town                 String?
   county               String?
   postCode             String?
-  daysOpen             String?     // keep simple for now
+  daysOpen             String?     // optional; not used in the form
   brandsInterestedIn   String?
   notes                String?
   salesRep             String?
-  customerNumber       String?
+  customerNumber       String?     // “Contact Number”
+  customerTelephone    String?     // NEW: “Customer Telephone Number”
   customerEmailAddress String?
   openingHours         String?
   numberOfChairs       Int?
