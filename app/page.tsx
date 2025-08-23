@@ -19,6 +19,12 @@ export default function HomePage() {
           <div className="action-title">Customers</div>
           <div className="action-sub">Search & update customers</div>
         </Link>
+
+        {/* NEW: Log Call tile */}
+        <Link href="/calls/new" className="action-tile">
+          <div className="action-title">Log Call</div>
+          <div className="action-sub">Record a phone call and details</div>
+        </Link>
       </section>
     </div>
   );
