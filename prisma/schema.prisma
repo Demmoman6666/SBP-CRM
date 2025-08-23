@@ -62,3 +62,16 @@ model Note {
 
   @@index([customerId, createdAt])
 }
+
+model SalesRep {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  email     String?
+  createdAt DateTime @default(now())
+}
+
+model Brand {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+}
