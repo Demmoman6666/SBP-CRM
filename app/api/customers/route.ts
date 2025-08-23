@@ -60,6 +60,7 @@ export async function POST(req: Request) {
       notes: (body.notes ?? null) as string | null,
       salesRep: (body.salesRep ?? null) as string | null,
       customerNumber: (body.customerNumber ?? null) as string | null,
+      customerTelephone: (body.customerTelephone ?? null) as string | null, // optional
       customerEmailAddress: (body.customerEmailAddress ?? null) as string | null,
       openingHours: (body.openingHours ?? null) as string | null,
       numberOfChairs: toInt(body.numberOfChairs),
@@ -114,7 +115,7 @@ export async function GET(req: Request) {
     where,
     orderBy: q ? { salonName: "asc" } : { createdAt: "desc" },
     take: q ? take : 50,
-    // Keep response light; includes address for preview in the picker
+    // Include address + contact so the picker can preview details
     select: {
       id: true,
       salonName: true,
@@ -125,6 +126,8 @@ export async function GET(req: Request) {
       county: true,
       postCode: true,
       customerEmailAddress: true,
+      customerNumber: true,      // added
+      customerTelephone: true,   // added
     },
   });
 
