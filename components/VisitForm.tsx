@@ -5,9 +5,10 @@ import { useMemo, useState } from "react";
 
 type Props = {
   onSubmit: (formData: FormData) => void | Promise<void>; // server action
+  reps: string[]; // sales rep names
 };
 
-export default function VisitForm({ onSubmit }: Props) {
+export default function VisitForm({ onSubmit, reps }: Props) {
   const [date, setDate] = useState<string>("");
   const [staff, setStaff] = useState<string>("");
   const [summary, setSummary] = useState<string>("");
@@ -35,21 +36,18 @@ export default function VisitForm({ onSubmit }: Props) {
       <div className="grid grid-2">
         <div>
           <label>Date</label>
-          <input
-            type="date"
-            name="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
+          <input type="date" name="date" value={date} onChange={(e) => setDate(e.target.value)} />
         </div>
         <div>
-          <label>Staff (optional)</label>
-          <input
-            name="staff"
-            placeholder="Your name"
-            value={staff}
-            onChange={(e) => setStaff(e.target.value)}
-          />
+          <label>Sales Rep (optional)</label>
+          <select name="staff" value={staff} onChange={(e) => setStaff(e.target.value)}>
+            <option value="">— Select Sales Rep —</option>
+            {reps.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -76,12 +74,7 @@ export default function VisitForm({ onSubmit }: Props) {
 
       <div>
         <label>Total Duration (mins)</label>
-        <input
-          readOnly
-          value={durationMinutes ?? ""}
-          placeholder="—"
-          aria-label="Total duration in minutes"
-        />
+        <input readOnly value={durationMinutes ?? ""} placeholder="—" aria-label="Total duration in minutes" />
       </div>
 
       <div>
