@@ -1,66 +1,131 @@
+// app/calls/new/page.tsx
 import { prisma } from "@/lib/prisma";
-import { redirect } from "next/navigation";
-import CallForm from "./CallForm";
+import { revalidatePath } from "next/cache";
+import CustomerPicker from "@/components/CustomerPicker";
 
-export default async function Page() {
-  const reps = await prisma.salesRep.findMany({
-    select: { id: true, name: true },
-    orderBy: { name: "asc" },
-  });
+export default async function NewCallPage() {
+  const reps = await prisma.salesRep.findMany({ orderBy: { name: "asc" } });
 
-  async function createCall(formData: FormData) {
+  async function saveCall(formData: FormData) {
     "use server";
 
-    const s = (k: string) => {
-      const v = String(formData.get(k) ?? "").trim();
-      return v || null;
-    };
-
-    const existing = s("existing") === "yes";
-    const staff = s("staff");
-    const callType = s("callType");
-    const summary = s("summary");
-    const outcome = s("outcome");
-    const followUpAtStr = s("followUpAt");
+    const isExisting = String(formData.get("isExistingCustomer") || "") === "yes";
+    const customerId = String(formData.get("customerId") || "");
+    const salesRep = String(formData.get("salesRep") || "").trim(); // required
+    const callType = String(formData.get("callType") || "").trim();
+    const summary = String(formData.get("summary") || "").trim();
+    const outcome = String(formData.get("outcome") || "").trim();
+    const followUpAtStr = String(formData.get("followUpAt") || "");
     const followUpAt = followUpAtStr ? new Date(followUpAtStr) : null;
 
-    if (existing) {
-      const customerId = s("customerId");
-      if (!customerId) throw new Error("Please pick a customer from the suggestions.");
-      await prisma.callLog.create({
-        data: {
-          isExistingCustomer: true,
-          customer: { connect: { id: customerId } },
-          contactName: s("contactName"),
-          callType,
-          summary,
-          outcome,
-          staff,
-          followUpAt,
-          followUpRequired: followUpAt ? true : false,
-        },
-      });
-    } else {
-      // New/unknown customer lead
-      await prisma.callLog.create({
-        data: {
-          isExistingCustomer: false,
-          customerName: s("new_salonName")!,           // required by the form
-          contactName: s("new_contactName"),
-          contactPhone: s("new_contactPhone"),
-          contactEmail: s("new_contactEmail"),
-          callType,
-          summary,
-          outcome,
-          staff,
-          followUpAt,
-          followUpRequired: followUpAt ? true : false,
-        },
-      });
+    if (!salesRep) {
+      throw new Error("Sales Rep is required.");
+    }
+    if (isExisting && !customerId) {
+      throw new Error("Please choose a customer from the list.");
+    }
+    if (!summary) {
+      throw new Error("Summary is required.");
     }
 
-    redirect("/"); // send them back to the homepage (or a call list if you add one)
+    await prisma.callLog.create({
+      data: {
+        isExistingCustomer: isExisting,
+        customerId: isExisting ? customerId : null,
+        // for non-existing path we’re no longer collecting contactName; skip
+        callType: callType || null,
+        summary,
+        outcome: outcome || null,
+        staff: salesRep,
+        followUpRequired: followUpAt ? true : false,
+        followUpAt: followUpAt,
+      },
+    });
+
+    revalidatePath("/calls/new");
   }
 
-  return <CallForm reps={reps} createCall={createCall} />;
+  return (
+    <div className="grid" style={{ gap: 16 }}>
+      <section className="card">
+        <h2>Log Call</h2>
+        <form action={saveCall} className="grid" style={{ gap: 12 }}>
+          {/* Existing customer? */}
+          <div className="grid grid-2">
+            <fieldset>
+              <legend className="small" style={{ marginBottom: 6 }}>
+                Is this an existing customer? *
+              </legend>
+              <label className="row" style={{ alignItems: "center", gap: 6 }}>
+                <input type="radio" name="isExistingCustomer" value="yes" required /> Yes
+              </label>
+              <label className="row" style={{ alignItems: "center", gap: 6 }}>
+                <input type="radio" name="isExistingCustomer" value="no" required /> No
+              </label>
+              <div className="form-hint">You must choose one.</div>
+            </fieldset>
+
+            {/* Sales Rep — required */}
+            <div>
+              <label>Sales Rep *</label>
+              <select name="salesRep" required defaultValue="">
+                <option value="" disabled>
+                  — Select Sales Rep —
+                </option>
+                {reps.map((r) => (
+                  <option key={r.id} value={r.name}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Existing-customer picker (always rendered; validated server-side). 
+              Optional: you can hide/show with a little JS if you want. */}
+          <CustomerPicker label="Customer *" name="customerId" required />
+
+          {/* Contact Name removed */}
+
+          <div className="grid grid-2">
+            <div>
+              <label>Call Type</label>
+              <select name="callType" defaultValue="">
+                <option value="">— Select —</option>
+                <option>Order</option>
+                <option>Complaint</option>
+                <option>Enquiry</option>
+                <option>Account</option>
+              </select>
+            </div>
+
+            <div>
+              <label>Follow-up (optional)</label>
+              <input type="datetime-local" name="followUpAt" />
+            </div>
+          </div>
+
+          <div>
+            <label>Summary *</label>
+            <textarea name="summary" rows={4} placeholder="What was discussed?" required />
+          </div>
+
+          <div>
+            <label>Outcome</label>
+            <select name="outcome" defaultValue="">
+              <option value="">— Select —</option>
+              <option>Resolved</option>
+              <option>Pending</option>
+              <option>Escalated</option>
+              <option>No Action</option>
+            </select>
+          </div>
+
+          <div className="right">
+            <button className="primary" type="submit">Save Call</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
 }
