@@ -1,57 +1,22 @@
 // app/customers/[id]/page.tsx
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
-import VisitForm from "@/components/VisitForm";
-
-type OpeningDay = { open: boolean; from?: string; to?: string };
-type OpeningHours = Record<"Mon"|"Tue"|"Wed"|"Thu"|"Fri"|"Sat"|"Sun", OpeningDay>;
-
-const DAYS: Array<keyof OpeningHours> = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 
 export default async function CustomerDetail({ params }: { params: { id: string } }) {
-  const [customer, salesReps] = await Promise.all([
-    prisma.customer.findUnique({
-      where: { id: params.id },
-      include: {
-        visits: { orderBy: { date: "desc" } },
-        notesLog: { orderBy: { createdAt: "desc" } },
-      },
-    }),
-    prisma.salesRep.findMany({ orderBy: { name: "asc" } }),
-  ]);
+  const customer = await prisma.customer.findUnique({
+    where: { id: params.id },
+    include: {
+      visits:   { orderBy: { date: "desc" } },
+      notesLog: { orderBy: { createdAt: "desc" } },
+      callLogs: { orderBy: { createdAt: "desc" } }, // ← NEW
+    },
+  });
 
   if (!customer) return <div className="card">Not found.</div>;
 
-  // ---------- helpers ----------
-  const repNames = salesReps.map(r => r.name);
-
-  const addressLines = [
-    customer.addressLine1,
-    customer.addressLine2,
-    customer.town,
-    customer.county,
-    customer.postCode,
-  ].filter(Boolean) as string[];
-
-  const parseOpening = (json?: string | null): OpeningHours | null => {
-    if (!json) return null;
-    try {
-      return JSON.parse(json) as OpeningHours;
-    } catch {
-      return null;
-    }
-  };
-
-  const opening = parseOpening(customer.openingHours);
-
-  const fmtTime = (val?: Date | null) =>
-    val ? new Date(val).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-";
-  // ---------- /helpers ----------
-
-  // ---------- server actions ----------
   async function addNote(formData: FormData) {
     "use server";
-    const text = String(formData.get("text") || "");
+    const text  = String(formData.get("text") || "");
     const staff = String(formData.get("staff") || "");
     if (!text.trim()) return;
     await prisma.note.create({
@@ -64,47 +29,31 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     "use server";
     const dateStr = String(formData.get("date") || "");
     const summary = String(formData.get("summary") || "");
-    const staff = String(formData.get("staff") || "");
-    const startStr = String(formData.get("startTime") || "");
-    const endStr = String(formData.get("endTime") || "");
-
-    const toDateOnly = (ds: string) => (ds ? new Date(`${ds}T00:00:00`) : new Date());
-    const combineDateTime = (dateOnlyStr: string, timeStr: string | null) => {
-      if (!timeStr) return null;
-      const base = toDateOnly(dateOnlyStr);
-      const [h, m] = timeStr.split(":").map(Number);
-      const d = new Date(base);
-      d.setHours(Number.isFinite(h) ? h : 0, Number.isFinite(m) ? m : 0, 0, 0);
-      return d;
-    };
-
-    const startTime = startStr ? combineDateTime(dateStr, startStr) : null;
-    const endTime = endStr ? combineDateTime(dateStr, endStr) : null;
-
-    let durationMinutes: number | null = null;
-    if (startTime && endTime) {
-      const diffMs = endTime.getTime() - startTime.getTime();
-      durationMinutes = diffMs >= 0 ? Math.round(diffMs / 60000) : null;
-    }
-
+    const staff   = String(formData.get("staff") || "");
     await prisma.visit.create({
       data: {
         customerId: customer.id,
         date: dateStr ? new Date(dateStr) : new Date(),
-        startTime,
-        endTime,
-        durationMinutes,
         summary: summary || null,
-        staff: staff || null, // selected rep name
+        staff: staff || null,
       },
     });
-
     revalidatePath(`/customers/${customer.id}`);
   }
-  // ---------- /server actions ----------
+
+  const address = [
+    customer.addressLine1,
+    customer.addressLine2,
+    customer.town,
+    customer.county,
+    customer.postCode,
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   return (
     <div className="grid" style={{ gap: 16 }}>
+      {/* Header card */}
       <div className="card">
         <h2>{customer.salonName}</h2>
         <p className="small">{customer.customerName}</p>
@@ -113,46 +62,27 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           <div>
             <b>Contact</b>
             <p className="small">
-              {customer.customerEmailAddress || "-"}<br />
+              {customer.customerEmailAddress || "-"}
+              <br />
               {customer.customerNumber || "-"}
             </p>
           </div>
 
           <div>
             <b>Location</b>
-            <div className="small">
-              {addressLines.length
-                ? addressLines.map((line, i) => <div key={i}>{line}</div>)
-                : "-"}
-            </div>
+            <p className="small">{address || "-"}</p>
           </div>
 
           <div>
             <b>Salon</b>
-            <p className="small">
-              Days Open: {customer.daysOpen ?? "-"} | Chairs: {customer.numberOfChairs ?? "-"}
-            </p>
+            <p className="small">Chairs: {customer.numberOfChairs ?? "-"}</p>
             <p className="small">Brands Used: {customer.brandsInterestedIn || "-"}</p>
             <p className="small">Sales Rep: {customer.salesRep || "-"}</p>
           </div>
 
           <div>
             <b>Opening Hours</b>
-            {opening ? (
-              <ul className="small" style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                {DAYS.map((d) => {
-                  const v = opening[d];
-                  return (
-                    <li key={d}>
-                      <span style={{ display: "inline-block", width: 38 }}>{d}</span>{" "}
-                      {v?.open ? `${v.from ?? "—"} – ${v.to ?? "—"}` : "Closed"}
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <p className="small">-</p>
-            )}
+            <p className="small">{customer.openingHours || "-"}</p>
           </div>
         </div>
 
@@ -164,25 +94,22 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         )}
       </div>
 
+      {/* Notes / Visits */}
       <div className="grid grid-2">
-        {/* Notes */}
         <div className="card">
           <h3>Add Note</h3>
           <form action={addNote} className="grid" style={{ gap: 8 }}>
             <div>
-              <label>Sales Rep (optional)</label>
-              <select name="staff" defaultValue="">
-                <option value="">— Select Sales Rep —</option>
-                {repNames.map((n) => (
-                  <option key={n} value={n}>{n}</option>
-                ))}
-              </select>
+              <label>Staff (optional)</label>
+              <input name="staff" placeholder="Your name" />
             </div>
             <div>
               <label>Note</label>
               <textarea name="text" rows={3} required />
             </div>
-            <button className="primary" type="submit">Save Note</button>
+            <button className="primary" type="submit">
+              Save Note
+            </button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Notes</h3>
@@ -190,7 +117,15 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             <p className="small">No notes yet.</p>
           ) : (
             customer.notesLog.map((n) => (
-              <div key={n.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "8px 0" }}>
+              <div
+                key={n.id}
+                className="row"
+                style={{
+                  justifyContent: "space-between",
+                  borderBottom: "1px solid var(--border)",
+                  padding: "8px 0",
+                }}
+              >
                 <div>
                   <div className="small">
                     {new Date(n.createdAt).toLocaleString()} {n.staff ? `• ${n.staff}` : ""}
@@ -202,30 +137,45 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           )}
         </div>
 
-        {/* Visits */}
         <div className="card">
           <h3>Log Visit</h3>
-          <VisitForm reps={repNames} onSubmit={addVisit as any} />
+          <form action={addVisit} className="grid" style={{ gap: 8 }}>
+            <div className="grid grid-2">
+              <div>
+                <label>Date</label>
+                <input type="date" name="date" />
+              </div>
+              <div>
+                <label>Staff (optional)</label>
+                <input name="staff" placeholder="Your name" />
+              </div>
+            </div>
+            <div>
+              <label>Summary</label>
+              <textarea name="summary" rows={3} placeholder="What happened?" />
+            </div>
+            <button className="primary" type="submit">
+              Save Visit
+            </button>
+          </form>
 
           <h3 style={{ marginTop: 16 }}>Visits</h3>
           {customer.visits.length === 0 ? (
             <p className="small">No visits yet.</p>
           ) : (
             customer.visits.map((v) => (
-              <div key={v.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "8px 0" }}>
+              <div
+                key={v.id}
+                className="row"
+                style={{
+                  justifyContent: "space-between",
+                  borderBottom: "1px solid var(--border)",
+                  padding: "8px 0",
+                }}
+              >
                 <div>
                   <div className="small">
                     {new Date(v.date).toLocaleDateString()} {v.staff ? `• ${v.staff}` : ""}
-                  </div>
-                  <div className="small">
-                    {v.startTime || v.endTime ? (
-                      <>
-                        {fmtTime(v.startTime)} – {fmtTime(v.endTime)}
-                        {typeof v.durationMinutes === "number" ? ` • ${v.durationMinutes} min` : ""}
-                      </>
-                    ) : (
-                      "-"
-                    )}
                   </div>
                   <div>{v.summary || "-"}</div>
                 </div>
@@ -233,6 +183,45 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             ))
           )}
         </div>
+      </div>
+
+      {/* --- NEW: Call Logs (full width) --- */}
+      <div className="card">
+        <h3>Call Logs</h3>
+        {customer.callLogs.length === 0 ? (
+          <p className="small">No calls logged yet.</p>
+        ) : (
+          customer.callLogs.map((c) => (
+            <div
+              key={c.id}
+              className="row"
+              style={{
+                justifyContent: "space-between",
+                borderBottom: "1px solid var(--border)",
+                padding: "8px 0",
+              }}
+            >
+              <div>
+                <div className="small">
+                  {new Date(c.createdAt).toLocaleString()}
+                  {c.staff ? ` • ${c.staff}` : ""}
+                  {c.callType ? ` • ${c.callType}` : ""}
+                  {c.outcome ? ` • ${c.outcome}` : ""}
+                  {c.followUpAt ? ` • follow-up ${new Date(c.followUpAt).toLocaleString()}` : ""}
+                </div>
+                <div>{c.summary || "-"}</div>
+
+                {!c.isExistingCustomer && (
+                  <div className="small muted">
+                    Lead: {c.customerName || "-"}
+                    {c.contactPhone ? ` • ${c.contactPhone}` : ""}
+                    {c.contactEmail ? ` • ${c.contactEmail}` : ""}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
