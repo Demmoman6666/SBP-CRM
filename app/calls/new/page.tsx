@@ -1,322 +1,273 @@
 // app/calls/new/page.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
+type SalesRep = { id: string; name: string };
 type CustomerLite = {
   id: string;
   salonName: string;
   customerName: string;
-  addressLine1: string | null;
-  addressLine2: string | null;
-  town: string | null;
-  county: string | null;
-  postCode: string | null;
-  customerEmailAddress: string | null;
-  customerNumber: string | null;
-  customerTelephone: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  town?: string | null;
+  county?: string | null;
+  postCode?: string | null;
+  customerEmailAddress?: string | null;
 };
 
-type SalesRep = { id: string; name: string };
+function labelFor(c: CustomerLite) {
+  const bits = [c.salonName, "—", c.customerName].filter(Boolean);
+  return bits.join(" ");
+}
 
 export default function NewCallPage() {
   // form state
   const [existing, setExisting] = useState<"yes" | "no" | "">("");
-  const [salesRepId, setSalesRepId] = useState("");
-  const [callType, setCallType] = useState("");
-  const [outcome, setOutcome] = useState("");
-  const [summary, setSummary] = useState("");
-  const [followUpAt, setFollowUpAt] = useState<string>("");
-
-  // customers (predictive when existing === "yes")
-  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
   const [suggestions, setSuggestions] = useState<CustomerLite[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerLite | null>(null);
 
-  // “no” path – loose entry
-  const [leadName, setLeadName] = useState("");
-
-  // sales reps
   const [reps, setReps] = useState<SalesRep[]>([]);
+  const [salesRep, setSalesRep] = useState<string>(""); // store rep name (to match your schema)
 
-  // load reps
+  const [callType, setCallType] = useState<string>("");
+  const [summary, setSummary] = useState<string>("");
+  const [outcome, setOutcome] = useState<string>("");
+  const [followUpAt, setFollowUpAt] = useState<string>("");
+
+  // free-text fields if NOT existing (you can expand later)
+  const [leadName, setLeadName] = useState("");
+  const [leadPhone, setLeadPhone] = useState("");
+  const [leadEmail, setLeadEmail] = useState("");
+
+  // load sales reps
   useEffect(() => {
-    fetch("/api/sales-reps", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((rows) => setReps(rows ?? []))
+    fetch("/api/sales-reps")
+      .then(r => r.json())
+      .then((data: SalesRep[]) => setReps(data))
       .catch(() => setReps([]));
   }, []);
 
-  // predictive search
+  // predictive search when existing === "yes"
   useEffect(() => {
-    if (existing !== "yes") return;
-    if (!query || query.trim().length < 2) {
+    if (existing !== "yes") return; // only search when “existing” path
+    const ctrl = new AbortController();
+    const q = search.trim();
+    if (!q) {
       setSuggestions([]);
+      setSelectedCustomer(null);
       return;
     }
-    const handle = setTimeout(async () => {
-      const r = await fetch(`/api/customers?search=${encodeURIComponent(query)}&take=8`, {
-        cache: "no-store",
-      });
-      if (!r.ok) return;
-      const rows: CustomerLite[] = await r.json();
-      setSuggestions(rows);
-    }, 250);
-    return () => clearTimeout(handle);
-  }, [query, existing]);
+    const t = setTimeout(() => {
+      fetch(`/api/customers?search=${encodeURIComponent(q)}&take=12`, { signal: ctrl.signal })
+        .then(r => r.json())
+        .then((rows: CustomerLite[]) => setSuggestions(rows))
+        .catch(() => {});
+    }, 200);
+    return () => {
+      ctrl.abort();
+      clearTimeout(t);
+    };
+  }, [search, existing]);
 
-  // clear fields when toggling existing/ new
+  // when user types a label that matches a suggestion, lock selection
   useEffect(() => {
-    setSelectedCustomer(null);
-    setQuery("");
-    setLeadName("");
-    setSuggestions([]);
-  }, [existing]);
+    if (existing !== "yes") return;
+    const match = suggestions.find(s => labelFor(s).toLowerCase() === search.trim().toLowerCase());
+    if (match) setSelectedCustomer(match);
+  }, [search, suggestions, existing]);
 
-  const addr = useMemo(() => {
-    if (!selectedCustomer) return "";
-    const { addressLine1, addressLine2, town, county, postCode } = selectedCustomer;
-    return [addressLine1, addressLine2, town, county, postCode].filter(Boolean).join(", ");
+  const details = useMemo(() => {
+    const c = selectedCustomer;
+    if (!c) return null;
+    const addrLines = [
+      c.addressLine1,
+      c.addressLine2,
+      c.town,
+      c.county,
+      c.postCode,
+    ].filter(Boolean);
+    const email = c.customerEmailAddress;
+    return { addr: addrLines.join(", "), email };
   }, [selectedCustomer]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
 
-    if (!salesRepId) {
-      alert("Please select a Sales Rep.");
-      return;
-    }
-    if (existing === "") {
-      alert("Please answer whether this is an existing customer.");
-      return;
-    }
-    if (existing === "yes" && !selectedCustomer) {
-      alert("Please choose a customer from the suggestions.");
-      return;
-    }
-    if (existing === "no" && !leadName.trim()) {
-      alert("Please enter a company/salon name.");
-      return;
-    }
-
+    // build payload exactly as API expects
     const payload: any = {
       isExistingCustomer: existing === "yes",
-      staff: reps.find((r) => r.id === salesRepId)?.name ?? "",
+      salesRep,               // required
+      summary,                // required
       callType: callType || null,
       outcome: outcome || null,
-      summary,
-      followUpAt: followUpAt ? new Date(followUpAt).toISOString() : null,
+      followUpAt: followUpAt || null, // datetime-local (API accepts this)
     };
 
-    if (existing === "yes" && selectedCustomer) {
-      payload.customerId = selectedCustomer.id;
-    } else {
-      payload.customerName = leadName.trim();
+    if (existing === "yes") {
+      payload.customerId = selectedCustomer?.id || "";
+    } else if (existing === "no") {
+      payload.customerName = leadName || null;
+      payload.contactPhone = leadPhone || null;
+      payload.contactEmail = leadEmail || null;
     }
 
-    const r = await fetch("/api/call-logs", {
+    const res = await fetch("/api/calls", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
 
-    if (!r.ok) {
-      const j = await r.json().catch(() => ({}));
-      alert(j?.error || "Failed to save call");
+    if (!res.ok) {
+      let msg = "Failed to save call";
+      try {
+        const data = await res.json();
+        if (data?.error) msg = data.error;
+      } catch {}
+      alert(msg);
       return;
     }
 
-    // go back home after save
-    window.location.href = "/";
+    const data = await res.json();
+    if (data?.redirectTo) {
+      window.location.href = data.redirectTo as string;
+    } else {
+      alert("Saved");
+    }
   }
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <h2>Log Call</h2>
+        <h1>Log Call</h1>
       </section>
 
-      <form onSubmit={onSubmit} className="card grid" style={{ gap: 12 }}>
-        <div className="grid grid-2">
-          <fieldset>
-            <label>Is this an existing customer? *</label>
-            <div className="row" style={{ gap: 16 }}>
-              <label>
-                <input
-                  type="radio"
-                  name="existing"
-                  value="yes"
-                  checked={existing === "yes"}
-                  onChange={() => setExisting("yes")}
-                />{" "}
-                Yes
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="existing"
-                  value="no"
-                  checked={existing === "no"}
-                  onChange={() => setExisting("no")}
-                />{" "}
-                No
-              </label>
-            </div>
-            {existing === "" && <div className="small muted">You must choose one.</div>}
-          </fieldset>
+      <section className="card">
+        <form onSubmit={onSubmit} className="grid" style={{ gap: 12 }}>
+          <div className="grid grid-2">
+            <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+              <label>Is this an existing customer? *</label>
+              <div className="row">
+                <label><input type="radio" name="existing" onChange={() => setExisting("yes")} checked={existing==="yes"} /> Yes</label>
+                <label><input type="radio" name="existing" onChange={() => setExisting("no")}  checked={existing==="no"} /> No</label>
+              </div>
+              {existing === "" && <div className="form-hint">You must choose one.</div>}
+            </fieldset>
 
-          <div>
-            <label>Sales Rep *</label>
-            <select
-              required
-              value={salesRepId}
-              onChange={(e) => setSalesRepId(e.target.value)}
-            >
-              <option value="">— Select Sales Rep —</option>
-              {reps.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {existing === "yes" ? (
-          <>
             <div>
-              <label>Customer *</label>
-              <input
-                placeholder="Start typing salon or contact…"
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                  setSelectedCustomer(null);
-                }}
-                autoComplete="off"
-              />
-              {/* suggestions */}
-              {suggestions.length > 0 && !selectedCustomer && (
-                <div
-                  className="card"
-                  style={{
-                    marginTop: 6,
-                    padding: 6,
-                    borderRadius: 10,
-                    maxHeight: 220,
-                    overflow: "auto",
+              <label>Sales Rep *</label>
+              <select
+                required
+                value={salesRep}
+                onChange={e => setSalesRep(e.target.value)}
+              >
+                <option value="">— Select Sales Rep —</option>
+                {reps.map(r => (
+                  <option key={r.id} value={r.name}>{r.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Existing customer predictive */}
+          {existing === "yes" && (
+            <>
+              <div>
+                <label>Customer *</label>
+                <input
+                  list="customer-list"
+                  placeholder="Type to search…"
+                  value={search}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setSelectedCustomer(null);
                   }}
-                >
-                  {suggestions.map((c) => (
-                    <div
-                      key={c.id}
-                      className="row"
-                      style={{
-                        padding: "8px 6px",
-                        justifyContent: "space-between",
-                        cursor: "pointer",
-                        borderBottom: "1px solid var(--border)",
-                      }}
-                      onClick={() => {
-                        setSelectedCustomer(c);
-                        setQuery(`${c.salonName} — ${c.customerName}`);
-                        setSuggestions([]);
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontWeight: 600 }}>
-                          {c.salonName} — {c.customerName}
-                        </div>
-                        <div className="small muted">
-                          {[c.addressLine1, c.town, c.postCode].filter(Boolean).join(", ")}
-                        </div>
-                      </div>
-                    </div>
+                  required
+                />
+                <datalist id="customer-list">
+                  {suggestions.map(s => (
+                    <option key={s.id} value={labelFor(s)} />
                   ))}
+                </datalist>
+                <div className="form-hint">Pick a suggestion so we capture the correct account.</div>
+              </div>
+
+              {details && (
+                <div className="card" style={{ background: "#fafafa" }}>
+                  <b>Customer details</b>
+                  <div className="small">
+                    {details.addr || "-"}
+                    {details.email ? <> • {details.email}</> : null}
+                  </div>
                 </div>
               )}
-            </div>
+            </>
+          )}
 
-            {selectedCustomer && (
-              <div className="card" style={{ background: "#fafafa" }}>
-                <b>Customer details</b>
-                <div className="small">
-                  {[selectedCustomer.addressLine1, selectedCustomer.addressLine2]
-                    .filter(Boolean)
-                    .join(", ")}
-                  <br />
-                  {[selectedCustomer.town, selectedCustomer.county, selectedCustomer.postCode]
-                    .filter(Boolean)
-                    .join(", ")}
-                  <br />
-                  {selectedCustomer.customerEmailAddress || "-"} •{" "}
-                  {selectedCustomer.customerTelephone || selectedCustomer.customerNumber || "-"}
-                </div>
+          {/* Lead capture if NOT existing */}
+          {existing === "no" && (
+            <div className="grid grid-2">
+              <div>
+                <label>Business / Contact Name</label>
+                <input value={leadName} onChange={e => setLeadName(e.target.value)} />
               </div>
-            )}
-          </>
-        ) : existing === "no" ? (
-          <div>
-            <label>Company / Salon *</label>
-            <input
-              value={leadName}
-              onChange={(e) => setLeadName(e.target.value)}
-              placeholder="Who called?"
-              required
-            />
-          </div>
-        ) : null}
+              <div>
+                <label>Phone</label>
+                <input value={leadPhone} onChange={e => setLeadPhone(e.target.value)} />
+              </div>
+              <div>
+                <label>Email</label>
+                <input type="email" value={leadEmail} onChange={e => setLeadEmail(e.target.value)} />
+              </div>
+            </div>
+          )}
 
-        <div className="grid grid-2">
+          <div className="grid grid-2">
+            <div>
+              <label>Call Type</label>
+              <select value={callType} onChange={e => setCallType(e.target.value)}>
+                <option value="">— Select —</option>
+                <option>Enquiry</option>
+                <option>Order</option>
+                <option>Complaint</option>
+                <option>Support</option>
+                <option>Other</option>
+              </select>
+            </div>
+            <div>
+              <label>Follow-up (optional)</label>
+              <input
+                type="datetime-local"
+                value={followUpAt}
+                onChange={e => setFollowUpAt(e.target.value)}
+              />
+            </div>
+          </div>
+
           <div>
-            <label>Call Type</label>
-            <select value={callType} onChange={(e) => setCallType(e.target.value)}>
+            <label>Summary *</label>
+            <textarea rows={3} required value={summary} onChange={e => setSummary(e.target.value)} placeholder="What was discussed?" />
+          </div>
+
+          <div>
+            <label>Outcome</label>
+            <select value={outcome} onChange={e => setOutcome(e.target.value)}>
               <option value="">— Select —</option>
-              <option value="enquiry">Enquiry</option>
-              <option value="order">Order</option>
-              <option value="support">Support</option>
-              <option value="followup">Follow-up</option>
+              <option>Resolved</option>
+              <option>Left message</option>
+              <option>Call back requested</option>
+              <option>No answer</option>
+              <option>Escalated</option>
             </select>
           </div>
 
-          <div>
-            <label>Follow-up (optional)</label>
-            <input
-              type="datetime-local"
-              value={followUpAt}
-              onChange={(e) => setFollowUpAt(e.target.value)}
-            />
+          <div className="right">
+            <button className="primary" type="submit">Save Call</button>
           </div>
-        </div>
-
-        <div>
-          <label>Summary *</label>
-          <textarea
-            required
-            rows={4}
-            placeholder="What was discussed?"
-            value={summary}
-            onChange={(e) => setSummary(e.target.value)}
-          />
-        </div>
-
-        <div>
-          <label>Outcome</label>
-          <select value={outcome} onChange={(e) => setOutcome(e.target.value)}>
-            <option value="">— Select —</option>
-            <option value="left_message">Left message</option>
-            <option value="resolved">Resolved</option>
-            <option value="needs_followup">Needs follow-up</option>
-            <option value="escalated">Escalated</option>
-          </select>
-        </div>
-
-        <div className="right">
-          <button className="primary" type="submit">
-            Save Call
-          </button>
-        </div>
-      </form>
+        </form>
+      </section>
     </div>
   );
 }
