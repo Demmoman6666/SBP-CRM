@@ -2,6 +2,10 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import Link from "next/link";
+import Image from "next/image";
+
+// ⬇️ Put your logo file at public/sbp-logo.png
+import sbpLogo from "@/public/sbp-logo.png";
 
 export const metadata: Metadata = {
   title: "Salon Brands Pro CRM",
@@ -33,8 +37,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             }}
           >
             <Link href="/" className="row" style={{ alignItems: "center", gap: 10 }}>
-              {/* Keep logo proportions via .brand-logo in globals.css */}
-              <img src="/logo-sbp.png" alt="Salon Brands Pro" className="brand-logo" />
+              <Image
+                src={sbpLogo}
+                alt="Salon Brands Pro"
+                className="brand-logo"
+                priority
+              />
             </Link>
 
             <nav className="row" style={{ alignItems: "center", gap: 12 }}>
@@ -59,10 +67,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </header>
 
-        <main
-          className="container"
-          style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}
-        >
+        <main className="container" style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
           {children}
         </main>
 
