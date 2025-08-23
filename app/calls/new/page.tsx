@@ -61,9 +61,10 @@ export default function NewCallPage() {
   const [customerQuery, setCustomerQuery] = useState("");
   const [customerOpts, setCustomerOpts] = useState<CustomerLite[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerLite | null>(null);
-  const addressBlock = useMemo(() => (selectedCustomer ? joinAddressLines(selectedCustomer) : ""), [selectedCustomer]) as
-    | ""
-    | { lines: string; contact: string };
+  const addressBlock = useMemo(
+    () => (selectedCustomer ? joinAddressLines(selectedCustomer) : ""),
+    [selectedCustomer]
+  ) as "" | { lines: string; contact: string };
 
   // sales reps
   const [reps, setReps] = useState<SalesRepLite[]>([]);
@@ -79,8 +80,13 @@ export default function NewCallPage() {
   // NEW: timing + duration + appointment booked
   const [startTime, setStartTime] = useState<string>(""); // HH:mm
   const [endTime, setEndTime] = useState<string>(""); // HH:mm
-  const totalDuration = useMemo(() => minutesBetween(startTime, endTime), [startTime, endTime]);
+  const [duration, setDuration] = useState<number | null>(null);
   const [appointmentBooked, setAppointmentBooked] = useState<null | boolean>(null);
+
+  // live duration calc whenever either time changes
+  useEffect(() => {
+    setDuration(minutesBetween(startTime, endTime));
+  }, [startTime, endTime]);
 
   // fetch reps once
   useEffect(() => {
@@ -125,7 +131,6 @@ export default function NewCallPage() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
 
-    // validations
     if (isExisting === null) return alert("Please choose if this is an existing customer.");
     if (!salesRep) return alert("Please select a Sales Rep.");
     if (!summary.trim()) return alert("Please add a summary.");
@@ -147,14 +152,14 @@ export default function NewCallPage() {
       // NEW:
       startTime: startTime || null,
       endTime: endTime || null,
-      appointmentBooked: appointmentBooked === true ? "true" : appointmentBooked === false ? "false" : "",
+      appointmentBooked:
+        appointmentBooked === true ? "true" : appointmentBooked === false ? "false" : "",
     };
 
     if (isExisting) {
       if (!selectedCustomer?.id) return alert("Please pick a customer from the list.");
       payload.customerId = selectedCustomer.id;
     } else {
-      // free entry (you could also add free fields here if you want to capture a name/phone)
       payload.customerName = customerQuery || null;
     }
 
@@ -165,13 +170,10 @@ export default function NewCallPage() {
     });
 
     const data = await r.json();
-    if (!r.ok) {
-      return alert(data?.error || "Failed to save call");
-    }
+    if (!r.ok) return alert(data?.error || "Failed to save call");
 
-    if (data.redirectTo) {
-      window.location.href = data.redirectTo as string;
-    } else {
+    if (data.redirectTo) window.location.href = data.redirectTo as string;
+    else {
       alert("Saved.");
       window.location.href = "/";
     }
@@ -338,15 +340,25 @@ export default function NewCallPage() {
             <div className="grid" style={{ gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
               <div>
                 <label>Start Time</label>
-                <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+                <input
+                  type="time"
+                  step={60}
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                />
               </div>
               <div>
                 <label>Finish Time</label>
-                <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+                <input
+                  type="time"
+                  step={60}
+                  value={endTime}
+                  onChange={(e) => setEndTime(e.target.value)}
+                />
               </div>
               <div>
                 <label>Total Duration (mins)</label>
-                <input value={totalDuration ?? ""} readOnly placeholder="—" />
+                <input value={duration ?? ""} readOnly placeholder="—" />
               </div>
             </div>
 
