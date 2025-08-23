@@ -5,19 +5,19 @@ export default function HomePage() {
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <h2>Welcome to the Salon Brands Pro CRM</h2>
-        <p className="small">Use the actions below to get started.</p>
+        <h1>Welcome to the Salon Brands Pro CRM</h1>
+        <p className="small">Use the tiles below to get started.</p>
       </section>
 
       <section className="home-actions">
-        <Link href="/customers" className="action-tile" aria-label="Go to Customers">
-          <div className="action-title">Customers</div>
-          <div className="action-sub">Browse & search</div>
+        <Link href="/customers/new" className="action-tile">
+          <div className="action-title">New Customer</div>
+          <div className="action-sub">Create a new customer profile</div>
         </Link>
 
-        <Link href="/customers/new" className="action-tile" aria-label="Create a new customer">
-          <div className="action-title">New Customer</div>
-          <div className="action-sub">Create a profile</div>
+        <Link href="/customers" className="action-tile">
+          <div className="action-title">Customers</div>
+          <div className="action-sub">Search & update customers</div>
         </Link>
       </section>
     </div>
