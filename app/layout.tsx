@@ -22,25 +22,40 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             borderBottom: "1px solid #eee",
           }}
         >
+          {/* 3-column grid: [spacer] [centered logo] [settings] */}
           <div
-            className="container row"
+            className="container"
             style={{
-              justifyContent: "space-between",
+              display: "grid",
+              gridTemplateColumns: "1fr auto 1fr",
               alignItems: "center",
-              gap: 12,
-              padding: "10px 16px",
+              padding: "12px 16px",
               maxWidth: 1100,
               margin: "0 auto",
             }}
           >
-            <Link href="/" className="row" style={{ alignItems: "center", gap: 10 }}>
-              {/* NOTE: file lives at /public/sbp-logo.png */}
-              <img src="/sbp-logo.png" alt="Salon Brands Pro" className="brand-logo" />
-              <span className="sr-only">Salon Brands Pro CRM</span>
+            <div /> {/* left spacer */}
+
+            <Link
+              href="/"
+              style={{
+                justifySelf: "center",
+                display: "inline-flex",
+                alignItems: "center",
+              }}
+            >
+              {/* Bigger, centered logo */}
+              <img
+                src="/sbp-logo.png"
+                alt="Salon Brands Pro"
+                className="brand-logo"
+                style={{ height: 84, width: "auto" }}
+              />
             </Link>
 
-            {/* Settings menu (Add Sales Rep / Add Brand) */}
-            <SettingsMenu />
+            <div style={{ justifySelf: "end" }}>
+              <SettingsMenu />
+            </div>
           </div>
         </header>
 
