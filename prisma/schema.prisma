@@ -33,6 +33,7 @@ model Customer {
   // Relations
   visits               Visit[]
   notesLog             Note[]
+  callLogs             CallLog[]   // <-- NEW
 
   @@index([customerEmailAddress])
 }
@@ -79,4 +80,37 @@ model Brand {
   id        String   @id @default(cuid())
   name      String   @unique
   createdAt DateTime @default(now())
+}
+
+/* ======================
+   NEW: CallLog model
+   ====================== */
+model CallLog {
+  id                 String   @id @default(cuid())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  // Required split: is it about an existing customer?
+  isExistingCustomer Boolean
+
+  // If existing customer
+  customerId         String?
+  customer           Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  // If not existing, keep a lead-style snapshot
+  customerName       String?
+  contactName        String?
+  contactPhone       String?
+  contactEmail       String?
+
+  // Common meta
+  callType           String?
+  summary            String?
+  outcome            String?
+  staff              String?   // Sales Rep (by name)
+  followUpRequired   Boolean   @default(false)
+  followUpAt         DateTime?
+
+  @@index([createdAt])
+  @@index([isExistingCustomer, customerId])
 }
