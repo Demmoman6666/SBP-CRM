@@ -2,30 +2,104 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 
+const DOW: Array<"Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"> = [
+  "Mon",
+  "Tue",
+  "Wed",
+  "Thu",
+  "Fri",
+  "Sat",
+  "Sun",
+];
+
+type OpeningForDay = { open?: boolean; from?: string | null; to?: string | null };
+type OpeningHoursObj = Record<string, OpeningForDay>;
+
+/* Helpers to present address & opening hours nicely */
+function addressLines(c: any): string[] {
+  return [
+    c.addressLine1,
+    c.addressLine2,
+    c.town,
+    c.county,
+    c.postCode,
+  ].filter(Boolean);
+}
+
+function parseOpeningHours(src?: string | null): OpeningHoursObj | null {
+  if (!src) return null;
+  try {
+    const obj = JSON.parse(src);
+    if (obj && typeof obj === "object") return obj as OpeningHoursObj;
+  } catch {}
+  return null;
+}
+
+function prettyTime(s?: string | null): string | null {
+  if (!s) return null;
+  const t = String(s).trim();
+  // accept HH:mm or H:mm
+  return /^\d{1,2}:\d{2}$/.test(t) ? t : null;
+}
+
+function renderOpeningHours(openingHours?: string | null) {
+  const parsed = parseOpeningHours(openingHours);
+  if (!parsed) {
+    // Fallback: show raw text or dash
+    return <p className="small">{openingHours || "-"}</p>;
+  }
+
+  return (
+    <div
+      className="small"
+      style={{
+        display: "grid",
+        gridTemplateColumns: "56px 1fr",
+        rowGap: 4,
+        columnGap: 10,
+        alignItems: "baseline",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {DOW.map((d) => {
+        const it: OpeningForDay = parsed[d] || {};
+        const isOpen = !!it.open;
+        const from = prettyTime(it.from);
+        const to = prettyTime(it.to);
+
+        let text = "Closed";
+        if (isOpen) {
+          text = from && to ? `${from} – ${to}` : "Open";
+        }
+
+        return (
+          <div key={d} style={{ display: "contents" }}>
+            <div style={{ color: "var(--muted)" }}>{d}</div>
+            <div>{text}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default async function CustomerDetail({ params }: { params: { id: string } }) {
-  // Fetch the customer + related logs
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
     include: {
-      visits:   { orderBy: { date: "desc" } },
+      visits: { orderBy: { date: "desc" } },
       notesLog: { orderBy: { createdAt: "desc" } },
-      callLogs: { orderBy: { createdAt: "desc" } }, // already in your code
+      callLogs: { orderBy: { createdAt: "desc" } },
     },
   });
 
   if (!customer) return <div className="card">Not found.</div>;
 
-  // Fetch Sales Reps for the dropdowns
-  const salesReps = await prisma.salesRep.findMany({
-    orderBy: { name: "asc" },
-    select: { id: true, name: true },
-  });
-
-  // Server actions
+  /* Server actions */
   async function addNote(formData: FormData) {
     "use server";
-    const text  = String(formData.get("text") || "");
-    const staff = String(formData.get("staff") || ""); // rep name
+    const text = String(formData.get("text") || "");
+    const staff = String(formData.get("staff") || "");
     if (!text.trim()) return;
     await prisma.note.create({
       data: { text, staff: staff || null, customerId: customer.id },
@@ -37,7 +111,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     "use server";
     const dateStr = String(formData.get("date") || "");
     const summary = String(formData.get("summary") || "");
-    const staff   = String(formData.get("staff") || ""); // rep name
+    const staff = String(formData.get("staff") || "");
     await prisma.visit.create({
       data: {
         customerId: customer.id,
@@ -49,15 +123,10 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     revalidatePath(`/customers/${customer.id}`);
   }
 
-  const address = [
-    customer.addressLine1,
-    customer.addressLine2,
-    customer.town,
-    customer.county,
-    customer.postCode,
-  ]
-    .filter(Boolean)
-    .join(", ");
+  const contactBlock =
+    [customer.customerEmailAddress, customer.customerNumber]
+      .filter(Boolean)
+      .join("\n") || "-";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -67,30 +136,38 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         <p className="small">{customer.customerName}</p>
 
         <div className="grid grid-2" style={{ marginTop: 10 }}>
+          {/* Contact */}
           <div>
             <b>Contact</b>
-            <p className="small">
-              {customer.customerEmailAddress || "-"}
-              <br />
-              {customer.customerNumber || "-"}
+            <p className="small" style={{ whiteSpace: "pre-line", marginTop: 6 }}>
+              {contactBlock}
             </p>
           </div>
 
+          {/* Location (stacked lines) */}
           <div>
             <b>Location</b>
-            <p className="small">{address || "-"}</p>
+            <p className="small" style={{ whiteSpace: "pre-line", marginTop: 6 }}>
+              {addressLines(customer).length ? addressLines(customer).join("\n") : "-"}
+            </p>
           </div>
 
+          {/* Salon meta */}
           <div>
             <b>Salon</b>
-            <p className="small">Chairs: {customer.numberOfChairs ?? "-"}</p>
-            <p className="small">Brands Used: {customer.brandsInterestedIn || "-"}</p>
-            <p className="small">Sales Rep: {customer.salesRep || "-"}</p>
+            <p className="small" style={{ marginTop: 6 }}>
+              Chairs: {customer.numberOfChairs ?? "-"}
+              <br />
+              Brands Used: {customer.brandsInterestedIn || "-"}
+              <br />
+              Sales Rep: {customer.salesRep || "-"}
+            </p>
           </div>
 
+          {/* Opening hours (pretty) */}
           <div>
             <b>Opening Hours</b>
-            <p className="small">{customer.openingHours || "-"}</p>
+            <div style={{ marginTop: 6 }}>{renderOpeningHours(customer.openingHours)}</div>
           </div>
         </div>
 
@@ -109,12 +186,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           <form action={addNote} className="grid" style={{ gap: 8 }}>
             <div>
               <label>Sales Rep (optional)</label>
-              <select name="staff" defaultValue="">
-                <option value="">— Select Sales Rep —</option>
-                {salesReps.map(r => (
-                  <option key={r.id} value={r.name}>{r.name}</option>
-                ))}
-              </select>
+              <input name="staff" placeholder="Your name" />
             </div>
             <div>
               <label>Note</label>
@@ -158,12 +230,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
               </div>
               <div>
                 <label>Sales Rep (optional)</label>
-                <select name="staff" defaultValue="">
-                  <option value="">— Select Sales Rep —</option>
-                  {salesReps.map(r => (
-                    <option key={r.id} value={r.name}>{r.name}</option>
-                  ))}
-                </select>
+                <input name="staff" placeholder="Your name" />
               </div>
             </div>
             <div>
@@ -199,7 +266,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         </div>
       </div>
 
-      {/* Call Logs */}
+      {/* Call logs */}
       <div className="card">
         <h3>Call Logs</h3>
         {customer.callLogs.length === 0 ? (
@@ -221,9 +288,10 @@ export default async function CustomerDetail({ params }: { params: { id: string 
                   {c.staff ? ` • ${c.staff}` : ""}
                   {c.callType ? ` • ${c.callType}` : ""}
                   {c.outcome ? ` • ${c.outcome}` : ""}
-                  {c.followUpAt ? ` • follow-up ${new Date(c.followUpAt).toLocaleString()}` : ""}
+                  {c.followUpAt ? ` • follow-up ${new Date(c.followUpAt as any).toLocaleString()}` : ""}
                 </div>
                 <div>{c.summary || "-"}</div>
+
                 {!c.isExistingCustomer && (
                   <div className="small muted">
                     Lead: {c.customerName || "-"}
