@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-/* helpers */
+/* ---------------- helpers ---------------- */
 async function readBody(req: Request) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
 
@@ -31,50 +31,103 @@ const toBool = (v: unknown) => {
   return ["1", "true", "yes", "on"].includes(s);
 };
 
-const toDate = (v: unknown) => {
-  if (!v) return null;
-  const d = new Date(String(v));
-  return isNaN(d.getTime()) ? null : d;
-};
+const isCuid = (s: string) => /^c[a-z0-9]{24,}$/i.test(s);
 
-/* -----------------------------
-   POST /api/calls
-   Save a call log (JSON or Form)
------------------------------- */
+/** Accepts:
+ *  - 2025-08-29T21:02
+ *  - 29/08/2025 21:02
+ *  - 29/08/2025, 21:02
+ *  - 29-08-2025 21:02
+ */
+function parseFollowUp(val: unknown): Date | null {
+  if (!val) return null;
+  const raw = String(val).trim();
+
+  // try native first
+  const d1 = new Date(raw);
+  if (!isNaN(d1.getTime())) return d1;
+
+  // try dd/mm/yyyy hh:mm
+  const m = raw.match(
+    /^(\d{2})[\/\-](\d{2})[\/\-](\d{4})(?:[ ,T]+(\d{2}):(\d{2}))?$/
+  );
+  if (m) {
+    const [, dd, mm, yyyy, hh = "00", min = "00"] = m;
+    // use local time; adjust if you prefer UTC:
+    const iso = `${yyyy}-${mm}-${dd}T${hh}:${min}:00`;
+    const d2 = new Date(iso);
+    if (!isNaN(d2.getTime())) return d2;
+  }
+  return null;
+}
+
+/* --------------- POST /api/calls --------------- */
 export async function POST(req: Request) {
   try {
     const body: any = await readBody(req);
 
-    // required fields
-    const isExisting = toBool(body.isExistingCustomer);
-    if (isExisting === null)
-      return NextResponse.json({ error: "Please choose if this is an existing customer." }, { status: 400 });
+    // required: existing? (yes/no)
+    const isExisting =
+      toBool(body.isExistingCustomer ?? body.existingCustomer ?? body.existing);
+    if (isExisting === null) {
+      return NextResponse.json(
+        { error: "Please choose if this is an existing customer." },
+        { status: 400 }
+      );
+    }
 
-    const staff = (body.salesRep || body.staff || "").toString().trim();
-    if (!staff)
-      return NextResponse.json({ error: "Sales Rep is required." }, { status: 400 });
+    // required: sales rep (staff)
+    const staff = String(body.salesRep ?? body.staff ?? "").trim();
+    if (!staff) {
+      return NextResponse.json(
+        { error: "Sales Rep is required." },
+        { status: 400 }
+      );
+    }
 
-    const summary = (body.summary || "").toString().trim();
-    if (!summary)
-      return NextResponse.json({ error: "Summary is required." }, { status: 400 });
+    // required: summary
+    const summary = String(body.summary ?? "").trim();
+    if (!summary) {
+      return NextResponse.json(
+        { error: "Summary is required." },
+        { status: 400 }
+      );
+    }
 
-    // if existing, need a customerId
+    // if existing, we need a valid customerId (cuid)
     let customerId: string | null = null;
     if (isExisting) {
-      customerId = (body.customerId || body.customer || "").toString().trim() || null;
-      if (!customerId)
-        return NextResponse.json({ error: "Pick a customer from the list." }, { status: 400 });
+      // prefer explicit field, otherwise fall back to "customer"
+      const candidate = String(
+        body.customerId ?? body.customer ?? ""
+      ).trim();
+
+      if (!candidate || !isCuid(candidate)) {
+        return NextResponse.json(
+          {
+            error:
+              "Pick a customer from the list (don’t type free text) so we can attach the call to the account.",
+          },
+          { status: 400 }
+        );
+      }
+      customerId = candidate;
     }
 
     // optional fields
     const callType = body.callType ? String(body.callType) : null;
-    const outcome  = body.outcome ? String(body.outcome) : null;
-    const followUpAt = toDate(body.followUpAt);
+    const outcome = body.outcome ? String(body.outcome) : null;
+    const followUpAt = parseFollowUp(
+      body.followUpAt ?? body.followUp ?? body.followupAt
+    );
 
-    // lead-style snapshot if NOT existing (optional, extend if you wish)
-    const customerName  = !isExisting && body.customerName ? String(body.customerName) : null;
-    const contactPhone  = !isExisting && body.contactPhone ? String(body.contactPhone) : null;
-    const contactEmail  = !isExisting && body.contactEmail ? String(body.contactEmail) : null;
+    // if NOT existing, keep a small lead snapshot (optional)
+    const customerName =
+      !isExisting && body.customerName ? String(body.customerName) : null;
+    const contactPhone =
+      !isExisting && body.contactPhone ? String(body.contactPhone) : null;
+    const contactEmail =
+      !isExisting && body.contactEmail ? String(body.contactEmail) : null;
 
     const created = await prisma.callLog.create({
       data: {
@@ -93,7 +146,6 @@ export async function POST(req: Request) {
       select: { id: true, customerId: true },
     });
 
-    // return JSON (client page can redirect to the customer if we have one)
     return NextResponse.json(
       {
         ok: true,
@@ -105,21 +157,20 @@ export async function POST(req: Request) {
     );
   } catch (err: any) {
     console.error("Create call error:", err);
-    return NextResponse.json({ error: err?.message ?? "Internal error" }, { status: 500 });
+    return NextResponse.json(
+      { error: err?.message ?? "Internal error" },
+      { status: 500 }
+    );
   }
 }
 
-/* -----------------------------
-   GET /api/calls?customerId=...
-   (optional listing for debugging)
------------------------------- */
+/* --------------- GET /api/calls?customerId=... --------------- */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const customerId = searchParams.get("customerId");
+  const customerId = searchParams.get("customerId") || undefined;
 
-  const where = customerId ? { customerId } : {};
   const calls = await prisma.callLog.findMany({
-    where,
+    where: { ...(customerId ? { customerId } : {}) },
     orderBy: { createdAt: "desc" },
   });
 
