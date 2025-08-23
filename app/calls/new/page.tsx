@@ -1,410 +1,413 @@
 // app/calls/new/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 type CustomerLite = {
   id: string;
-  salonName: string | null;
-  customerName: string | null;
-  addressLine1: string | null;
-  addressLine2: string | null;
-  town: string | null;
-  county: string | null;
-  postCode: string | null;
-  customerEmailAddress: string | null;
-  customerNumber: string | null;
-  customerTelephone: string | null;
+  salonName: string;
+  customerName: string;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  town?: string | null;
+  county?: string | null;
+  postCode?: string | null;
+  customerEmailAddress?: string | null;
+  customerNumber?: string | null;
+  customerTelephone?: string | null;
 };
 
 type SalesRepLite = { id: string; name: string };
 
-export default function LogCallPage() {
-  // form state
-  const [isExisting, setIsExisting] = useState<boolean | null>(null);
+function joinAddressLines(c?: CustomerLite | null) {
+  if (!c) return "";
+  const lines = [
+    c.addressLine1,
+    c.addressLine2,
+    c.town,
+    c.county,
+    c.postCode,
+  ].filter(Boolean);
+  const contact = [c.customerEmailAddress, c.customerNumber || c.customerTelephone]
+    .filter(Boolean)
+    .join(" • ");
+  return { lines: lines.join("\n"), contact };
+}
+
+function minutesBetween(start?: string, end?: string): number | null {
+  if (!start || !end) return null;
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  if (
+    [sh, sm, eh, em].some((n) => Number.isNaN(n) || n! < 0) ||
+    sh! > 23 ||
+    eh! > 23 ||
+    sm! > 59 ||
+    em! > 59
+  )
+    return null;
+  const s = sh! * 60 + sm!;
+  const e = eh! * 60 + em!;
+  const diff = e - s;
+  return diff < 0 ? 0 : diff;
+}
+
+export default function NewCallPage() {
+  // existing customer?
+  const [isExisting, setIsExisting] = useState<null | boolean>(null);
+
+  // predictive search
   const [customerQuery, setCustomerQuery] = useState("");
-  const [customerId, setCustomerId] = useState<string | null>(null);
-
-  // typed address block (ALWAYS an object)
-  const [addressBlock, setAddressBlock] = useState<{ lines: string; contact: string }>({
-    lines: "",
-    contact: "",
-  });
-
-  // suggestions
-  const [suggestions, setSuggestions] = useState<CustomerLite[]>([]);
-  const [showSuggest, setShowSuggest] = useState(false);
-  const [searching, setSearching] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const [customerOpts, setCustomerOpts] = useState<CustomerLite[]>([]);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerLite | null>(null);
+  const addressBlock = useMemo(() => (selectedCustomer ? joinAddressLines(selectedCustomer) : ""), [selectedCustomer]) as
+    | ""
+    | { lines: string; contact: string };
 
   // sales reps
-  const [salesReps, setSalesReps] = useState<SalesRepLite[]>([]);
-  const [loadingReps, setLoadingReps] = useState(true);
+  const [reps, setReps] = useState<SalesRepLite[]>([]);
+  const [salesRep, setSalesRep] = useState("");
 
-  // ui messages
-  const [error, setError] = useState<string | null>(null);
-  const [okMsg, setOkMsg] = useState<string | null>(null);
-  const formRef = useRef<HTMLFormElement | null>(null);
+  // call details
+  const [callType, setCallType] = useState<string>("");
+  const [outcome, setOutcome] = useState<string>("");
+  const [followDate, setFollowDate] = useState<string>(""); // yyyy-mm-dd
+  const [followTime, setFollowTime] = useState<string>(""); // HH:mm
+  const [summary, setSummary] = useState<string>("");
 
-  // load reps once
+  // NEW: timing + duration + appointment booked
+  const [startTime, setStartTime] = useState<string>(""); // HH:mm
+  const [endTime, setEndTime] = useState<string>(""); // HH:mm
+  const totalDuration = useMemo(() => minutesBetween(startTime, endTime), [startTime, endTime]);
+  const [appointmentBooked, setAppointmentBooked] = useState<null | boolean>(null);
+
+  // fetch reps once
   useEffect(() => {
-    let mounted = true;
     (async () => {
       try {
-        const res = await fetch("/api/sales-reps", { cache: "no-store" });
-        const data = (await res.json()) as SalesRepLite[] | { error?: string };
-        if (mounted) {
-          if (Array.isArray(data)) setSalesReps(data);
-          setLoadingReps(false);
+        const r = await fetch("/api/sales-reps", { cache: "no-store" });
+        if (r.ok) {
+          const data: SalesRepLite[] = await r.json();
+          setReps(data);
         }
-      } catch {
-        if (mounted) setLoadingReps(false);
-      }
+      } catch {}
     })();
-    return () => {
-      mounted = false;
-    };
   }, []);
 
-  // debounce predictive search
+  // predictive search: fetch when typing (existing only)
   useEffect(() => {
-    if (!isExisting) return; // only when "Yes"
-    if (customerQuery.trim().length < 2) {
-      setSuggestions([]);
+    if (isExisting !== true) return;
+    const q = customerQuery.trim();
+    if (!q) {
+      setCustomerOpts([]);
       return;
     }
-
-    setSearching(true);
-    abortRef.current?.abort();
     const ctrl = new AbortController();
-    abortRef.current = ctrl;
-
-    const t = setTimeout(async () => {
+    (async () => {
       try {
-        const u = new URL("/api/customers", window.location.origin);
-        u.searchParams.set("search", customerQuery.trim());
-        u.searchParams.set("take", "10");
-
-        const res = await fetch(u.toString(), {
+        const r = await fetch(`/api/customers?q=${encodeURIComponent(q)}&take=8`, {
           signal: ctrl.signal,
-          headers: { "accept": "application/json" },
           cache: "no-store",
         });
-        if (!res.ok) throw new Error("Search failed");
-        const data = (await res.json()) as CustomerLite[];
-        setSuggestions(data);
-      } catch {
-        /* ignore */
-      } finally {
-        setSearching(false);
-      }
-    }, 250);
-
-    return () => {
-      clearTimeout(t);
-      ctrl.abort();
-    };
+        if (r.ok) setCustomerOpts(await r.json());
+      } catch {}
+    })();
+    return () => ctrl.abort();
   }, [customerQuery, isExisting]);
 
-  const pickLabel = (c: CustomerLite) =>
-    [c.salonName, c.customerName].filter(Boolean).join(" — ") || "(unnamed)";
-
   function handlePickCustomer(c: CustomerLite) {
-    setCustomerId(c.id);
-    setCustomerQuery(pickLabel(c));
-    setShowSuggest(false);
-    // Fill address & contact block
-    setAddressBlock({
-      lines: [c.addressLine1, c.addressLine2, c.town, c.county, c.postCode]
-        .filter(Boolean)
-        .join("\n"),
-      contact: [c.customerNumber || c.customerTelephone, c.customerEmailAddress]
-        .filter(Boolean)
-        .join(" • "),
-    });
+    setSelectedCustomer(c);
+    setCustomerQuery(`${c.salonName} — ${c.customerName}`);
+    setCustomerOpts([]);
   }
 
-  // Reset customer details if they toggle "No"
-  useEffect(() => {
-    if (isExisting === false) {
-      setCustomerId(null);
-      setCustomerQuery("");
-      setSuggestions([]);
-      setAddressBlock({ lines: "", contact: "" });
-      setShowSuggest(false);
-    }
-  }, [isExisting]);
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    setOkMsg(null);
-
-    const fd = new FormData(e.currentTarget);
 
     // validations
-    if (isExisting === null) {
-      setError("Please choose if this is an existing customer.");
-      return;
-    }
-    const salesRep = String(fd.get("salesRep") || "").trim();
-    if (!salesRep) {
-      setError("Sales Rep is required.");
-      return;
-    }
-    const summary = String(fd.get("summary") || "").trim();
-    if (!summary) {
-      setError("Summary is required.");
-      return;
+    if (isExisting === null) return alert("Please choose if this is an existing customer.");
+    if (!salesRep) return alert("Please select a Sales Rep.");
+    if (!summary.trim()) return alert("Please add a summary.");
+
+    // build follow-up ISO if provided
+    let followUpAt: string | undefined;
+    if (followDate) {
+      const time = followTime || "00:00";
+      followUpAt = `${followDate}T${time}`;
     }
 
-    // payload
     const payload: any = {
-      isExistingCustomer: isExisting,
+      isExistingCustomer: isExisting ? "true" : "false",
       salesRep,
-      callType: String(fd.get("callType") || "") || null,
-      outcome: String(fd.get("outcome") || "") || null,
-      followUpAt: String(fd.get("followUpAt") || "") || null, // API will parse
+      callType: callType || null,
+      outcome: outcome || null,
       summary,
+      followUpAt,
+      // NEW:
+      startTime: startTime || null,
+      endTime: endTime || null,
+      appointmentBooked: appointmentBooked === true ? "true" : appointmentBooked === false ? "false" : "",
     };
 
     if (isExisting) {
-      if (!customerId) {
-        setError("Pick a customer from the list.");
-        return;
-      }
-      payload.customerId = customerId;
+      if (!selectedCustomer?.id) return alert("Please pick a customer from the list.");
+      payload.customerId = selectedCustomer.id;
     } else {
-      payload.customerName = String(fd.get("customerName") || "") || null;
-      payload.contactPhone = String(fd.get("contactPhone") || "") || null;
-      payload.contactEmail = String(fd.get("contactEmail") || "") || null;
+      // free entry (you could also add free fields here if you want to capture a name/phone)
+      payload.customerName = customerQuery || null;
     }
 
-    try {
-      const res = await fetch("/api/calls", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const out = await res.json();
+    const r = await fetch("/api/calls", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
 
-      if (!res.ok) {
-        setError(out?.error || "Failed to save call.");
-        return;
-      }
+    const data = await r.json();
+    if (!r.ok) {
+      return alert(data?.error || "Failed to save call");
+    }
 
-      // success
-      if (out?.redirectTo) {
-        window.location.href = out.redirectTo as string;
-        return;
-      }
-      setOkMsg("Call saved.");
-      formRef.current?.reset();
-      setIsExisting(null);
-      setCustomerId(null);
-      setCustomerQuery("");
-      setAddressBlock({ lines: "", contact: "" });
-      setSuggestions([]);
-      setShowSuggest(false);
-    } catch (err: any) {
-      setError(err?.message || "Failed to save call.");
+    if (data.redirectTo) {
+      window.location.href = data.redirectTo as string;
+    } else {
+      alert("Saved.");
+      window.location.href = "/";
     }
   }
 
-  const canSearch = isExisting === true;
-
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <h1>Log Call</h1>
-        <Link href="/" className="small">← Back</Link>
-      </div>
+      <section className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h1>Log Call</h1>
+          <Link href="/" className="small" style={{ textDecoration: "none" }}>
+            ← Back
+          </Link>
+        </div>
+      </section>
 
-      <form ref={formRef} onSubmit={handleSubmit} className="card grid" style={{ gap: 12 }}>
-        {/* Existing customer? */}
-        <div className="grid grid-2">
-          <div>
-            <label>Is this an existing customer? <span className="small muted">(required)</span></label>
-            <div className="row" style={{ gap: 16 }}>
-              <label className="row" style={{ alignItems: "center", gap: 6 }}>
-                <input
-                  type="radio"
-                  name="existing"
-                  value="yes"
-                  checked={isExisting === true}
-                  onChange={() => setIsExisting(true)}
-                />
-                Yes
-              </label>
-              <label className="row" style={{ alignItems: "center", gap: 6 }}>
-                <input
-                  type="radio"
-                  name="existing"
-                  value="no"
-                  checked={isExisting === false}
-                  onChange={() => setIsExisting(false)}
-                />
-                No
-              </label>
+      <section className="card">
+        <form className="grid" style={{ gap: 12 }} onSubmit={onSubmit}>
+          <div className="grid grid-2">
+            {/* Existing? */}
+            <div>
+              <label>Is this an existing customer? (required)</label>
+              <div className="row" style={{ gap: 16, marginTop: 6 }}>
+                <label className="row" style={{ gap: 6 }}>
+                  <input
+                    type="radio"
+                    name="existing"
+                    checked={isExisting === true}
+                    onChange={() => {
+                      setIsExisting(true);
+                      setSelectedCustomer(null);
+                      setCustomerQuery("");
+                      setCustomerOpts([]);
+                    }}
+                  />
+                  Yes
+                </label>
+                <label className="row" style={{ gap: 6 }}>
+                  <input
+                    type="radio"
+                    name="existing"
+                    checked={isExisting === false}
+                    onChange={() => {
+                      setIsExisting(false);
+                      setSelectedCustomer(null);
+                      setCustomerOpts([]);
+                    }}
+                  />
+                  No
+                </label>
+              </div>
+            </div>
+
+            {/* Sales Rep */}
+            <div>
+              <label>Sales Rep (required)</label>
+              <select
+                value={salesRep}
+                onChange={(e) => setSalesRep(e.target.value)}
+                required
+                style={{ width: "100%" }}
+              >
+                <option value="">— Select a Sales Rep —</option>
+                {reps.map((r) => (
+                  <option key={r.id} value={r.name}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
-          {/* Sales Rep (required) */}
-          <div>
-            <label>Sales Rep <span className="small muted">(required)</span></label>
-            <select name="salesRep" required defaultValue="">
-              <option value="" disabled>
-                {loadingReps ? "Loading…" : "Select a Sales Rep"}
-              </option>
-              {salesReps.map((r) => (
-                <option key={r.id} value={r.name}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Existing → predictive search + address */}
-        {canSearch ? (
-          <div className="grid grid-2" style={{ alignItems: "start" }}>
-            <div style={{ position: "relative" }}>
-              <label>Customer (type to search)</label>
-              <input
-                type="search"
-                placeholder="e.g. Salon name or customer name"
-                value={customerQuery}
-                onChange={(e) => {
-                  setCustomerQuery(e.target.value);
-                  setShowSuggest(true);
-                }}
-                onFocus={() => setShowSuggest(true)}
-                autoComplete="off"
-              />
-              {/* Hidden field that mirrors selected id (useful for debugging) */}
-              <input type="hidden" name="customerId" value={customerId || ""} />
-
-              {/* Suggestion panel */}
-              {showSuggest && (customerQuery.trim().length >= 2) && (
-                <div
-                  className="card"
-                  style={{
-                    position: "absolute",
-                    zIndex: 30,
-                    width: "100%",
-                    marginTop: 6,
-                    maxHeight: 260,
-                    overflowY: "auto",
-                    padding: 0,
+          {/* Customer picker / free entry */}
+          {isExisting === true && (
+            <div>
+              <label>Customer *</label>
+              <div style={{ position: "relative" }}>
+                <input
+                  value={customerQuery}
+                  onChange={(e) => {
+                    setCustomerQuery(e.target.value);
+                    setSelectedCustomer(null);
                   }}
-                >
-                  <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
-                    <b>{searching ? "Searching…" : "Results"}</b>
-                  </div>
-
-                  {suggestions.length === 0 ? (
-                    <div className="small" style={{ padding: "10px 12px" }}>
-                      {searching ? "…" : "No matches"}
-                    </div>
-                  ) : (
-                    suggestions.map((c) => (
-                      <button
+                  placeholder="Type to search…"
+                  required
+                />
+                {customerOpts.length > 0 && (
+                  <div
+                    className="card"
+                    style={{
+                      position: "absolute",
+                      zIndex: 20,
+                      width: "100%",
+                      marginTop: 6,
+                      maxHeight: 260,
+                      overflowY: "auto",
+                    }}
+                  >
+                    {customerOpts.map((c) => (
+                      <div
                         key={c.id}
-                        type="button"
-                        className="row"
                         onClick={() => handlePickCustomer(c)}
-                        style={{
-                          width: "100%",
-                          textAlign: "left",
-                          gap: 8,
-                          padding: "10px 12px",
-                          border: "none",
-                          background: "transparent",
-                          cursor: "pointer",
-                        }}
+                        style={{ padding: "8px 10px", cursor: "pointer" }}
                       >
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontWeight: 600 }}>{pickLabel(c)}</div>
-                          <div className="small muted">
-                            {[c.addressLine1, c.town, c.county, c.postCode]
-                              .filter(Boolean)
-                              .join(", ")}
-                          </div>
+                        <div style={{ fontWeight: 600 }}>
+                          {c.salonName} — {c.customerName}
                         </div>
-                      </button>
-                    ))
-                  )}
-
-                  <div className="small" style={{ padding: "8px 12px", borderTop: "1px solid var(--border)" }}>
-                    Click a result to select.
+                        <div className="small muted">
+                          {[c.town, c.county, c.postCode].filter(Boolean).join(", ")}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {selectedCustomer && (
+                <div className="card" style={{ marginTop: 8 }}>
+                  <b>Customer details</b>
+                  <div className="small" style={{ marginTop: 6, whiteSpace: "pre-line" }}>
+                    {(addressBlock && (addressBlock as any).lines) || "-"}
+                    <br />
+                    {(addressBlock && (addressBlock as any).contact) || "-"}
                   </div>
                 </div>
               )}
             </div>
+          )}
 
-            {/* Selected customer's details */}
+          {isExisting === false && (
             <div>
-              <label>Customer details</label>
-              <div className="card small" style={{ whiteSpace: "pre-line" }}>
-                {addressBlock.lines || "-"}
-                <br />
-                {addressBlock.contact || "-"}
+              <label>Customer (free entry)</label>
+              <input
+                value={customerQuery}
+                onChange={(e) => setCustomerQuery(e.target.value)}
+                placeholder="Type a business/name"
+              />
+            </div>
+          )}
+
+          <div className="grid grid-2">
+            {/* Call Type */}
+            <div>
+              <label>Call Type</label>
+              <select value={callType} onChange={(e) => setCallType(e.target.value)}>
+                <option value="">— Select —</option>
+                <option>Cold Call</option>
+                <option>Booked Call</option>
+              </select>
+            </div>
+
+            {/* Outcome */}
+            <div>
+              <label>Outcome</label>
+              <input
+                value={outcome}
+                onChange={(e) => setOutcome(e.target.value)}
+                placeholder="e.g. Left message, Resolved"
+              />
+            </div>
+          </div>
+
+          {/* NEW: Start/Finish/Duration + Appointment Booked */}
+          <div className="grid grid-2">
+            <div className="grid" style={{ gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              <div>
+                <label>Start Time</label>
+                <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+              </div>
+              <div>
+                <label>Finish Time</label>
+                <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+              </div>
+              <div>
+                <label>Total Duration (mins)</label>
+                <input value={totalDuration ?? ""} readOnly placeholder="—" />
+              </div>
+            </div>
+
+            <div>
+              <label>Appointment booked?</label>
+              <div className="row" style={{ gap: 16, marginTop: 6 }}>
+                <label className="row" style={{ gap: 6 }}>
+                  <input
+                    type="radio"
+                    name="appt"
+                    checked={appointmentBooked === true}
+                    onChange={() => setAppointmentBooked(true)}
+                  />
+                  Yes
+                </label>
+                <label className="row" style={{ gap: 6 }}>
+                  <input
+                    type="radio"
+                    name="appt"
+                    checked={appointmentBooked === false}
+                    onChange={() => setAppointmentBooked(false)}
+                  />
+                  No
+                </label>
               </div>
             </div>
           </div>
-        ) : isExisting === false ? (
-          // Not existing → free text fields
+
+          {/* Follow-up */}
           <div className="grid grid-2">
             <div>
-              <label>Customer / Business Name</label>
-              <input name="customerName" placeholder="Name" />
-            </div>
-            <div className="grid">
-              <div>
-                <label>Contact Phone</label>
-                <input name="contactPhone" placeholder="07..., 02..." />
-              </div>
-              <div>
-                <label>Contact Email</label>
-                <input type="email" name="contactEmail" placeholder="name@example.com" />
+              <label>Follow-up (date & time)</label>
+              <div className="row" style={{ gap: 8 }}>
+                <input type="date" value={followDate} onChange={(e) => setFollowDate(e.target.value)} />
+                <input type="time" value={followTime} onChange={(e) => setFollowTime(e.target.value)} />
               </div>
             </div>
           </div>
-        ) : null}
 
-        {/* meta */}
-        <div className="grid grid-2">
+          {/* Summary */}
           <div>
-            <label>Call Type</label>
-            <input name="callType" placeholder="e.g. Order, Support, Enquiry" />
+            <label>Summary (required)</label>
+            <textarea
+              rows={4}
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              placeholder="What was discussed?"
+              required
+            />
           </div>
-          <div>
-            <label>Outcome</label>
-            <input name="outcome" placeholder="e.g. Left message, Resolved, Order placed" />
+
+          <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+            <Link href="/" className="btn">
+              Cancel
+            </Link>
+            <button className="primary" type="submit">
+              Save Call
+            </button>
           </div>
-        </div>
-
-        <div className="grid grid-2">
-          <div>
-            <label>Follow-up (date & time)</label>
-            <input type="datetime-local" name="followUpAt" />
-          </div>
-        </div>
-
-        <div>
-          <label>Summary <span className="small muted">(required)</span></label>
-          <textarea name="summary" rows={4} placeholder="What was discussed?" required />
-        </div>
-
-        {error && <div className="form-error">{error}</div>}
-        {okMsg && <div className="form-success">{okMsg}</div>}
-
-        <div className="right" style={{ gap: 8 }}>
-          <Link href="/" className="btn">Cancel</Link>
-          <button className="primary" type="submit">Save Call</button>
-        </div>
-      </form>
+        </form>
+      </section>
     </div>
   );
 }
