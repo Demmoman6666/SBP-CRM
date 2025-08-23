@@ -38,16 +38,20 @@ model Customer {
 }
 
 model Visit {
-  id          String    @id @default(cuid())
-  customerId  String
-  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  id               String    @id @default(cuid())
+  customerId       String
+  customer         Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
-  date        DateTime  @default(now())
-  summary     String?
-  staff       String?
+  date             DateTime  @default(now())
+  startTime        DateTime?
+  endTime          DateTime?
+  durationMinutes  Int?
 
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  summary          String?
+  staff            String?
+
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   @@index([customerId, date])
 }
