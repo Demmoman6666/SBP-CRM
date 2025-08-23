@@ -3,21 +3,29 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 
 export default async function CustomerDetail({ params }: { params: { id: string } }) {
+  // Fetch the customer + related logs
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
     include: {
       visits:   { orderBy: { date: "desc" } },
       notesLog: { orderBy: { createdAt: "desc" } },
-      callLogs: { orderBy: { createdAt: "desc" } }, // ← NEW
+      callLogs: { orderBy: { createdAt: "desc" } }, // already in your code
     },
   });
 
   if (!customer) return <div className="card">Not found.</div>;
 
+  // Fetch Sales Reps for the dropdowns
+  const salesReps = await prisma.salesRep.findMany({
+    orderBy: { name: "asc" },
+    select: { id: true, name: true },
+  });
+
+  // Server actions
   async function addNote(formData: FormData) {
     "use server";
     const text  = String(formData.get("text") || "");
-    const staff = String(formData.get("staff") || "");
+    const staff = String(formData.get("staff") || ""); // rep name
     if (!text.trim()) return;
     await prisma.note.create({
       data: { text, staff: staff || null, customerId: customer.id },
@@ -29,7 +37,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     "use server";
     const dateStr = String(formData.get("date") || "");
     const summary = String(formData.get("summary") || "");
-    const staff   = String(formData.get("staff") || "");
+    const staff   = String(formData.get("staff") || ""); // rep name
     await prisma.visit.create({
       data: {
         customerId: customer.id,
@@ -100,16 +108,19 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           <h3>Add Note</h3>
           <form action={addNote} className="grid" style={{ gap: 8 }}>
             <div>
-              <label>Staff (optional)</label>
-              <input name="staff" placeholder="Your name" />
+              <label>Sales Rep (optional)</label>
+              <select name="staff" defaultValue="">
+                <option value="">— Select Sales Rep —</option>
+                {salesReps.map(r => (
+                  <option key={r.id} value={r.name}>{r.name}</option>
+                ))}
+              </select>
             </div>
             <div>
               <label>Note</label>
               <textarea name="text" rows={3} required />
             </div>
-            <button className="primary" type="submit">
-              Save Note
-            </button>
+            <button className="primary" type="submit">Save Note</button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Notes</h3>
@@ -146,17 +157,20 @@ export default async function CustomerDetail({ params }: { params: { id: string 
                 <input type="date" name="date" />
               </div>
               <div>
-                <label>Staff (optional)</label>
-                <input name="staff" placeholder="Your name" />
+                <label>Sales Rep (optional)</label>
+                <select name="staff" defaultValue="">
+                  <option value="">— Select Sales Rep —</option>
+                  {salesReps.map(r => (
+                    <option key={r.id} value={r.name}>{r.name}</option>
+                  ))}
+                </select>
               </div>
             </div>
             <div>
               <label>Summary</label>
               <textarea name="summary" rows={3} placeholder="What happened?" />
             </div>
-            <button className="primary" type="submit">
-              Save Visit
-            </button>
+            <button className="primary" type="submit">Save Visit</button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Visits</h3>
@@ -185,7 +199,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         </div>
       </div>
 
-      {/* --- NEW: Call Logs (full width) --- */}
+      {/* Call Logs */}
       <div className="card">
         <h3>Call Logs</h3>
         {customer.callLogs.length === 0 ? (
@@ -210,7 +224,6 @@ export default async function CustomerDetail({ params }: { params: { id: string 
                   {c.followUpAt ? ` • follow-up ${new Date(c.followUpAt).toLocaleString()}` : ""}
                 </div>
                 <div>{c.summary || "-"}</div>
-
                 {!c.isExistingCustomer && (
                   <div className="small muted">
                     Lead: {c.customerName || "-"}
