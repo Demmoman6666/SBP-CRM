@@ -2,10 +2,14 @@
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 
-export default function NewCustomerPage() {
+export default async function NewCustomerPage() {
+  const [reps, brands] = await Promise.all([
+    prisma.salesRep.findMany({ orderBy: { name: "asc" } }),
+    prisma.brand.findMany({ orderBy: { name: "asc" } }),
+  ]);
+
   async function createCustomer(formData: FormData) {
     "use server";
-
     const s = (name: string) =>
       (String(formData.get(name) ?? "").trim() || null) as string | null;
 
@@ -16,6 +20,8 @@ export default function NewCustomerPage() {
       return Number.isFinite(n) ? n : null;
     };
 
+    const selectedBrands = formData.getAll("brands").map(v => String(v)).filter(Boolean);
+
     const data = {
       salonName: s("salonName")!,            // required
       customerName: s("customerName")!,      // required
@@ -25,9 +31,9 @@ export default function NewCustomerPage() {
       county: s("county"),
       postCode: s("postCode"),
       daysOpen: s("daysOpen"),
-      brandsInterestedIn: s("brandsInterestedIn"),
+      brandsInterestedIn: selectedBrands.length ? selectedBrands.join(", ") : s("brandsInterestedIn"),
       notes: s("notes"),
-      salesRep: s("salesRep"),
+      salesRep: s("salesRep"),               // stores selected rep name
       customerNumber: s("customerNumber"),
       customerEmailAddress: s("customerEmailAddress"),
       openingHours: s("openingHours"),
@@ -45,7 +51,6 @@ export default function NewCustomerPage() {
   return (
     <div className="card">
       <h2>Create Customer</h2>
-      {/* IMPORTANT: uses the server action above. No action="/api/customers". */}
       <form action={createCustomer} className="grid" style={{ gap: 12 }}>
         <div className="grid grid-2">
           <div><label>Salon Name*</label><input name="salonName" required /></div>
@@ -68,8 +73,25 @@ export default function NewCustomerPage() {
         </div>
 
         <div className="grid grid-2">
-          <div><label>Brands Interested in</label><input name="brandsInterestedIn" /></div>
-          <div><label>Sales Rep</label><input name="salesRep" /></div>
+          <div>
+            <label>Sales Rep</label>
+            <select name="salesRep" defaultValue="">
+              <option value="">— Select a rep —</option>
+              {reps.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label>Brands Interested in</label>
+            {/* Multi-select using checkboxes; values will join into a string */}
+            <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0,1fr))" }}>
+              {brands.map(b => (
+                <label key={b.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="checkbox" name="brands" value={b.name} />
+                  <span>{b.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
         </div>
 
         <div className="grid grid-2">
@@ -84,7 +106,7 @@ export default function NewCustomerPage() {
 
         <div><label>Notes</label><textarea name="notes" rows={4} placeholder="Anything useful..." /></div>
 
-        <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+        <div className="right" style={{ gap: 8 }}>
           <button type="reset">Reset</button>
           <button className="primary" type="submit">Create</button>
         </div>
