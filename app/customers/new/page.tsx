@@ -1,6 +1,7 @@
 // app/customers/new/page.tsx
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
+import OpeningHoursFieldset from "@/components/OpeningHours";
 
 export default async function NewCustomerPage() {
   // Load options for dropdowns
@@ -31,13 +32,12 @@ export default async function NewCustomerPage() {
       county: s("county"),
       postCode: s("postCode"),
       daysOpen: s("daysOpen"),
-      // now a dropdown (single value). If you want multi, we can switch to checkboxes or <select multiple>.
-      brandsInterestedIn: s("brandsInterestedIn"),
+      brandsInterestedIn: s("brandsInterestedIn"), // dropdown (single)
       notes: s("notes"),
-      salesRep: s("salesRep"),               // from dropdown
+      salesRep: s("salesRep"),               // dropdown (single)
       customerNumber: s("customerNumber"),
       customerEmailAddress: s("customerEmailAddress"),
-      openingHours: s("openingHours"),
+      openingHours: s("openingHoursJson"),   // <-- JSON string from OpeningHoursFieldset
       numberOfChairs: toInt("numberOfChairs"),
     };
 
@@ -94,17 +94,21 @@ export default async function NewCustomerPage() {
           </div>
         </div>
 
+        <div className="grid">
+          <label>Opening Hours</label>
+          <OpeningHoursFieldset />
+          <span className="form-hint">Tick a day to enter opening and closing times.</span>
+        </div>
+
         <div className="grid grid-2">
           <div><label>Customer Number</label><input name="customerNumber" /></div>
           <div><label>Customer Email Address</label><input type="email" name="customerEmailAddress" /></div>
         </div>
 
         <div className="grid grid-2">
-          <div><label>Opening Hours</label><input name="openingHours" placeholder="e.g. 9–5 Mon–Sat" /></div>
           <div><label>Number of Chairs</label><input type="number" name="numberOfChairs" min={0} /></div>
+          <div><label>Notes</label><textarea name="notes" rows={4} placeholder="Anything useful..." /></div>
         </div>
-
-        <div><label>Notes</label><textarea name="notes" rows={4} placeholder="Anything useful..." /></div>
 
         <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
           <button type="reset">Reset</button>
