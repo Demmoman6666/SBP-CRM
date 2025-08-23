@@ -303,3 +303,25 @@ footer small { color: var(--muted); }
   font-size: .875rem;
   color: var(--muted);
 }
+
+/* 15) Uniform field styling (for Create Customer form) */
+.field > input,
+.field > select,
+.field > textarea {
+  width: 100%;
+  border-radius: 14px;     /* bigger rounding */
+  padding: 12px 14px;      /* comfy spacing */
+  height: 42px;            /* consistent height for inputs/selects */
+}
+
+.field > textarea {
+  height: auto;            /* let textarea use rows attr */
+}
+
+.field > label {
+  display: block;
+  font-size: .85rem;
+  color: var(--muted);
+  margin: 0 0 6px 0;
+  font-weight: 600;
+}
