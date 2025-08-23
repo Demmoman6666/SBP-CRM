@@ -67,7 +67,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           <div>
             <b>Salon</b>
             <p className="small">Days Open: {customer.daysOpen ?? "-"} | Chairs: {customer.numberOfChairs ?? "-"}</p>
-            <p className="small">Brands Interested: {customer.brandsInterestedIn || "-"}</p>
+            <p className="small">Brands Used: {customer.brandsInterestedIn || "-"}</p>
             <p className="small">Sales Rep: {customer.salesRep || "-"}</p>
           </div>
           <div>
