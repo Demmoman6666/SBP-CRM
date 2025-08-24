@@ -2,11 +2,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
+
+type PanelKey = "rep" | "brand" | "stocked" | null;
 
 export default function SettingsMenu() {
   const [open, setOpen] = useState(false);
-  const [active, setActive] = useState<"rep" | "brand" | null>(null);
+  const [active, setActive] = useState<PanelKey>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -28,12 +29,12 @@ export default function SettingsMenu() {
     const email = String(formData.get("email") || "").trim() || null;
     if (!name) return setMsg("Sales rep name is required.");
 
+    // NOTE: preserves your existing endpoint path
     const res = await fetch("/api/salesreps", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, email }),
     });
-
     if (res.ok) {
       (document.getElementById("rep-form") as HTMLFormElement)?.reset();
       setMsg("Sales rep added ✔");
@@ -43,23 +44,43 @@ export default function SettingsMenu() {
     }
   }
 
-  async function handleAddBrand(formData: FormData) {
+  async function handleAddCompetitorBrand(formData: FormData) {
     setMsg(null);
     const name = String(formData.get("name") || "").trim();
     if (!name) return setMsg("Brand name is required.");
 
+    // Competitor brands -> /api/brands (unchanged)
     const res = await fetch("/api/brands", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     });
-
     if (res.ok) {
       (document.getElementById("brand-form") as HTMLFormElement)?.reset();
       setMsg("Competitor brand added ✔");
     } else {
       const j = await res.json().catch(() => ({}));
       setMsg(j.error || "Failed to add competitor brand.");
+    }
+  }
+
+  async function handleAddStockedBrand(formData: FormData) {
+    setMsg(null);
+    const name = String(formData.get("name") || "").trim();
+    if (!name) return setMsg("Stocked brand name is required.");
+
+    // Stocked brands -> dedicated route/table
+    const res = await fetch("/api/stocked-brands", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (res.ok) {
+      (document.getElementById("stocked-brand-form") as HTMLFormElement)?.reset();
+      setMsg("Stocked brand added ✔");
+    } else {
+      const j = await res.json().catch(() => ({}));
+      setMsg(j.error || "Failed to add stocked brand.");
     }
   }
 
@@ -132,7 +153,7 @@ export default function SettingsMenu() {
               </form>
             )}
 
-            {/* Add Competitor Brand */}
+            {/* Add Competitor Brand (existing /api/brands) */}
             <button
               className="primary"
               onClick={() => { setActive(active === "brand" ? null : "brand"); setMsg(null); }}
@@ -144,32 +165,45 @@ export default function SettingsMenu() {
                 id="brand-form"
                 className="grid"
                 style={{ gap: 8 }}
-                onSubmit={(e) => { e.preventDefault(); handleAddBrand(new FormData(e.currentTarget)); }}
+                onSubmit={(e) => { e.preventDefault(); handleAddCompetitorBrand(new FormData(e.currentTarget)); }}
               >
                 <div>
                   <label>Brand Name*</label>
                   <input name="name" required />
                 </div>
                 <div className="right">
-                  <button type="submit" className="primary">Save Brand</button>
+                  <button type="submit" className="primary">Save Competitor Brand</button>
                 </div>
               </form>
             )}
 
-            {/* Add Stocked Brand (link to page) */}
-            <Link
-              href="/stocked-brands/new"
+            {/* Add Stocked Brand (new /api/stocked-brands) */}
+            <button
               className="primary"
-              style={{ width: "100%", textAlign: "center" }}
-              onClick={() => { setOpen(false); setActive(null); setMsg(null); }}
+              onClick={() => { setActive(active === "stocked" ? null : "stocked"); setMsg(null); }}
             >
               Add a Stocked Brand
-            </Link>
+            </button>
+            {active === "stocked" && (
+              <form
+                id="stocked-brand-form"
+                className="grid"
+                style={{ gap: 8 }}
+                onSubmit={(e) => { e.preventDefault(); handleAddStockedBrand(new FormData(e.currentTarget)); }}
+              >
+                <div>
+                  <label>Stocked Brand Name*</label>
+                  <input name="name" required />
+                </div>
+                <div className="right">
+                  <button type="submit" className="primary">Save Stocked Brand</button>
+                </div>
+              </form>
+            )}
 
             {msg && <div className="small" style={{ marginTop: 6 }}>{msg}</div>}
-
             <div className="small muted">
-              New Sales Reps and Brands will appear in the Create Customer form automatically.
+              New Sales Reps, Competitor Brands and Stocked Brands will be available in forms automatically.
             </div>
           </div>
         </div>
