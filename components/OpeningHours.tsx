@@ -1,110 +1,173 @@
-'use client';
+// components/OpeningHours.tsx
+"use client";
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from "react";
 
-type DayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
-type DayHours = { open: boolean; from: string | null; to: string | null };
-type OpeningHours = Record<DayKey, DayHours>;
+type Day = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
+type DayState = { open: boolean; from: string; to: string };
 
-const DAY_KEYS: DayKey[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-const DAY_LABELS: Record<DayKey, string> = {
-  mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun'
-};
+const DAYS: Day[] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-const defaultHours: OpeningHours = {
-  mon: { open: false, from: null, to: null },
-  tue: { open: false, from: null, to: null },
-  wed: { open: false, from: null, to: null },
-  thu: { open: false, from: null, to: null },
-  fri: { open: false, from: null, to: null },
-  sat: { open: false, from: null, to: null },
-  sun: { open: false, from: null, to: null },
-};
+function makeBlank(): Record<Day, DayState> {
+  return DAYS.reduce((acc, d) => {
+    (acc as any)[d] = { open: false, from: "", to: "" };
+    return acc;
+  }, {} as Record<Day, DayState>);
+}
 
-export default function OpeningHoursFieldset({
-  name = 'openingHoursJson',
-  initialJson,
-}: {
-  /** Name of hidden input which carries JSON to the server action */
-  name?: string;
-  /** Optional existing JSON to prefill (when editing) */
-  initialJson?: string | null;
-}) {
-  const initial: OpeningHours = useMemo(() => {
-    if (!initialJson) return defaultHours;
-    try {
-      const parsed = JSON.parse(initialJson) as Partial<OpeningHours>;
-      return { ...defaultHours, ...parsed };
-    } catch {
-      return defaultHours;
+function parseInitial(json?: string | null): Record<Day, DayState> {
+  const blank = makeBlank();
+  if (!json) return blank;
+  try {
+    const parsed = JSON.parse(json);
+    for (const d of DAYS) {
+      const src = (parsed && parsed[d]) || {};
+      blank[d] = {
+        open: !!src.open,
+        from: typeof src.from === "string" ? src.from : "",
+        to: typeof src.to === "string" ? src.to : "",
+      };
     }
-  }, [initialJson]);
+  } catch {
+    // fall back to blank
+  }
+  return blank;
+}
 
-  const [hours, setHours] = useState<OpeningHours>(initial);
-  const json = useMemo(() => JSON.stringify(hours), [hours]);
+export default function OpeningHours({
+  name = "openingHours",
+  defaultValue,
+  label = "Opening Hours",
+}: {
+  name?: string;
+  defaultValue?: string | null;
+  label?: string;
+}) {
+  const [state, setState] = useState<Record<Day, DayState>>(
+    () => parseInitial(defaultValue)
+  );
+
+  useEffect(() => {
+    setState(parseInitial(defaultValue));
+  }, [defaultValue]);
+
+  const hours = useMemo(() => Array.from({ length: 24 }, (_, i) => i), []);
+  // 5-minute increments
+  const minutes = useMemo(() => Array.from({ length: 12 }, (_, i) => i * 5), []);
+
+  const set = (day: Day, patch: Partial<DayState>) =>
+    setState((prev) => ({ ...prev, [day]: { ...prev[day], ...patch } }));
+
+  const json = JSON.stringify(state);
 
   return (
-    <fieldset className="grid" style={{ gap: 10 }}>
-      {/* Hidden field actually submitted with the form */}
+    <div>
+      <label>{label}</label>
+      {/* send as hidden JSON string */}
       <input type="hidden" name={name} value={json} />
 
-      {DAY_KEYS.map((k) => {
-        const d = hours[k];
-        return (
-          <div
-            key={k}
-            className="row"
-            style={{ alignItems: 'center', gap: 12, flexWrap: 'wrap' }}
-          >
-            <label className="nowrap" style={{ width: 76 }}>
-              <input
-                type="checkbox"
-                checked={d.open}
-                onChange={(e) =>
-                  setHours((prev) => ({
-                    ...prev,
-                    [k]: {
-                      ...prev[k],
-                      open: e.target.checked,
-                      // If toggled off, clear times so we don’t save stale values
-                      from: e.target.checked ? prev[k].from : null,
-                      to: e.target.checked ? prev[k].to : null,
-                    },
-                  }))
-                }
-              />
-              {' '}{DAY_LABELS[k]}
-            </label>
+      <div
+        className="card"
+        style={{
+          padding: 12,
+          marginTop: 6,
+        }}
+      >
+        <div className="grid" style={{ gap: 8 }}>
+          {DAYS.map((d) => {
+            const v = state[d];
+            return (
+              <div
+                key={d}
+                className="row"
+                style={{ alignItems: "center", gap: 10, flexWrap: "wrap" }}
+              >
+                <label className="row" style={{ gap: 8, width: 64 }}>
+                  <input
+                    type="checkbox"
+                    checked={v.open}
+                    onChange={(e) => set(d, { open: e.target.checked })}
+                  />
+                  <span className="small">{d}</span>
+                </label>
 
-            <div className="row" style={{ gap: 8, opacity: d.open ? 1 : 0.5 }}>
-              <label className="small" style={{ width: 42 }}>Open</label>
-              <input
-                type="time"
-                disabled={!d.open}
-                value={d.from ?? ''}
-                onChange={(e) =>
-                  setHours((prev) => ({
-                    ...prev,
-                    [k]: { ...prev[k], from: e.target.value || null },
-                  }))
-                }
-              />
-              <label className="small" style={{ width: 45 }}>Close</label>
-              <input
-                type="time"
-                disabled={!d.open}
-                value={d.to ?? ''}
-                onChange={(e) =>
-                  setHours((prev) => ({
-                    ...prev,
-                    [k]: { ...prev[k], to: e.target.value || null },
-                  }))
-                }
-              />
-            </div>
-          </div>
-        );
-      })}
-    </fieldset>
+                <span className="small" style={{ width: 36, color: "var(--muted)" }}>
+                  Open
+                </span>
+                <TimeSelect
+                  disabled={!v.open}
+                  value={v.from}
+                  onChange={(val) => set(d, { from: val })}
+                  hours={hours}
+                  minutes={minutes}
+                />
+
+                <span className="small" style={{ width: 44, color: "var(--muted)" }}>
+                  Close
+                </span>
+                <TimeSelect
+                  disabled={!v.open}
+                  value={v.to}
+                  onChange={(val) => set(d, { to: val })}
+                  hours={hours}
+                  minutes={minutes}
+                />
+              </div>
+            );
+          })}
+        </div>
+        <p className="form-hint" style={{ marginTop: 8 }}>
+          Tick a day to enter opening and closing times. Minutes advance in 5-minute steps.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function TimeSelect({
+  value,
+  onChange,
+  disabled,
+  hours,
+  minutes,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  hours: number[];
+  minutes: number[];
+}) {
+  const [hh, mm] = (value || "").split(":");
+  const setHH = (e: React.ChangeEvent<HTMLSelectElement>) =>
+    onChange(`${e.target.value || ""}:${mm || ""}`);
+  const setMM = (e: React.ChangeEvent<HTMLSelectElement>) =>
+    onChange(`${hh || ""}:${e.target.value || ""}`);
+
+  return (
+    <div className="row" style={{ gap: 6 }}>
+      <select disabled={disabled} value={hh || ""} onChange={setHH} style={{ width: 74 }}>
+        <option value="">— —</option>
+        {hours.map((h) => {
+          const v = String(h).padStart(2, "0");
+          return (
+            <option key={v} value={v}>
+              {v}
+            </option>
+          );
+        })}
+      </select>
+      <span>:</span>
+      <select disabled={disabled} value={mm || ""} onChange={setMM} style={{ width: 74 }}>
+        <option value="">— —</option>
+        {minutes.map((m) => {
+          const v = String(m).padStart(2, "0");
+          return (
+            <option key={v} value={v}>
+              {v}
+            </option>
+          );
+        })}
+      </select>
+    </div>
   );
 }
