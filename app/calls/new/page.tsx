@@ -20,8 +20,27 @@ type CustomerLite = {
   salesRep: string | null;
 };
 
+function calcDurationMins(start?: string, end?: string): number | "" {
+  if (!start || !end) return "";
+  // start/end as "HH:MM"
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  if (
+    Number.isNaN(sh) || Number.isNaN(sm) ||
+    Number.isNaN(eh) || Number.isNaN(em)
+  ) return "";
+
+  const startMin = sh * 60 + sm;
+  let endMin = eh * 60 + em;
+
+  // Allow crossing midnight (finish after midnight counts as next day)
+  if (endMin < startMin) endMin += 24 * 60;
+
+  return endMin - startMin;
+}
+
 export default function NewCallPage() {
-  // Sales reps
+  /* ---------------- Sales reps ---------------- */
   const [reps, setReps] = useState<Rep[]>([]);
   useEffect(() => {
     fetch("/api/sales-reps")
@@ -105,6 +124,19 @@ export default function NewCallPage() {
   }
   /* ----------------------------------------------------------- */
 
+  /* ---------------- Start/End/Duration ---------------- */
+  const [startTime, setStartTime] = useState<string>("");
+  const [endTime, setEndTime] = useState<string>("");
+  const durationMins = useMemo(() => calcDurationMins(startTime, endTime), [startTime, endTime]);
+
+  const setNow = (setter: (v: string) => void) => {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    setter(`${hh}:${mm}`);
+  };
+  /* ---------------------------------------------------- */
+
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
@@ -133,6 +165,11 @@ export default function NewCallPage() {
         return;
       }
     }
+
+    // ensure time fields go with the payload (server may ignore if unsupported)
+    if (startTime) fd.set("startTime", startTime);
+    if (endTime) fd.set("endTime", endTime);
+    if (durationMins !== "") fd.set("durationMins", String(durationMins));
 
     try {
       setSubmitting(true);
@@ -206,23 +243,23 @@ export default function NewCallPage() {
             <label>Customer*</label>
             <input
               name="customer"
-              placeholder="Type to search or free-type for new lead"
+              placeholder={isExisting ? "Type to search" : "Type to search or free-type for new lead"}
               required
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                if (isExisting) setPicked(null); // only clear selection when the user types
+                if (isExisting) setPicked(null);
               }}
               onFocus={() => isExisting && query.trim().length >= 2 && setOpenList(true)}
               autoComplete="off"
             />
-            {/* This is what the server API checks for when isExisting = true */}
+            {/* Hidden id for server validation when isExisting = true */}
             <input type="hidden" name="customerId" value={picked?.id ?? ""} />
             <div className="form-hint">
               {isExisting ? "Pick from suggestions for existing." : "Free-type for a lead."}
             </div>
 
-            {/* Suggestions (width = field width) */}
+            {/* Suggestions (same width as field) */}
             {openList && isExisting && results.length > 0 && (
               <div
                 className="card"
@@ -241,7 +278,7 @@ export default function NewCallPage() {
                   {results.map((c) => (
                     <li
                       key={c.id}
-                      onMouseDown={(e) => e.preventDefault()} // keep click before blur
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => pickCustomer(c)}
                       style={{
                         padding: "10px 12px",
@@ -258,14 +295,15 @@ export default function NewCallPage() {
                         {c.customerTelephone || c.customerNumber || ""}
                         {c.customerEmailAddress ? ` • ${c.customerEmailAddress}` : ""}
                       </div>
-                      <div className="small muted">{fmtAddress(c)}</div>
+                      <div className="small muted">
+                        {[c.addressLine1, c.addressLine2, c.town, c.county, c.postCode].filter(Boolean).join(", ") || "-"}
+                      </div>
                     </li>
                   ))}
                 </ul>
               </div>
             )}
 
-            {/* Only show "No matches" while the dropdown is open */}
             {openList && isExisting && !loading && results.length === 0 && query.trim().length >= 2 && (
               <div className="form-hint" style={{ marginTop: 6 }}>
                 No matches found.
@@ -282,7 +320,8 @@ export default function NewCallPage() {
                 <div className="small"><span className="muted">Phone:</span> {picked.customerTelephone || picked.customerNumber || "-"}</div>
                 <div className="small"><span className="muted">Email:</span> {picked.customerEmailAddress || "-"}</div>
                 <div className="small" style={{ marginTop: 4 }}>
-                  <span className="muted">Address:</span> {fmtAddress(picked)}
+                  <span className="muted">Address:</span>{" "}
+                  {[picked.addressLine1, picked.addressLine2, picked.town, picked.county, picked.postCode].filter(Boolean).join(", ") || "-"}
                 </div>
                 <div className="right" style={{ marginTop: 8 }}>
                   <button
@@ -310,6 +349,7 @@ export default function NewCallPage() {
           </div>
         </div>
 
+        {/* Call type + times */}
         <div className="grid grid-2">
           <div className="field">
             <label>Call Type</label>
@@ -319,6 +359,52 @@ export default function NewCallPage() {
               <option>Booked Call</option>
               <option>Booked Demo</option>
             </select>
+          </div>
+
+          {/* Start/End times with Now buttons */}
+          <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="field">
+              <label>Start Time</label>
+              <div className="row" style={{ gap: 8 }}>
+                <input
+                  type="time"
+                  name="startTime"
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                />
+                <button type="button" className="btn" onClick={() => setNow(setStartTime)}>
+                  Now
+                </button>
+              </div>
+            </div>
+
+            <div className="field">
+              <label>Finish Time</label>
+              <div className="row" style={{ gap: 8 }}>
+                <input
+                  type="time"
+                  name="endTime"
+                  value={endTime}
+                  onChange={(e) => setEndTime(e.target.value)}
+                />
+                <button type="button" className="btn" onClick={() => setNow(setEndTime)}>
+                  Now
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Duration + Follow-up */}
+        <div className="grid grid-2">
+          <div className="field">
+            <label>Total Duration (mins)</label>
+            <input
+              name="durationMins"
+              value={durationMins === "" ? "" : String(durationMins)}
+              readOnly
+              placeholder="—"
+            />
           </div>
 
           <div className="field">
