@@ -28,6 +28,25 @@ function lastMonthFirst(d: Date) { return new Date(d.getFullYear(), d.getMonth()
 function lastMonthLast(d: Date) { const firstThis = new Date(d.getFullYear(), d.getMonth(), 1); return addDaysLocal(firstThis, -1); }
 function ytdFirst(d: Date) { return new Date(d.getFullYear(), 0, 1); }
 
+// Small “chip” button (subtle, wraps well)
+function Chip(props: { onClick: () => void; children: React.ReactNode; title?: string }) {
+  return (
+    <button
+      className="btn"
+      onClick={props.onClick}
+      title={props.title}
+      style={{
+        padding: "6px 10px",
+        borderRadius: 999,
+        border: "1px solid var(--border)",
+        background: "#fff",
+      }}
+    >
+      {props.children}
+    </button>
+  );
+}
+
 export default function CallReportPage() {
   const today = useMemo(() => new Date(), []);
   const [from, setFrom] = useState<string>(ymdLocal(today));
@@ -37,12 +56,11 @@ export default function CallReportPage() {
   const [err, setErr] = useState<string | null>(null);
   const [data, setData] = useState<Report | null>(null);
 
-  // NEW: sales rep filter
+  // Sales Rep filter
   const [reps, setReps] = useState<Rep[]>([]);
   const [repFilter, setRepFilter] = useState<string>(""); // "" = All reps
 
   useEffect(() => {
-    // populate Sales Rep list (uses your existing /api/sales-reps)
     fetch("/api/sales-reps", { cache: "no-store" })
       .then(r => r.json())
       .then((list: Rep[]) => setReps(list ?? []))
@@ -104,43 +122,49 @@ export default function CallReportPage() {
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <section className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-          <h1>Call Report</h1>
-
-          {/* Controls */}
-          <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            {/* NEW: Sales Rep filter */}
-            <div className="row" style={{ gap: 6, alignItems: "center" }}>
-              <label className="small muted">Sales Rep</label>
-              <select
-                value={repFilter}
-                onChange={(e) => { setRepFilter(e.target.value); load({ from, to, staff: e.target.value }); }}
-              >
-                <option value="">All reps</option>
-                {reps.map(r => (
-                  <option key={r.id} value={r.name}>{r.name}</option>
-                ))}
-              </select>
-            </div>
-
-            <button className="primary" onClick={() => pickRange("today")}>Today</button>
-            <button className="primary" onClick={() => pickRange("yesterday")}>Yesterday</button>
-            <button className="primary" onClick={() => pickRange("wtd")}>Week to date</button>
-            <button className="primary" onClick={() => pickRange("lweek")}>Last week</button>
-            <button className="primary" onClick={() => pickRange("mtd")}>Month to date</button>
-            <button className="primary" onClick={() => pickRange("lmonth")}>Last month</button>
-            <button className="primary" onClick={() => pickRange("ytd")}>Year to date</button>
-            <button className="primary" onClick={() => pickRange("custom")}>Custom…</button>
-            <button className="primary" onClick={() => load()} disabled={loading}>
+      <section className="card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {/* Row 1: Title + Last updated + Refresh */}
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <h1 style={{ margin: 0 }}>Call Report</h1>
+          <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <div className="small muted">Last updated: <b>{lastUpdated}</b></div>
+            <Chip onClick={() => load()} title="Refresh now">
               {loading ? "Refreshing…" : "Refresh"}
-            </button>
+            </Chip>
           </div>
         </div>
 
-        <div className="small" style={{ marginTop: 8 }}>
-          <div>Range: <b>{from}</b> to <b>{to}</b>{repFilter ? <> • Rep: <b>{repFilter}</b></> : null}</div>
-          <div>Last updated: <b>{lastUpdated}</b></div>
+        {/* Row 2: Sales Rep selector + Date chips */}
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <label className="small muted">Sales Rep</label>
+            <select
+              value={repFilter}
+              onChange={(e) => { setRepFilter(e.target.value); load({ from, to, staff: e.target.value }); }}
+            >
+              <option value="">All reps</option>
+              {reps.map(r => (
+                <option key={r.id} value={r.name}>{r.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <Chip onClick={() => pickRange("today")}>Today</Chip>
+            <Chip onClick={() => pickRange("yesterday")}>Yesterday</Chip>
+            <Chip onClick={() => pickRange("wtd")}>Week to date</Chip>
+            <Chip onClick={() => pickRange("lweek")}>Last week</Chip>
+            <Chip onClick={() => pickRange("mtd")}>Month to date</Chip>
+            <Chip onClick={() => pickRange("lmonth")}>Last month</Chip>
+            <Chip onClick={() => pickRange("ytd")}>Year to date</Chip>
+            <Chip onClick={() => pickRange("custom")}>Custom…</Chip>
+          </div>
+        </div>
+
+        {/* Row 3: Range summary */}
+        <div className="small muted">
+          Range: <b>{from}</b> to <b>{to}</b>
+          {repFilter ? <> • Rep: <b>{repFilter}</b></> : null}
         </div>
       </section>
 
