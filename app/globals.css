@@ -9,9 +9,7 @@
   box-sizing: border-box;
 }
 
-html, body {
-  height: 100%;
-}
+html, body { height: 100%; }
 
 html {
   -webkit-text-size-adjust: 100%;
@@ -31,15 +29,23 @@ body {
   --pink: #FEB3E4;
   --pink-600: #F9A8DC;
   --pink-700: #F493D4;
+
   --text: #111111;
   --muted: #6b7280;        /* gray-500 */
   --bg: #ffffff;
   --surface: #ffffff;
   --border: #e5e7eb;       /* gray-200 */
   --shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(17,17,17,.03);
+
   --radius: 12px;
   --radius-sm: 8px;
   --ring: 0 0 0 3px rgba(254,179,228,.55); /* pink focus ring */
+
+  /* form tokens */
+  --input-bg: #fafafa;
+  --input-bg-focus: #ffffff;
+  --input-border: var(--border);
+  --input-radius: 14px;
 }
 
 /* 3) Typography */
@@ -57,7 +63,6 @@ p { margin: 0 0 .9rem 0; }
 
 .small { font-size: .9rem; color: var(--muted); }
 .muted { color: var(--muted); }
-.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 
 /* 4) Links */
 a { color: inherit; text-underline-offset: 3px; }
@@ -72,6 +77,7 @@ a:hover { text-decoration: underline; }
 }
 
 .row { display: flex; gap: 10px; }
+
 .grid { display: grid; gap: 12px; }
 
 .grid-2 {
@@ -84,8 +90,8 @@ a:hover { text-decoration: underline; }
 
 /* 6) Header + Logo */
 .brand-logo {
-  height: 55px;
-  width: auto;
+  height: 55px;        /* Adjust logo size here */
+  width: auto;         /* Maintain aspect ratio */
   display: block;
   image-rendering: -webkit-optimize-contrast;
 }
@@ -133,7 +139,7 @@ button,
 button:disabled,
 .btn:disabled { opacity: .55; cursor: not-allowed; }
 
-/* Subtle ghost button (used for “Now” etc.) */
+/* Ghost/secondary (used next to inputs e.g. “Now”) */
 .btn-ghost {
   background: #fff;
   color: var(--text);
@@ -144,51 +150,94 @@ button:disabled,
 .btn-ghost:hover { background: #fafafa; }
 .btn-ghost:focus-visible { outline: none; box-shadow: var(--ring); }
 
-/* 9) Forms */
+/* 9) Forms — soft, rounded, consistent */
 label {
   display: block;
-  font-size: .85rem;
+  font-size: .9rem;
   color: var(--muted);
   margin: 0 0 6px 0;
+  font-weight: 600;
 }
 
 input[type="text"],
 input[type="email"],
 input[type="number"],
 input[type="date"],
+input[type="time"],
 input[type="search"],
 input[type="password"],
-input[type="time"],
 textarea,
 select {
   width: 100%;
-  background: #fff;
+  background: var(--input-bg);
   color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--input-radius);
+  padding: 12px 14px;
+  height: 44px;                       /* consistent height */
   line-height: 1.4;
   outline: none;
-  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
-  appearance: none;
+  transition: background .2s ease, border-color .2s ease, box-shadow .2s ease;
+  box-shadow: inset 0 1px 0 rgba(0,0,0,.02);
+  appearance: none;                    /* normalize across browsers */
 }
 
-textarea { resize: vertical; }
+textarea {
+  height: auto;
+  min-height: 100px;
+  resize: vertical;
+}
 
-input::placeholder,
-textarea::placeholder { color: #9ca3af; } /* gray-400 */
+/* Hover + Focus */
+input:hover,
+textarea:hover,
+select:hover { border-color: #e9e9ee; }
 
 input:focus,
 textarea:focus,
 select:focus {
+  background: var(--input-bg-focus);
   border-color: var(--pink-700);
   box-shadow: var(--ring);
 }
 
+/* Placeholder */
+input::placeholder,
+textarea::placeholder { color: #9ca3af; } /* gray-400 */
+
+/* Select chevron */
+select {
+  padding-right: 40px;
+  background-image:
+    url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M5 7l5 6 5-6" stroke="%236b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px 16px;
+}
+
+/* Remove number steppers (keep arrow keys) */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; }
+
+/* Input group (inline controls like time + “Now”) */
+.input-group { display: flex; align-items: center; gap: 8px; }
+
+/* Field wrapper (optional: if you use <div class="field">) */
+.field > input,
+.field > select,
+.field > textarea {
+  width: 100%;
+  border-radius: var(--input-radius);
+  padding: 12px 14px;
+  height: 44px;
+}
+.field > textarea { height: auto; }
+
 /* Inline help / messages */
 .form-hint { font-size: .85rem; color: var(--muted); }
-.form-error { color: #b91c1c; } /* red-700 */
-.form-success { color: #065f46; } /* emerald-800 */
+.form-error { color: #b91c1c; }     /* red-700 */
+.form-success { color: #065f46; }   /* emerald-800 */
 
 /* 10) Tables (for lists) */
 .table {
@@ -199,6 +248,7 @@ select:focus {
   border-radius: var(--radius);
   overflow: hidden;
 }
+
 .table th,
 .table td {
   text-align: left;
@@ -206,12 +256,14 @@ select:focus {
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
+
 .table th {
   font-size: .85rem;
   color: var(--muted);
   background: #fafafa;
   font-weight: 600;
 }
+
 .table tr:hover td { background: #fafafa; }
 
 /* 11) Chips / Badges */
@@ -249,7 +301,7 @@ footer small { color: var(--muted); }
 }
 
 .action-tile {
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 1 / 1;              /* square */
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -265,11 +317,13 @@ footer small { color: var(--muted); }
   overflow: hidden;
   transition: transform .15s ease, box-shadow .2s ease, border-color .2s ease;
 }
+
 .action-tile:hover {
   transform: translateY(-2px);
   box-shadow: 0 10px 26px rgba(0,0,0,.08);
-  border-color: #f8d2ea;
+  border-color: #f8d2ea;            /* light pink border on hover */
 }
+
 .action-tile::after {
   content: "";
   position: absolute;
@@ -283,82 +337,15 @@ footer small { color: var(--muted); }
   filter: blur(12px);
   pointer-events: none;
 }
+
 .action-title {
   font-weight: 800;
   font-size: 1.1rem;
   letter-spacing: .2px;
   margin-bottom: 4px;
 }
+
 .action-sub {
   font-size: .875rem;
   color: var(--muted);
 }
-
-/* 15) Uniform field styling (for Create Customer / Call Log) */
-.field > input,
-.field > select,
-.field > textarea {
-  width: 100%;
-  border-radius: 14px;
-  padding: 12px 14px;
-  height: 42px;
-}
-.field > textarea { height: auto; }
-.field > label {
-  display: block;
-  font-size: .85rem;
-  color: var(--muted);
-  margin: 0 0 6px 0;
-  font-weight: 600;
-}
-
-/* 16) Picker / Combobox (customer search) */
-.picker { position: relative; }
-
-.picker input {
-  width: 100%;
-  background: #fff;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  line-height: 1.4;
-  outline: none;
-  transition: border-color .15s ease, box-shadow .15s ease;
-}
-.picker input:focus { border-color: var(--pink-700); box-shadow: var(--ring); }
-
-.picker .results {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  right: 0;
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
-  max-height: 260px;
-  overflow: auto;
-  z-index: 60;
-}
-.picker .result {
-  padding: 10px 12px;
-  cursor: pointer;
-  border-bottom: 1px solid var(--border);
-}
-.picker .result:last-child { border-bottom: 0; }
-.picker .result:hover,
-.picker .result.active { background: #fafafa; }
-.picker .hint { font-size: .8rem; color: var(--muted); padding: 8px 12px; }
-
-.picker .preview {
-  margin-top: 8px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 12px;
-  background: #fff;
-}
-
-/* 17) Tiny utilities used in forms */
-.input-group { display: flex; align-items: center; gap: 8px; }
-.w-auto { width: auto; }
