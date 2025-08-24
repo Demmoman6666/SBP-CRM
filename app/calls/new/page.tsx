@@ -27,7 +27,7 @@ export default function NewCallPage() {
     fetch("/api/sales-reps")
       .then((r) => r.json())
       .then(setReps)
-      .catch(() => setReps([]);
+      .catch(() => setReps([]));
   }, []);
 
   const [submitting, setSubmitting] = useState(false);
@@ -222,7 +222,7 @@ export default function NewCallPage() {
               {isExisting ? "Pick from suggestions for existing." : "Free-type for a lead."}
             </div>
 
-            {/* Suggestions (now sized to the Customer field width) */}
+            {/* Suggestions (width = field width) */}
             {openList && isExisting && results.length > 0 && (
               <div
                 className="card"
