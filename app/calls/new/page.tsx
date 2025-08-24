@@ -21,39 +21,41 @@ type CustomerLite = {
 };
 
 export default function NewCallPage() {
+  // Sales reps
   const [reps, setReps] = useState<Rep[]>([]);
   useEffect(() => {
     fetch("/api/sales-reps")
       .then((r) => r.json())
       .then(setReps)
-      .catch(() => setReps([]));
+      .catch(() => setReps([]);
   }, []);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // ---------------- Predictive customer search ----------------
+  /* ---------------- Predictive customer search ---------------- */
   const [isExisting, setIsExisting] = useState<null | boolean>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CustomerLite[]>([]);
   const [picked, setPicked] = useState<CustomerLite | null>(null);
   const [openList, setOpenList] = useState(false);
   const [loading, setLoading] = useState(false);
+
   const fieldRef = useRef<HTMLDivElement>(null);
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
-    function onDown(e: MouseEvent) {
+    const onClickAway = (e: MouseEvent) => {
       if (!fieldRef.current) return;
       if (!fieldRef.current.contains(e.target as Node)) setOpenList(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    };
+    document.addEventListener("mousedown", onClickAway);
+    return () => document.removeEventListener("mousedown", onClickAway);
   }, []);
 
+  // debounce search when typing & existing==true
   useEffect(() => {
     if (!isExisting) return;
-    setPicked(null);
     if (timer.current) window.clearTimeout(timer.current);
     if (!query || query.trim().length < 2) {
       setResults([]);
@@ -86,6 +88,7 @@ export default function NewCallPage() {
       `${c.salonName ?? ""}${c.salonName && c.customerName ? " — " : ""}${c.customerName ?? ""}`
     );
     setOpenList(false);
+    setResults([]);
   }
 
   function clearPicked() {
@@ -100,7 +103,7 @@ export default function NewCallPage() {
     const parts = [c.addressLine1, c.addressLine2, c.town, c.county, c.postCode].filter(Boolean);
     return parts.length ? parts.join(", ") : "-";
   }
-  // ------------------------------------------------------------
+  /* ----------------------------------------------------------- */
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -124,7 +127,7 @@ export default function NewCallPage() {
       return;
     }
     if (existingBool === true) {
-      const id = fd.get("customerId") as string | null;
+      const id = (fd.get("customerId") as string | null) || "";
       if (!id) {
         setError("Please pick a customer from the suggestions.");
         return;
@@ -190,20 +193,15 @@ export default function NewCallPage() {
           <div className="field">
             <label>Sales Rep (required)</label>
             <select name="salesRep" required defaultValue="">
-              <option value="" disabled>
-                — Select a Sales Rep —
-              </option>
+              <option value="" disabled>— Select a Sales Rep —</option>
               {reps.map((r) => (
-                <option key={r.id} value={r.name}>
-                  {r.name}
-                </option>
+                <option key={r.id} value={r.name}>{r.name}</option>
               ))}
             </select>
           </div>
         </div>
 
         <div className="grid grid-2">
-          {/* Make the field wrapper relative so the dropdown matches this width */}
           <div className="field" ref={fieldRef} style={{ position: "relative" }}>
             <label>Customer*</label>
             <input
@@ -211,16 +209,20 @@ export default function NewCallPage() {
               placeholder="Type to search or free-type for new lead"
               required
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                if (isExisting) setPicked(null); // only clear selection when the user types
+              }}
               onFocus={() => isExisting && query.trim().length >= 2 && setOpenList(true)}
               autoComplete="off"
             />
+            {/* This is what the server API checks for when isExisting = true */}
             <input type="hidden" name="customerId" value={picked?.id ?? ""} />
             <div className="form-hint">
               {isExisting ? "Pick from suggestions for existing." : "Free-type for a lead."}
             </div>
 
-            {/* Suggestions dropdown — now sized to this field */}
+            {/* Suggestions (now sized to the Customer field width) */}
             {openList && isExisting && results.length > 0 && (
               <div
                 className="card"
@@ -239,7 +241,7 @@ export default function NewCallPage() {
                   {results.map((c) => (
                     <li
                       key={c.id}
-                      onMouseDown={(e) => e.preventDefault()}
+                      onMouseDown={(e) => e.preventDefault()} // keep click before blur
                       onClick={() => pickCustomer(c)}
                       style={{
                         padding: "10px 12px",
@@ -251,8 +253,7 @@ export default function NewCallPage() {
                         {c.salonName || c.customerName || "(no name)"}
                       </div>
                       <div className="small">
-                        <span className="muted">Contact:</span>{" "}
-                        {c.customerName || "-"}
+                        <span className="muted">Contact:</span> {c.customerName || "-"}
                         {(c.customerTelephone || c.customerNumber || c.customerEmailAddress) && " • "}
                         {c.customerTelephone || c.customerNumber || ""}
                         {c.customerEmailAddress ? ` • ${c.customerEmailAddress}` : ""}
@@ -264,22 +265,22 @@ export default function NewCallPage() {
               </div>
             )}
 
-            {/* Selected customer preview — clearer details */}
+            {/* Only show "No matches" while the dropdown is open */}
+            {openList && isExisting && !loading && results.length === 0 && query.trim().length >= 2 && (
+              <div className="form-hint" style={{ marginTop: 6 }}>
+                No matches found.
+              </div>
+            )}
+
+            {/* Selected customer preview */}
             {isExisting && picked && (
               <div className="card" style={{ marginTop: 8 }}>
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>
                   {picked.salonName || picked.customerName || "Selected customer"}
                 </div>
-                <div className="small">
-                  <span className="muted">Contact:</span> {picked.customerName || "-"}
-                </div>
-                <div className="small">
-                  <span className="muted">Phone:</span>{" "}
-                  {picked.customerTelephone || picked.customerNumber || "-"}
-                </div>
-                <div className="small">
-                  <span className="muted">Email:</span> {picked.customerEmailAddress || "-"}
-                </div>
+                <div className="small"><span className="muted">Contact:</span> {picked.customerName || "-"}</div>
+                <div className="small"><span className="muted">Phone:</span> {picked.customerTelephone || picked.customerNumber || "-"}</div>
+                <div className="small"><span className="muted">Email:</span> {picked.customerEmailAddress || "-"}</div>
                 <div className="small" style={{ marginTop: 4 }}>
                   <span className="muted">Address:</span> {fmtAddress(picked)}
                 </div>
@@ -295,20 +296,12 @@ export default function NewCallPage() {
                 </div>
               </div>
             )}
-
-            {isExisting && query && !loading && results.length === 0 && (
-              <div className="form-hint" style={{ marginTop: 6 }}>
-                No matches found.
-              </div>
-            )}
           </div>
 
           <div className="field">
             <label>Outcome</label>
             <select name="outcome" defaultValue="">
-              <option value="" disabled>
-                — Select —
-              </option>
+              <option value="" disabled>— Select —</option>
               <option>Sale</option>
               <option>No Sale</option>
               <option>Appointment booked</option>
@@ -321,9 +314,7 @@ export default function NewCallPage() {
           <div className="field">
             <label>Call Type</label>
             <select name="callType" defaultValue="">
-              <option value="" disabled>
-                — Select —
-              </option>
+              <option value="" disabled>— Select —</option>
               <option>Cold Call</option>
               <option>Booked Call</option>
               <option>Booked Demo</option>
@@ -347,9 +338,7 @@ export default function NewCallPage() {
         {error && <div className="form-error">{error}</div>}
 
         <div className="right row" style={{ gap: 8 }}>
-          <a href="/" className="btn" style={{ background: "#f3f4f6" }}>
-            Cancel
-          </a>
+          <a href="/" className="btn" style={{ background: "#f3f4f6" }}>Cancel</a>
           <button className="primary" type="submit" disabled={submitting}>
             {submitting ? "Saving…" : "Save Call"}
           </button>
