@@ -58,7 +58,7 @@ function renderOpeningHours(openingHours?: string | null) {
       }}
     >
       {DOW.map((d) => {
-        const it: OpeningForDay = parsed[d] || {};
+        const it: OpeningForDay = (parsed as any)[d] || {};
         const isOpen = !!it.open;
         const from = prettyTime(it.from);
         const to = prettyTime(it.to);
@@ -107,7 +107,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     "use server";
     const dateStr = String(formData.get("date") || "");
     const summary = String(formData.get("summary") || "");
-    the staff = String(formData.get("staff") || "");
+    const staff = String(formData.get("staff") || ""); // ← FIXED
     await prisma.visit.create({
       data: {
         customerId: customer.id,
@@ -132,11 +132,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             <p className="small">{customer.customerName}</p>
           </div>
 
-          {/* NEW: Actions */}
+          {/* Actions */}
           <div className="right" style={{ gap: 8 }}>
-            <Link href={`/customers/${customer.id}/edit`} className="btn">
-              Edit
-            </Link>
+            <Link href={`/customers/${customer.id}/edit`} className="btn">Edit</Link>
             <DeleteCustomerButton id={customer.id} />
           </div>
         </div>
@@ -198,9 +196,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
               <label>Note</label>
               <textarea name="text" rows={3} required />
             </div>
-            <button className="primary" type="submit">
-              Save Note
-            </button>
+            <button className="primary" type="submit">Save Note</button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Notes</h3>
@@ -245,9 +241,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
               <label>Summary</label>
               <textarea name="summary" rows={3} placeholder="What happened?" />
             </div>
-            <button className="primary" type="submit">
-              Save Visit
-            </button>
+            <button className="primary" type="submit">Save Visit</button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Visits</h3>
