@@ -56,15 +56,13 @@ function renderOpeningHours(openingHours?: string | null) {
       }}
     >
       {DOW.map((d) => {
-        const it: OpeningForDay = parsed[d] || {};
+        const it: OpeningForDay = (parsed as any)[d] || {};
         const isOpen = !!it.open;
         const from = prettyTime(it.from);
         const to = prettyTime(it.to);
 
         let text = "Closed";
-        if (isOpen) {
-          text = from && to ? `${from} – ${to}` : "Open";
-        }
+        if (isOpen) text = from && to ? `${from} – ${to}` : "Open";
 
         return (
           <div key={d} style={{ display: "contents" }}>
@@ -81,15 +79,15 @@ export default async function CustomerDetail({ params }: { params: { id: string 
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
     include: {
-      visits: { orderBy: { date: "desc" } },
+      visits: { orderBy: { date: "desc" } },                // kept in data (in case used elsewhere)
       notesLog: { orderBy: { createdAt: "desc" } },
-      // callLogs removed from the page, so we don't need to fetch them
+      callLogs: { orderBy: { createdAt: "desc" } },         // <-- Call logs back
     },
   });
 
   if (!customer) return <div className="card">Not found.</div>;
 
-  /* Server actions */
+  /* Server action: Add Note */
   async function addNote(formData: FormData) {
     "use server";
     const text = String(formData.get("text") || "");
@@ -97,22 +95,6 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     if (!text.trim()) return;
     await prisma.note.create({
       data: { text, staff: staff || null, customerId: customer.id },
-    });
-    revalidatePath(`/customers/${customer.id}`);
-  }
-
-  async function addVisit(formData: FormData) {
-    "use server";
-    const dateStr = String(formData.get("date") || "");
-    const summary = String(formData.get("summary") || "");
-    const staff = String(formData.get("staff") || "");
-    await prisma.visit.create({
-      data: {
-        customerId: customer.id,
-        date: dateStr ? new Date(dateStr) : new Date(),
-        summary: summary || null,
-        staff: staff || null,
-      },
     });
     revalidatePath(`/customers/${customer.id}`);
   }
@@ -185,98 +167,84 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         )}
       </div>
 
-      {/* Notes / Visits */}
-      <div className="grid grid-2">
-        <div className="card">
-          <h3>Add Note</h3>
-          <form action={addNote} className="grid" style={{ gap: 8 }}>
-            <div>
-              <label>Sales Rep (optional)</label>
-              <input name="staff" placeholder="Your name" />
-            </div>
-            <div>
-              <label>Note</label>
-              <textarea name="text" rows={3} required />
-            </div>
-            <button className="primary" type="submit">
-              Save Note
-            </button>
-          </form>
+      {/* Add Note — full width (Log Visit removed) */}
+      <div className="card">
+        <h3>Add Note</h3>
+        <form action={addNote} className="grid" style={{ gap: 8 }}>
+          <div>
+            <label>Sales Rep (optional)</label>
+            <input name="staff" placeholder="Your name" />
+          </div>
+          <div>
+            <label>Note</label>
+            <textarea name="text" rows={3} required />
+          </div>
+          <button className="primary" type="submit">Save Note</button>
+        </form>
 
-          <h3 style={{ marginTop: 16 }}>Notes</h3>
-          {customer.notesLog.length === 0 ? (
-            <p className="small">No notes yet.</p>
-          ) : (
-            customer.notesLog.map((n) => (
-              <div
-                key={n.id}
-                className="row"
-                style={{
-                  justifyContent: "space-between",
-                  borderBottom: "1px solid var(--border)",
-                  padding: "8px 0",
-                }}
-              >
-                <div>
-                  <div className="small">
-                    {new Date(n.createdAt).toLocaleString()} {n.staff ? `• ${n.staff}` : ""}
-                  </div>
-                  <div>{n.text}</div>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        <div className="card">
-          <h3>Log Visit</h3>
-          <form action={addVisit} className="grid" style={{ gap: 8 }}>
-            <div className="grid grid-2">
+        <h3 style={{ marginTop: 16 }}>Notes</h3>
+        {customer.notesLog.length === 0 ? (
+          <p className="small">No notes yet.</p>
+        ) : (
+          customer.notesLog.map((n) => (
+            <div
+              key={n.id}
+              className="row"
+              style={{
+                justifyContent: "space-between",
+                borderBottom: "1px solid var(--border)",
+                padding: "8px 0",
+              }}
+            >
               <div>
-                <label>Date</label>
-                <input type="date" name="date" />
-              </div>
-              <div>
-                <label>Sales Rep (optional)</label>
-                <input name="staff" placeholder="Your name" />
-              </div>
-            </div>
-            <div>
-              <label>Summary</label>
-              <textarea name="summary" rows={3} placeholder="What happened?" />
-            </div>
-            <button className="primary" type="submit">
-              Save Visit
-            </button>
-          </form>
-
-          <h3 style={{ marginTop: 16 }}>Visits</h3>
-          {customer.visits.length === 0 ? (
-            <p className="small">No visits yet.</p>
-          ) : (
-            customer.visits.map((v) => (
-              <div
-                key={v.id}
-                className="row"
-                style={{
-                  justifyContent: "space-between",
-                  borderBottom: "1px solid var(--border)",
-                  padding: "8px 0",
-                }}
-              >
-                <div>
-                  <div className="small">
-                    {new Date(v.date).toLocaleDateString()} {v.staff ? `• ${v.staff}` : ""}
-                  </div>
-                  <div>{v.summary || "-"}</div>
+                <div className="small">
+                  {new Date(n.createdAt).toLocaleString()} {n.staff ? `• ${n.staff}` : ""}
                 </div>
+                <div>{n.text}</div>
               </div>
-            ))
-          )}
-        </div>
+            </div>
+          ))
+        )}
       </div>
 
-      {/* Call Logs section intentionally removed */}
+      {/* Call Logs — back on the page */}
+      <div className="card">
+        <h3>Call Logs</h3>
+        {customer.callLogs.length === 0 ? (
+          <p className="small">No calls logged yet.</p>
+        ) : (
+          customer.callLogs.map((c) => (
+            <div
+              key={c.id}
+              className="row"
+              style={{
+                justifyContent: "space-between",
+                borderBottom: "1px solid var(--border)",
+                padding: "8px 0",
+              }}
+            >
+              <div>
+                <div className="small">
+                  {new Date(c.createdAt).toLocaleString()}
+                  {c.staff ? ` • ${c.staff}` : ""}
+                  {c.callType ? ` • ${c.callType}` : ""}
+                  {c.outcome ? ` • ${c.outcome}` : ""}
+                  {c.followUpAt ? ` • follow-up ${new Date(c.followUpAt as any).toLocaleString()}` : ""}
+                </div>
+                <div>{c.summary || "-"}</div>
+
+                {!c.isExistingCustomer && (
+                  <div className="small muted">
+                    Lead: {c.customerName || "-"}
+                    {c.contactPhone ? ` • ${c.contactPhone}` : ""}
+                    {c.contactEmail ? ` • ${c.contactEmail}` : ""}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }
