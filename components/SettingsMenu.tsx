@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 
 export default function SettingsMenu() {
   const [open, setOpen] = useState(false);
@@ -14,6 +15,7 @@ export default function SettingsMenu() {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         setOpen(false);
         setActive(null);
+        setMsg(null);
       }
     }
     document.addEventListener("click", onDocClick);
@@ -31,6 +33,7 @@ export default function SettingsMenu() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, email }),
     });
+
     if (res.ok) {
       (document.getElementById("rep-form") as HTMLFormElement)?.reset();
       setMsg("Sales rep added ✔");
@@ -50,12 +53,13 @@ export default function SettingsMenu() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     });
+
     if (res.ok) {
       (document.getElementById("brand-form") as HTMLFormElement)?.reset();
-      setMsg("Brand added ✔");
+      setMsg("Competitor brand added ✔");
     } else {
       const j = await res.json().catch(() => ({}));
-      setMsg(j.error || "Failed to add brand.");
+      setMsg(j.error || "Failed to add competitor brand.");
     }
   }
 
@@ -100,6 +104,7 @@ export default function SettingsMenu() {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="grid" style={{ gap: 8 }}>
+            {/* Add Sales Rep */}
             <button
               className="primary"
               onClick={() => { setActive(active === "rep" ? null : "rep"); setMsg(null); }}
@@ -107,8 +112,12 @@ export default function SettingsMenu() {
               Add a Sales Rep
             </button>
             {active === "rep" && (
-              <form id="rep-form" className="grid" style={{ gap: 8 }}
-                    onSubmit={(e) => { e.preventDefault(); handleAddRep(new FormData(e.currentTarget)); }}>
+              <form
+                id="rep-form"
+                className="grid"
+                style={{ gap: 8 }}
+                onSubmit={(e) => { e.preventDefault(); handleAddRep(new FormData(e.currentTarget)); }}
+              >
                 <div>
                   <label>Name*</label>
                   <input name="name" required />
@@ -123,15 +132,20 @@ export default function SettingsMenu() {
               </form>
             )}
 
+            {/* Add Competitor Brand */}
             <button
               className="primary"
               onClick={() => { setActive(active === "brand" ? null : "brand"); setMsg(null); }}
             >
-              Add a Brand
+              Add a Competitor Brand
             </button>
             {active === "brand" && (
-              <form id="brand-form" className="grid" style={{ gap: 8 }}
-                    onSubmit={(e) => { e.preventDefault(); handleAddBrand(new FormData(e.currentTarget)); }}>
+              <form
+                id="brand-form"
+                className="grid"
+                style={{ gap: 8 }}
+                onSubmit={(e) => { e.preventDefault(); handleAddBrand(new FormData(e.currentTarget)); }}
+              >
                 <div>
                   <label>Brand Name*</label>
                   <input name="name" required />
@@ -142,8 +156,21 @@ export default function SettingsMenu() {
               </form>
             )}
 
+            {/* Add Stocked Brand (link to page) */}
+            <Link
+              href="/stocked-brands/new"
+              className="primary"
+              style={{ width: "100%", textAlign: "center" }}
+              onClick={() => { setOpen(false); setActive(null); setMsg(null); }}
+            >
+              Add a Stocked Brand
+            </Link>
+
             {msg && <div className="small" style={{ marginTop: 6 }}>{msg}</div>}
-            <div className="small muted">New Sales Reps and Brands will appear in the Create Customer form automatically.</div>
+
+            <div className="small muted">
+              New Sales Reps and Brands will appear in the Create Customer form automatically.
+            </div>
           </div>
         </div>
       )}
