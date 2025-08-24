@@ -36,7 +36,7 @@ body {
 
   /* unified field tokens */
   --field-bg: #ffffff;
-  --field-border: #111111; /* make every field equally prominent */
+  --field-border: #111111;   /* prominent border like your preferred style */
   --field-height: 42px;
   --field-radius: 14px;
 }
@@ -99,7 +99,9 @@ button, .btn, .primary {
 .primary:focus-visible { outline: none; box-shadow: var(--ring); }
 button:disabled, .btn:disabled { opacity: .55; cursor: not-allowed; }
 
-/* 9) Forms — UNIFIED for all inputs/selects/areas */
+/* 9) Forms */
+
+/* labels */
 label {
   display: block;
   font-size: .85rem;
@@ -108,15 +110,15 @@ label {
   font-weight: 600;
 }
 
-/* Base style that every field (including email/number/select) inherits */
-input,
+/* IMPORTANT: style only text-like inputs (NOT checkboxes/radios) */
+:where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])),
 select,
 textarea {
   width: 100%;
   appearance: none;
   background: var(--field-bg) !important;
   color: var(--text);
-  border: 1px solid var(--field-border) !important; /* make equally prominent */
+  border: 1px solid var(--field-border) !important;
   border-radius: var(--field-radius);
   padding: 10px 12px;
   line-height: 1.4;
@@ -126,46 +128,64 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
-/* Individual types (still inherit the same visuals) */
-input[type="text"],
-input[type="email"],
-input[type="number"],
-input[type="date"],
-input[type="search"],
-input[type="password"] {}
-
-/* Remove number spinners to match text inputs visually */
-input[type="number"]::-webkit-outer-spin-button,
-input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-input[type="number"] { -moz-appearance: textfield; }
+/* keep native checkboxes/radios (restores old Opening Hours look) */
+input[type="checkbox"],
+input[type="radio"] {
+  appearance: auto;
+  height: auto;
+  width: auto;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  vertical-align: middle;
+}
 
 textarea { height: auto; resize: vertical; }
 
-input::placeholder,
-textarea::placeholder { color: #9ca3af; }
+input::placeholder, textarea::placeholder { color: #9ca3af; }
 
-input:focus,
+:where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])),
+textarea,
+select {
+  border-color: var(--field-border);
+}
+:where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])):focus,
 textarea:focus,
 select:focus {
   border-color: var(--pink-700) !important;
   box-shadow: var(--ring);
 }
 
-/* Make dropdowns wide enough and consistent (fixes hour/min clipping too) */
-select {
-  min-width: 96px;
-  padding-right: 28px; /* room for chevron */
-  text-align: left;
+/* number spinners off for cleaner look */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; }
+
+/* Selects generally */
+select { padding-right: 28px; }
+
+/* Opening Hours — revert to previous compact rectangular look */
+.opening-hours { }
+.opening-hours table { width: 100%; border-collapse: collapse; }
+.opening-hours th,
+.opening-hours td { padding: 6px 8px; vertical-align: middle; }
+
+.opening-hours select {
+  height: 36px;                 /* smaller than main fields */
+  min-width: 72px;              /* wide enough for “09” / “00” */
+  border-radius: 10px;          /* rectangular, not pill */
+  border: 1px solid var(--border) !important;
+  background: #fff !important;
+  text-align: center;
+  padding: 6px 10px;
+  font-variant-numeric: tabular-nums;
 }
+.opening-hours select[data-min="true"] { min-width: 64px; }
+.opening-hours input[type="checkbox"] { margin-right: 6px; }
 
-/* Compact numeric dropdowns (hour/min) */
-select[data-compact="true"] { text-align: center; }
-
-/* Opening-hours wrapper for hard overrides, if used */
-.opening-hours select { min-width: 100px !important; }
-.opening-hours select[data-min="true"] { min-width: 80px !important; }
-
-/* Inline help */
+/* helper text */
 .form-hint { font-size: .85rem; color: var(--muted); }
 .form-error { color: #b91c1c; }
 .form-success { color: #065f46; }
@@ -223,9 +243,9 @@ footer small { color: var(--muted); }
   pointer-events: none;
 }
 .action-title { font-weight: 800; font-size: 1.1rem; letter-spacing: .2px; margin-bottom: 4px; }
-.action-sub { font-size: .875rem; color: var(--muted); }
+.action-sub   { font-size: .875rem; color: var(--muted); }
 
-/* 15) Field helper (used by some forms) */
+/* 15) Field helper (if used) */
 .field > input,
 .field > select,
 .field > textarea {
