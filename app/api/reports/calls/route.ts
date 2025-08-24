@@ -1,6 +1,7 @@
 // app/api/reports/calls/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 
 /* Parse yyyy-mm-dd safely */
 function parseDay(s: string | null): Date | null {
@@ -25,26 +26,37 @@ export async function GET(req: Request) {
     const from = parseDay(fromStr);
     const to = parseDay(toStr);
     if (!from || !to) {
-      return NextResponse.json({ error: "Invalid or missing from/to (yyyy-mm-dd)" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid or missing from/to (yyyy-mm-dd)" },
+        { status: 400 }
+      );
     }
 
-    // inclusive range [from 00:00, to 23:59:59]
+    // inclusive [from 00:00, to 23:59:59]
     const gte = from;
     const lt = addDays(to, 1);
 
-    const where = { createdAt: { gte, lt } };
+    // 🔧 Explicitly type the where clause to avoid circular type errors with groupBy
+    const where: Prisma.CallLogWhereInput = { createdAt: { gte, lt } };
 
-    const [totalCalls, bookings, sales, byRepRaw] = await Promise.all([
-      prisma.callLog.count({ where }),
-      prisma.callLog.count({ where: { ...where, appointmentBooked: true } }),
-      prisma.callLog.count({ where: { ...where, outcome: "Sale" } }),
-      prisma.callLog.groupBy({
-        by: ["staff"],
-        where,
-        _count: { _all: true },
-        orderBy: { _count: { _all: "desc" } },
-      }),
-    ]);
+    const totalCalls = await prisma.callLog.count({ where });
+    const bookings = await prisma.callLog.count({
+      where: { ...where, appointmentBooked: true },
+    });
+    const sales = await prisma.callLog.count({
+      where: { ...where, outcome: "Sale" },
+    });
+
+    // 🔧 Type-narrow the groupBy call; some Next/TS combos choke on the generic constraints.
+    const byRepRaw = (await prisma.callLog.groupBy({
+      by: ["staff"],
+      where,
+      _count: { _all: true },
+      orderBy: { _count: { _all: "desc" } },
+    } as unknown as Prisma.CallLogGroupByArgs)) as Array<{
+      staff: string | null;
+      _count: { _all: number };
+    }>;
 
     const callToBookingPct = totalCalls > 0 ? (bookings / totalCalls) * 100 : 0;
     const apptToSalePct = bookings > 0 ? (sales / bookings) * 100 : 0;
