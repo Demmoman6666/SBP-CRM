@@ -49,17 +49,14 @@ export async function GET(req: Request) {
       prisma.callLog.count({ where: { ...where, outcome: "Sale" } }),
     ]);
 
-    // Durations (sum & avg of durationMinutes)
+    // Durations: sum only; average = totalDuration / totalCalls (treat missing as 0)
     const durationAgg = await prisma.callLog.aggregate({
       where,
       _sum: { durationMinutes: true },
-      _avg: { durationMinutes: true },
     });
     const totalDurationMinutes = durationAgg._sum.durationMinutes ?? 0;
     const avgDurationMinutes =
-      typeof durationAgg._avg.durationMinutes === "number"
-        ? durationAgg._avg.durationMinutes
-        : 0;
+      totalCalls > 0 ? totalDurationMinutes / totalCalls : 0;
 
     // Booked Calls (callType = "Booked Call") and how many became sales
     const [bookedCalls, bookedCallSales] = await Promise.all([
