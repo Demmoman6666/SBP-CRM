@@ -3,23 +3,53 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+/* Types */
 type Rep = { id: string; name: string };
-type CustomerLite = {
+type CustomerHit = {
   id: string;
-  salonName: string;
+  salonName: string | null;
   customerName: string | null;
-  customerTelephone: string | null;
-  customerEmailAddress: string | null;
-  addressLine1: string | null;
-  addressLine2: string | null;
-  town: string | null;
-  county: string | null;
-  postCode: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  town?: string | null;
+  county?: string | null;
+  postCode?: string | null;
+  customerTelephone?: string | null;
+  customerEmailAddress?: string | null;
 };
-type BrandRow = { id: string; name: string };
+type SimpleBrand = { id: string; name: string };
+
+/* Helpers */
+function fmtCustomerLine(c?: CustomerHit | null) {
+  if (!c) return "";
+  const a = c.salonName ?? "";
+  const b = c.customerName ?? "";
+  const s = `${a}${a && b ? " — " : ""}${b}`.trim();
+  return s || a || b || "";
+}
+function addressLines(c: CustomerHit) {
+  return [
+    c.addressLine1,
+    c.addressLine2,
+    c.town,
+    c.county,
+    c.postCode,
+  ].filter(Boolean) as string[];
+}
+function toMinutes(hhmm: string) {
+  const [h, m] = hhmm.split(":").map(Number);
+  if (Number.isFinite(h) && Number.isFinite(m)) return h * 60 + m;
+  return NaN;
+}
+function nowHHMM() {
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
 
 export default function NewCallPage() {
-  /* ====== data ====== */
+  /* Sales reps */
   const [reps, setReps] = useState<Rep[]>([]);
   useEffect(() => {
     fetch("/api/sales-reps")
@@ -28,111 +58,105 @@ export default function NewCallPage() {
       .catch(() => setReps([]));
   }, []);
 
-  const [brands, setBrands] = useState<BrandRow[]>([]); // competitor brands (Brands used)
-  const [stockedBrands, setStockedBrands] = useState<BrandRow[]>([]); // stocked brands (discussed)
+  /* Brand lists */
+  const [stockedBrands, setStockedBrands] = useState<SimpleBrand[]>([]);
+  const [competitorBrands, setCompetitorBrands] = useState<SimpleBrand[]>([]);
   useEffect(() => {
-    fetch("/api/brands")
-      .then((r) => r.json())
-      .then(setBrands)
-      .catch(() => setBrands([]));
-    fetch("/api/stocked-brands")
-      .then((r) => r.json())
-      .then(setStockedBrands)
-      .catch(() => setStockedBrands([]));
+    Promise.all([
+      fetch("/api/stocked-brands").then((r) => r.json()).catch(() => []),
+      fetch("/api/brands").then((r) => r.json()).catch(() => []),
+    ]).then(([s, b]) => {
+      setStockedBrands(Array.isArray(s) ? s : []);
+      setCompetitorBrands(Array.isArray(b) ? b : []);
+    });
   }, []);
 
-  /* ====== predictive customer search ====== */
-  const [existing, setExisting] = useState<"true" | "false">("true");
-  const [custQuery, setCustQuery] = useState("");
-  const [custOpts, setCustOpts] = useState<CustomerLite[]>([]);
-  const [showOpts, setShowOpts] = useState(false);
-  const [pickedCustomer, setPickedCustomer] = useState<CustomerLite | null>(
-    null
-  );
+  /* Existing customer toggle */
+  const [isExisting, setIsExisting] = useState<boolean>(true);
 
-  const inputWrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (existing !== "true") {
-      setCustOpts([]);
-      setShowOpts(false);
-      return;
-    }
-    const q = custQuery.trim();
-    if (q.length < 2) {
-      setCustOpts([]);
-      setShowOpts(false);
-      return;
-    }
-    const t = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/customers/search?q=${encodeURIComponent(q)}`);
-        const data = await res.json();
-        setCustOpts(data || []);
-        setShowOpts(true);
-      } catch {
-        setCustOpts([]);
-        setShowOpts(false);
-      }
-    }, 200);
-    return () => clearTimeout(t);
-  }, [custQuery, existing]);
+  /* Predictive search */
+  const [custTerm, setCustTerm] = useState("");
+  const [custHits, setCustHits] = useState<CustomerHit[]>([]);
+  const [custOpen, setCustOpen] = useState(false);
+  const [custSelected, setCustSelected] = useState<CustomerHit | null>(null);
+  const custWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
-      if (
-        inputWrapRef.current &&
-        !inputWrapRef.current.contains(e.target as Node)
-      ) {
-        setShowOpts(false);
+      if (custWrapRef.current && !custWrapRef.current.contains(e.target as Node)) {
+        setCustOpen(false);
       }
     }
     document.addEventListener("click", onDocClick);
     return () => document.removeEventListener("click", onDocClick);
   }, []);
 
-  /* ====== time + duration ====== */
-  const [startTime, setStartTime] = useState<string>("");
-  const [finishTime, setFinishTime] = useState<string>("");
-  const [duration, setDuration] = useState<number | "">("");
-
   useEffect(() => {
-    if (!startTime || !finishTime) {
-      setDuration("");
+    if (!isExisting) {
+      // free-typing a lead
+      setCustHits([]);
+      setCustSelected(null);
       return;
     }
-    const [sh, sm] = startTime.split(":").map((n) => parseInt(n, 10));
-    const [eh, em] = finishTime.split(":").map((n) => parseInt(n, 10));
-    let mins = (eh - sh) * 60 + (em - sm);
-    if (mins < 0) mins += 24 * 60; // cross-midnight fallback
-    setDuration(mins);
-  }, [startTime, finishTime]);
+    const q = custTerm.trim();
+    if (q.length < 2) {
+      setCustHits([]);
+      return;
+    }
+    const ac = new AbortController();
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/customers?search=${encodeURIComponent(q)}&take=8`, {
+          signal: ac.signal,
+        });
+        const j = await res.json();
+        setCustHits(Array.isArray(j) ? j : []);
+        setCustOpen(true);
+      } catch {
+        setCustHits([]);
+      }
+    }, 200);
+    return () => {
+      ac.abort();
+      clearTimeout(t);
+    };
+  }, [custTerm, isExisting]);
 
-  const setNow = (setter: (v: string) => void) => {
-    const d = new Date();
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    setter(`${hh}:${mm}`);
-  };
+  function handlePickCustomer(c: CustomerHit) {
+    setCustSelected(c);
+    setCustTerm(fmtCustomerLine(c));
+    setCustOpen(false);
+  }
+  function clearPickedCustomer() {
+    setCustSelected(null);
+    setCustTerm("");
+    setCustHits([]);
+    setCustOpen(false);
+  }
 
-  /* ====== multi-select checkboxes -> csv ====== */
-  const [brandsUsed, setBrandsUsed] = useState<string[]>([]); // from /api/brands
-  const [brandsDiscussed, setBrandsDiscussed] = useState<string[]>([]); // from /api/stocked-brands
+  /* Times + duration */
+  const [start, setStart] = useState<string>("");
+  const [finish, setFinish] = useState<string>("");
+  const duration = useMemo(() => {
+    if (!start || !finish) return "";
+    const s = toMinutes(start);
+    const e = toMinutes(finish);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return "";
+    // handle overnight (finish after midnight)
+    const diff = e >= s ? e - s : e + 24 * 60 - s;
+    return String(diff);
+  }, [start, finish]);
 
-  const toggleIn = (arr: string[], setArr: (v: string[]) => void, id: string) =>
-    setArr(arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]);
-
-  /* ====== submit ====== */
+  /* Submission state */
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
-
     const fd = new FormData(e.currentTarget);
 
-    // basic client guards
+    // Must have a rep & summary
     if (!fd.get("salesRep")) {
       setError("Please select a Sales Rep.");
       return;
@@ -141,24 +165,17 @@ export default function NewCallPage() {
       setError("Summary is required.");
       return;
     }
-    if (existing === "true" && !pickedCustomer) {
+    // If existing customer, ensure a suggestion was actually picked
+    const existing = fd.get("isExistingCustomer") === "true";
+    if (existing && !fd.get("customerId")) {
       setError("Please pick a customer from the suggestions.");
       return;
     }
 
-    // inject computed + selections
-    if (pickedCustomer) fd.set("customerId", pickedCustomer.id);
-    if (startTime) fd.set("startTime", startTime);
-    if (finishTime) fd.set("endTime", finishTime);
-    if (typeof duration === "number") fd.set("durationMinutes", String(duration));
-
-    fd.set("brandsDiscussedCsv", brandsDiscussed.join(","));
-    fd.set("brandsUsedCsv", brandsUsed.join(","));
-
     try {
       setSubmitting(true);
       const res = await fetch("/api/calls", { method: "POST", body: fd });
-      const json = await res.json().catch(() => ({}));
+      const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to save call");
       if (json.redirectTo) window.location.href = json.redirectTo;
       else window.location.href = "/";
@@ -171,19 +188,15 @@ export default function NewCallPage() {
 
   const timestamp = useMemo(() => new Date().toLocaleString(), []);
 
-  /* ====== UI ====== */
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <section
-        className="card row"
-        style={{ justifyContent: "space-between", alignItems: "center" }}
-      >
+      <section className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <h1>Log Call</h1>
         <span className="small muted">Timestamp: {timestamp}</span>
       </section>
 
       <form onSubmit={onSubmit} className="card grid" style={{ gap: 12 }}>
-        {/* Row 1: Existing toggle + Rep */}
+        {/* Row: Existing? + Rep */}
         <div className="grid grid-2">
           <div className="field">
             <label>Is this an existing customer? (required)</label>
@@ -193,10 +206,12 @@ export default function NewCallPage() {
                   type="radio"
                   name="isExistingCustomer"
                   value="true"
-                  checked={existing === "true"}
+                  checked={isExisting}
                   onChange={() => {
-                    setExisting("true");
-                    setPickedCustomer(null);
+                    setIsExisting(true);
+                    // for existing, clear any free-typed lead value
+                    setCustTerm("");
+                    setCustSelected(null);
                   }}
                   required
                 />
@@ -207,11 +222,11 @@ export default function NewCallPage() {
                   type="radio"
                   name="isExistingCustomer"
                   value="false"
-                  checked={existing === "false"}
+                  checked={!isExisting}
                   onChange={() => {
-                    setExisting("false");
-                    setPickedCustomer(null);
-                    setCustQuery("");
+                    setIsExisting(false);
+                    setCustHits([]);
+                    setCustSelected(null);
                   }}
                 />
                 No
@@ -222,155 +237,126 @@ export default function NewCallPage() {
           <div className="field">
             <label>Sales Rep (required)</label>
             <select name="salesRep" required defaultValue="">
-              <option value="" disabled>
-                — Select a Sales Rep —
-              </option>
+              <option value="" disabled>— Select a Sales Rep —</option>
               {reps.map((r) => (
-                <option key={r.id} value={r.name}>
-                  {r.name}
-                </option>
+                <option key={r.id} value={r.name}>{r.name}</option>
               ))}
             </select>
           </div>
         </div>
 
-        {/* Row 2: Customer + Outcome */}
+        {/* Row: Customer + Outcome */}
         <div className="grid grid-2">
-          <div className="field" ref={inputWrapRef} style={{ position: "relative" }}>
+          <div className="field" ref={custWrapRef} style={{ position: "relative" }}>
             <label>Customer*</label>
             <input
               name="customer"
-              placeholder={
-                existing === "true"
-                  ? "Type to search…"
-                  : "Type a salon or contact for a new lead"
-              }
-              value={custQuery}
+              placeholder={isExisting ? "Type to search" : "Type to search or free-type for new lead"}
+              value={custTerm}
               onChange={(e) => {
-                setCustQuery(e.target.value);
-                setPickedCustomer(null);
+                setCustTerm(e.target.value);
+                if (custSelected) setCustSelected(null);
+                if (isExisting) setCustOpen(true);
+              }}
+              onFocus={() => {
+                if (isExisting && custTerm.trim().length >= 2) setCustOpen(true);
               }}
               required
             />
-            <div className="form-hint">
-              {existing === "true"
-                ? "Pick from suggestions for existing."
-                : "Free-type to log a lead."}
-            </div>
+            {/* Hidden values server can use */}
+            <input type="hidden" name="customerId" value={custSelected?.id || ""} />
+            <input type="hidden" name="customerResolved" value={fmtCustomerLine(custSelected) || ""} />
 
-            {existing === "true" && showOpts && custOpts.length > 0 && (
+            {/* Suggestion panel */}
+            {isExisting && custOpen && (
               <div
                 style={{
                   position: "absolute",
-                  zIndex: 20,
-                  top: "100%",
+                  top: "calc(100% + 6px)",
                   left: 0,
-                  marginTop: 6,
-                  width: "min(560px, 100%)",
+                  width: "min(620px, 92vw)",
                   background: "#fff",
                   border: "1px solid var(--border)",
                   borderRadius: 12,
                   boxShadow: "var(--shadow)",
-                  overflow: "hidden",
+                  padding: 6,
+                  zIndex: 40,
                 }}
               >
-                {custOpts.map((c) => {
-                  const addr = [
-                    c.addressLine1,
-                    c.addressLine2,
-                    c.town,
-                    c.county,
-                    c.postCode,
-                  ]
-                    .filter(Boolean)
-                    .join(", ");
-                return (
+                {custHits.length === 0 ? (
+                  <div className="small" style={{ padding: 10 }}>No matches found.</div>
+                ) : (
+                  custHits.map((c) => (
                     <button
                       key={c.id}
                       type="button"
-                      className="row"
+                      onClick={() => handlePickCustomer(c)}
                       style={{
                         width: "100%",
                         textAlign: "left",
                         padding: "10px 12px",
-                        gap: 10,
-                        borderBottom: "1px solid var(--border)",
-                        background: "#fff",
+                        borderRadius: 10,
+                        border: "1px solid transparent",
                         cursor: "pointer",
                       }}
-                      onClick={() => {
-                        setPickedCustomer(c);
-                        setCustQuery(`${c.salonName} — ${c.customerName || ""}`.trim());
-                        setShowOpts(false);
+                      onMouseEnter={(e) => {
+                        (e.currentTarget.style.background = "#fafafa");
+                        (e.currentTarget.style.borderColor = "#eee");
+                      }}
+                      onMouseLeave={(e) => {
+                        (e.currentTarget.style.background = "transparent");
+                        (e.currentTarget.style.borderColor = "transparent");
                       }}
                     >
-                      <div style={{ fontWeight: 600 }}>{c.salonName}</div>
-                      <div className="small" style={{ color: "var(--muted)" }}>
-                        {c.customerName ? `Contact: ${c.customerName}` : ""}
+                      <div style={{ fontWeight: 600 }}>{c.salonName || "-"}</div>
+                      <div className="small">
+                        Contact: {c.customerName || "-"}
                         {c.customerTelephone ? ` • ${c.customerTelephone}` : ""}
                         {c.customerEmailAddress ? ` • ${c.customerEmailAddress}` : ""}
-                        {addr ? ` • ${addr}` : ""}
+                      </div>
+                      <div className="small muted">
+                        {addressLines(c).join(", ") || "-"}
                       </div>
                     </button>
-                  );
-                })}
+                  ))
+                )}
               </div>
             )}
 
-            {/* chosen customer confirmation */}
-            {pickedCustomer && (
+            {/* Selected customer card */}
+            {isExisting && custSelected && (
               <div
                 className="card"
-                style={{
-                  background: "#fafafa",
-                  borderColor: "var(--border)",
-                  marginTop: 8,
-                }}
+                style={{ marginTop: 8, padding: 10, borderRadius: 10 }}
               >
-                <div style={{ fontWeight: 700 }}>{pickedCustomer.salonName}</div>
-                <div className="small">
-                  {pickedCustomer.customerName ? `Contact: ${pickedCustomer.customerName}` : ""}
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                  {custSelected.salonName || "-"}
                 </div>
                 <div className="small">
-                  {pickedCustomer.customerTelephone || "-"}
-                  {pickedCustomer.customerEmailAddress
-                    ? ` • ${pickedCustomer.customerEmailAddress}`
-                    : ""}
+                  Contact: {custSelected.customerName || "-"}
+                  {custSelected.customerTelephone ? ` • ${custSelected.customerTelephone}` : ""}
+                  {custSelected.customerEmailAddress ? ` • ${custSelected.customerEmailAddress}` : ""}
                 </div>
-                <div className="small">
-                  {[
-                    pickedCustomer.addressLine1,
-                    pickedCustomer.addressLine2,
-                    pickedCustomer.town,
-                    pickedCustomer.county,
-                    pickedCustomer.postCode,
-                  ]
-                    .filter(Boolean)
-                    .join(", ") || "-"}
+                <div className="small muted" style={{ marginTop: 2 }}>
+                  {addressLines(custSelected).join(", ") || "-"}
                 </div>
-                <div className="right" style={{ marginTop: 6 }}>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                      setPickedCustomer(null);
-                      setCustQuery("");
-                    }}
-                    style={{ background: "#eee" }}
-                  >
+                <div className="right" style={{ marginTop: 8 }}>
+                  <button type="button" className="btn" onClick={clearPickedCustomer}>
                     Change
                   </button>
                 </div>
               </div>
+            )}
+
+            {!isExisting && (
+              <div className="form-hint">Free-type for a lead.</div>
             )}
           </div>
 
           <div className="field">
             <label>Outcome</label>
             <select name="outcome" defaultValue="">
-              <option value="" disabled>
-                — Select —
-              </option>
+              <option value="" disabled>— Select —</option>
               <option>Sale</option>
               <option>No Sale</option>
               <option>Appointment booked</option>
@@ -379,141 +365,64 @@ export default function NewCallPage() {
           </div>
         </div>
 
-        {/* Row 3: Call type + Times & duration */}
+        {/* Times & duration */}
+        <div className="grid grid-2">
+          <div className="field">
+            <label>Start Time</label>
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                type="time"
+                name="startTime"
+                value={start}
+                onChange={(e) => setStart(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setStart(nowHHMM())}
+              >
+                Now
+              </button>
+            </div>
+          </div>
+
+          <div className="field">
+            <label>Finish Time</label>
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                type="time"
+                name="endTime"
+                value={finish}
+                onChange={(e) => setFinish(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setFinish(nowHHMM())}
+              >
+                Now
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="field">
+          <label>Total Duration (mins)</label>
+          <input name="durationMinutes" value={duration} readOnly placeholder="—" />
+        </div>
+
+        {/* Call type + follow-up */}
         <div className="grid grid-2">
           <div className="field">
             <label>Call Type</label>
             <select name="callType" defaultValue="">
-              <option value="" disabled>
-                — Select —
-              </option>
+              <option value="" disabled>— Select —</option>
               <option>Cold Call</option>
               <option>Booked Call</option>
               <option>Booked Demo</option>
             </select>
           </div>
 
-          <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <div className="field">
-              <label>Start Time</label>
-              <div className="row" style={{ gap: 8 }}>
-                <input
-                  type="time"
-                  name="startTime_local"
-                  value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
-                />
-                <button type="button" className="primary" onClick={() => setNow(setStartTime)}>
-                  Now
-                </button>
-              </div>
-            </div>
-            <div className="field">
-              <label>Finish Time</label>
-              <div className="row" style={{ gap: 8 }}>
-                <input
-                  type="time"
-                  name="endTime_local"
-                  value={finishTime}
-                  onChange={(e) => setFinishTime(e.target.value)}
-                />
-                <button type="button" className="primary" onClick={() => setNow(setFinishTime)}>
-                  Now
-                </button>
-              </div>
-            </div>
-            <div className="field" style={{ gridColumn: "1 / -1" }}>
-              <label>Total Duration (mins)</label>
-              <input value={duration === "" ? "" : String(duration)} readOnly placeholder="—" />
-            </div>
-          </div>
-        </div>
-
-        {/* Row 4: Brands discussed (stocked) + Brands used (competitor) */}
-        <div className="grid grid-2">
-          <div className="field">
-            <label>What brands did you discuss? (Stocked Brands)</label>
-            <div
-              className="card"
-              style={{ padding: 10, borderColor: "var(--border)", background: "#fff" }}
-            >
-              {stockedBrands.length === 0 ? (
-                <div className="small muted">No stocked brands yet.</div>
-              ) : (
-                <div
-                  className="grid"
-                  style={{
-                    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                    gap: 8,
-                  }}
-                >
-                  {stockedBrands.map((b) => (
-                    <label
-                      key={b.id}
-                      className="row"
-                      style={{
-                        gap: 8,
-                        padding: "6px 8px",
-                        border: "1px solid var(--border)",
-                        borderRadius: 10,
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={brandsDiscussed.includes(b.id)}
-                        onChange={() => toggleIn(brandsDiscussed, setBrandsDiscussed, b.id)}
-                      />
-                      {b.name}
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="field">
-            <label>Brands used (Competitor Brands)</label>
-            <div
-              className="card"
-              style={{ padding: 10, borderColor: "var(--border)", background: "#fff" }}
-            >
-              {brands.length === 0 ? (
-                <div className="small muted">No brands yet.</div>
-              ) : (
-                <div
-                  className="grid"
-                  style={{
-                    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                    gap: 8,
-                  }}
-                >
-                  {brands.map((b) => (
-                    <label
-                      key={b.id}
-                      className="row"
-                      style={{
-                        gap: 8,
-                        padding: "6px 8px",
-                        border: "1px solid var(--border)",
-                        borderRadius: 10,
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={brandsUsed.includes(b.id)}
-                        onChange={() => toggleIn(brandsUsed, setBrandsUsed, b.id)}
-                      />
-                      {b.name}
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Row 5: Follow-up */}
-        <div className="grid grid-2">
           <div className="field">
             <label>Follow-up (date & time)</label>
             <div className="input-group">
@@ -523,36 +432,60 @@ export default function NewCallPage() {
           </div>
         </div>
 
+        {/* Brands discussed (stocked) */}
+        <div className="field">
+          <label>What brands did you discuss? (Stocked Brands)</label>
+          <div
+            className="grid"
+            style={{
+              gap: 8,
+              gridTemplateColumns: "1fr",
+            }}
+          >
+            {stockedBrands.map((b) => (
+              <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
+                <input type="checkbox" name="stockedBrands[]" value={b.name} />
+                {b.name}
+              </label>
+            ))}
+            {stockedBrands.length === 0 && (
+              <div className="small muted">No stocked brands yet.</div>
+            )}
+          </div>
+        </div>
+
+        {/* Competitor brands used */}
+        <div className="field">
+          <label>Brands used (Competitor Brands)</label>
+          <div
+            className="grid"
+            style={{
+              gap: 8,
+              gridTemplateColumns: "1fr 1fr",
+            }}
+          >
+            {competitorBrands.map((b) => (
+              <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
+                <input type="checkbox" name="competitorBrands[]" value={b.name} />
+                {b.name}
+              </label>
+            ))}
+            {competitorBrands.length === 0 && (
+              <div className="small muted">No competitor brands yet.</div>
+            )}
+          </div>
+        </div>
+
         {/* Summary */}
         <div className="field">
           <label>Summary (required)</label>
-          <textarea
-            name="summary"
-            rows={4}
-            placeholder="What was discussed?"
-            required
-          />
+          <textarea name="summary" rows={4} placeholder="What was discussed?" required />
         </div>
-
-        {/* hidden injectors for CSV selections (so APIs don’t need changes) */}
-        <input type="hidden" name="brandsDiscussedCsv" value={brandsDiscussed.join(",")} />
-        <input type="hidden" name="brandsUsedCsv" value={brandsUsed.join(",")} />
-        {/* hidden IDs for server (only if picked) */}
-        <input type="hidden" name="customerId" value={pickedCustomer?.id || ""} />
-        <input type="hidden" name="startTime" value={startTime} />
-        <input type="hidden" name="endTime" value={finishTime} />
-        <input
-          type="hidden"
-          name="durationMinutes"
-          value={typeof duration === "number" ? String(duration) : ""}
-        />
 
         {error && <div className="form-error">{error}</div>}
 
         <div className="right row" style={{ gap: 8 }}>
-          <a href="/" className="btn" style={{ background: "#f3f4f6" }}>
-            Cancel
-          </a>
+          <a href="/" className="btn" style={{ background: "#f3f4f6" }}>Cancel</a>
           <button className="primary" type="submit" disabled={submitting}>
             {submitting ? "Saving…" : "Save Call"}
           </button>
