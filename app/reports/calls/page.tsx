@@ -13,7 +13,7 @@ type Report = {
     sales: number;
     callToBookingPct: number;
     apptToSalePct: number;
-    /** ✅ NEW */
+    /** ✅ NEW for step 2 */
     callToSalePct: number;
     bookedCalls: number;
     bookedCallSales: number;
@@ -199,7 +199,7 @@ export default function CallReportPage() {
             <div className="small muted" style={{ marginTop: 4 }}>
               Booking → Sale: {data ? `${data.totals.apptToSalePct.toFixed(1)}%` : "—"}
             </div>
-            {/* ✅ NEW */}
+            {/* ✅ NEW for step 2 */}
             <div className="small muted" style={{ marginTop: 2 }}>
               Call → Sale: {data ? `${data.totals.callToSalePct.toFixed(1)}%` : "—"}
             </div>
