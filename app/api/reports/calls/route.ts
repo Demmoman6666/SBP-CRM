@@ -3,6 +3,9 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 /* Parse yyyy-mm-dd safely (UTC) */
 function parseDay(s: string | null): Date | null {
   if (!s) return null;
@@ -28,7 +31,7 @@ export async function GET(req: Request) {
     if (!from || !to) {
       return NextResponse.json(
         { error: "Invalid or missing from/to (yyyy-mm-dd)" },
-        { status: 400 }
+        { status: 400, headers: { "Cache-Control": "no-store" } }
       );
     }
 
@@ -63,7 +66,8 @@ export async function GET(req: Request) {
     const callToBookingPct = totalCalls > 0 ? (bookings / totalCalls) * 100 : 0;
     const apptToSalePct = bookings > 0 ? (sales / bookings) * 100 : 0;
 
-    return NextResponse.json({
+    const payload = {
+      generatedAt: new Date().toISOString(),
       range: { from: fromStr, to: toStr },
       totals: {
         totalCalls,
@@ -73,12 +77,25 @@ export async function GET(req: Request) {
         apptToSalePct,
       },
       byRep,
+    };
+
+    return NextResponse.json(payload, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "CDN-Cache-Control": "no-store",
+        "Vercel-CDN-Cache-Control": "no-store",
+      },
     });
   } catch (err: any) {
     console.error("Call report error:", err);
     return NextResponse.json(
       { error: err?.message ?? "Internal error" },
-      { status: 500 }
+      {
+        status: 500,
+        headers: { "Cache-Control": "no-store" },
+      }
     );
   }
 }
