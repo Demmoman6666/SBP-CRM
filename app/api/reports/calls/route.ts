@@ -1,267 +1,119 @@
-// app/reports/calls/page.tsx
-"use client";
+// app/api/reports/calls/route.ts
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 
-import { useEffect, useMemo, useState } from "react";
-
-type Report = {
-  generatedAt: string;
-  range: { from: string; to: string };
-  filter?: { staff: string | null };
-  totals: {
-    totalCalls: number;
-    bookings: number;
-    sales: number;
-    callToBookingPct: number;
-    apptToSalePct: number;
-    // Step 2 (already present)
-    callToSalePct: number;
-    bookedCalls: number;
-    bookedCallSales: number;
-    bookedCallToSalePct: number;
-    // ✅ NEW: durations
-    totalDurationMinutes: number;
-    avgDurationMinutes: number;
-  };
-  byRep: Array<{ staff: string; count: number }>;
-};
-
-type Rep = { id: string; name: string };
-
-function pad(n: number) { return n < 10 ? `0${n}` : String(n); }
-function ymdLocal(d: Date) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
-function addDaysLocal(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
-function mondayOfWeek(d: Date) { const dow = d.getDay(); const delta = dow === 0 ? -6 : 1 - dow; return addDaysLocal(d, delta); }
-function firstOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth(), 1); }
-function lastMonthFirst(d: Date) { return new Date(d.getFullYear(), d.getMonth()-1, 1); }
-function lastMonthLast(d: Date) { const firstThis = new Date(d.getFullYear(), d.getMonth(), 1); return addDaysLocal(firstThis, -1); }
-function ytdFirst(d: Date) { return new Date(d.getFullYear(), 0, 1); }
-
-// Small “chip” button (subtle, wraps well)
-function Chip(props: { onClick: () => void; children: React.ReactNode; title?: string }) {
-  return (
-    <button
-      className="btn"
-      onClick={props.onClick}
-      title={props.title}
-      style={{
-        padding: "6px 10px",
-        borderRadius: 999,
-        border: "1px solid var(--border)",
-        background: "#fff",
-      }}
-    >
-      {props.children}
-    </button>
-  );
+/* Parse yyyy-mm-dd safely (UTC) */
+function parseDay(s: string | null): Date | null {
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return isNaN(d.getTime()) ? null : d;
+}
+function addDaysUTC(d: Date, n: number) {
+  const x = new Date(d);
+  x.setUTCDate(x.getUTCDate() + n);
+  return x;
 }
 
-export default function CallReportPage() {
-  const today = useMemo(() => new Date(), []);
-  const [from, setFrom] = useState<string>(ymdLocal(today));
-  const [to, setTo] = useState<string>(ymdLocal(today));
+export async function GET(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const fromStr = searchParams.get("from");
+    const toStr = searchParams.get("to");
+    const staff = (searchParams.get("staff") || "").trim(); // optional filter
 
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [data, setData] = useState<Report | null>(null);
-
-  // Sales Rep filter
-  const [reps, setReps] = useState<Rep[]>([]);
-  const [repFilter, setRepFilter] = useState<string>(""); // "" = All reps
-
-  useEffect(() => {
-    fetch("/api/sales-reps", { cache: "no-store" })
-      .then(r => r.json())
-      .then((list: Rep[]) => setReps(list ?? []))
-      .catch(() => setReps([]));
-  }, []);
-
-  async function load(range?: { from: string; to: string; staff?: string }) {
-    const f = range?.from ?? from;
-    const t = range?.to ?? to;
-    const staff = range?.staff ?? repFilter;
-
-    setLoading(true);
-    setErr(null);
-    try {
-      const qs = new URLSearchParams({ from: f, to: t });
-      if (staff) qs.set("staff", staff);
-      const res = await fetch(`/api/reports/calls?${qs.toString()}`, { cache: "no-store" });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Failed to load report");
-      setData(json as Report);
-    } catch (e: any) {
-      setErr(e?.message || "Failed to load report");
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // initial fetch (Today)
-  useEffect(() => {
-    load({ from, to, staff: repFilter });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  function pickRange(kind: string) {
-    const now = new Date();
-    let f = from, t = to;
-
-    if (kind === "today") { f = ymdLocal(now); t = ymdLocal(now); }
-    else if (kind === "yesterday") { const y = addDaysLocal(now, -1); f = ymdLocal(y); t = ymdLocal(y); }
-    else if (kind === "wtd") { const start = mondayOfWeek(now); f = ymdLocal(start); t = ymdLocal(now); }
-    else if (kind === "lweek") { const thisMon = mondayOfWeek(now); f = ymdLocal(addDaysLocal(thisMon, -7)); t = ymdLocal(addDaysLocal(thisMon, -1)); }
-    else if (kind === "mtd") { f = ymdLocal(firstOfMonth(now)); t = ymdLocal(now); }
-    else if (kind === "lmonth") { f = ymdLocal(lastMonthFirst(now)); t = ymdLocal(lastMonthLast(now)); }
-    else if (kind === "ytd") { f = ymdLocal(ytdFirst(now)); t = ymdLocal(now); }
-    else if (kind === "custom") {
-      const input = prompt("Enter custom range as YYYY-MM-DD to YYYY-MM-DD", `${from} to ${to}`);
-      if (!input) return;
-      const m = /^\s*(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})\s*$/i.exec(input);
-      if (!m) { alert("Invalid format. Example: 2025-08-01 to 2025-08-24"); return; }
-      f = m[1]; t = m[2];
+    const from = parseDay(fromStr);
+    const to = parseDay(toStr);
+    if (!from || !to) {
+      return NextResponse.json(
+        { error: "Invalid or missing from/to (yyyy-mm-dd)" },
+        { status: 400 }
+      );
     }
 
-    setFrom(f); setTo(t);
-    load({ from: f, to: t, staff: repFilter });
+    // inclusive range: [from 00:00, to 23:59:59]
+    const gte = from;
+    const lt = addDaysUTC(to, 1);
+
+    const where: Prisma.CallLogWhereInput = {
+      createdAt: { gte, lt },
+      ...(staff ? { staff } : {}),
+    };
+
+    // Totals
+    const [totalCalls, bookings, sales] = await Promise.all([
+      prisma.callLog.count({ where }),
+      prisma.callLog.count({ where: { ...where, appointmentBooked: true } }),
+      prisma.callLog.count({ where: { ...where, outcome: "Sale" } }),
+    ]);
+
+    // Durations (sum & avg of durationMinutes)
+    const durationAgg = await prisma.callLog.aggregate({
+      where,
+      _sum: { durationMinutes: true },
+      _avg: { durationMinutes: true },
+    });
+    const totalDurationMinutes = durationAgg._sum.durationMinutes ?? 0;
+    const avgDurationMinutes =
+      typeof durationAgg._avg.durationMinutes === "number"
+        ? durationAgg._avg.durationMinutes
+        : 0;
+
+    // Booked Calls (callType = "Booked Call") and how many became sales
+    const [bookedCalls, bookedCallSales] = await Promise.all([
+      prisma.callLog.count({ where: { ...where, callType: "Booked Call" } }),
+      prisma.callLog.count({
+        where: { ...where, callType: "Booked Call", outcome: "Sale" },
+      }),
+    ]);
+
+    // By-rep counts (avoid groupBy TS typing pitfalls)
+    const reps = await prisma.callLog.findMany({
+      where,
+      select: { staff: true },
+    });
+    const counts = new Map<string, number>();
+    for (const r of reps) {
+      const key = r.staff ?? "Unassigned";
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const byRep = Array.from(counts.entries())
+      .map(([s, count]) => ({ staff: s, count }))
+      .sort((a, b) => b.count - a.count);
+
+    // Ratios
+    const callToBookingPct = totalCalls > 0 ? (bookings / totalCalls) * 100 : 0;
+    const apptToSalePct = bookings > 0 ? (sales / bookings) * 100 : 0;
+    const callToSalePct = totalCalls > 0 ? (sales / totalCalls) * 100 : 0;
+    const bookedCallToSalePct =
+      bookedCalls > 0 ? (bookedCallSales / bookedCalls) * 100 : 0;
+
+    return NextResponse.json({
+      generatedAt: new Date().toISOString(),
+      range: { from: fromStr, to: toStr },
+      filter: { staff: staff || null },
+      totals: {
+        totalCalls,
+        bookings,
+        sales,
+        callToBookingPct,
+        apptToSalePct,
+        callToSalePct,
+        bookedCalls,
+        bookedCallSales,
+        bookedCallToSalePct,
+        totalDurationMinutes,
+        avgDurationMinutes,
+      },
+      byRep,
+    });
+  } catch (err: any) {
+    console.error("Call report error:", err);
+    return NextResponse.json(
+      { error: err?.message ?? "Internal error" },
+      { status: 500 }
+    );
   }
-
-  const lastUpdated = data?.generatedAt ? new Date(data.generatedAt).toLocaleString() : "—";
-
-  return (
-    <div className="grid" style={{ gap: 16 }}>
-      <section className="card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {/* Row 1: Title + Last updated + Refresh */}
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <h1 style={{ margin: 0 }}>Call Report</h1>
-          <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <div className="small muted">Last updated: <b>{lastUpdated}</b></div>
-            <Chip onClick={() => load()} title="Refresh now">
-              {loading ? "Refreshing…" : "Refresh"}
-            </Chip>
-          </div>
-        </div>
-
-        {/* Row 2: Sales Rep selector + Date chips */}
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <label className="small muted">Sales Rep</label>
-            <select
-              value={repFilter}
-              onChange={(e) => { setRepFilter(e.target.value); load({ from, to, staff: e.target.value }); }}
-            >
-              <option value="">All reps</option>
-              {reps.map(r => (
-                <option key={r.id} value={r.name}>{r.name}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-            <Chip onClick={() => pickRange("today")}>Today</Chip>
-            <Chip onClick={() => pickRange("yesterday")}>Yesterday</Chip>
-            <Chip onClick={() => pickRange("wtd")}>Week to date</Chip>
-            <Chip onClick={() => pickRange("lweek")}>Last week</Chip>
-            <Chip onClick={() => pickRange("mtd")}>Month to date</Chip>
-            <Chip onClick={() => pickRange("lmonth")}>Last month</Chip>
-            <Chip onClick={() => pickRange("ytd")}>Year to date</Chip>
-            <Chip onClick={() => pickRange("custom")}>Custom…</Chip>
-          </div>
-        </div>
-
-        {/* Row 3: Range summary */}
-        <div className="small muted">
-          Range: <b>{from}</b> to <b>{to}</b>
-          {repFilter ? <> • Rep: <b>{repFilter}</b></> : null}
-        </div>
-      </section>
-
-      {err && (
-        <div className="card" style={{ borderColor: "#fca5a5" }}>
-          <div className="small" style={{ color: "#b91c1c" }}>{err}</div>
-        </div>
-      )}
-
-      {/* Totals */}
-      <section className="grid" style={{ gap: 12 }}>
-        <div className="grid grid-3">
-          <div className="card">
-            <div className="small muted">Total Calls</div>
-            <div style={{ fontSize: 28, fontWeight: 700 }}>{data ? data.totals.totalCalls : "—"}</div>
-          </div>
-          <div className="card">
-            <div className="small muted">Appointments Booked</div>
-            <div style={{ fontSize: 28, fontWeight: 700 }}>{data ? data.totals.bookings : "—"}</div>
-            <div className="small muted" style={{ marginTop: 4 }}>
-              Call → Booking: {data ? `${data.totals.callToBookingPct.toFixed(1)}%` : "—"}
-            </div>
-          </div>
-          <div className="card">
-            <div className="small muted">Sales</div>
-            <div style={{ fontSize: 28, fontWeight: 700 }}>{data ? data.totals.sales : "—"}</div>
-            <div className="small muted" style={{ marginTop: 4 }}>
-              Booking → Sale: {data ? `${data.totals.apptToSalePct.toFixed(1)}%` : "—"}
-            </div>
-            <div className="small muted" style={{ marginTop: 2 }}>
-              Call → Sale: {data ? `${data.totals.callToSalePct.toFixed(1)}%` : "—"}
-            </div>
-          </div>
-        </div>
-
-        {/* ✅ NEW: Duration cards */}
-        <div className="grid grid-2">
-          <div className="card">
-            <div className="small muted">Total Duration (mins)</div>
-            <div style={{ fontSize: 28, fontWeight: 700 }}>
-              {data ? Math.round(data.totals.totalDurationMinutes) : "—"}
-            </div>
-          </div>
-          <div className="card">
-            <div className="small muted">Average Duration (mins)</div>
-            <div style={{ fontSize: 28, fontWeight: 700 }}>
-              {data ? data.totals.avgDurationMinutes.toFixed(1) : "—"}
-            </div>
-          </div>
-        </div>
-
-        {/* Booked Calls → Sales mini-card */}
-        <div className="card">
-          <div className="small muted">Booked Calls → Sales</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>
-            {data ? data.totals.bookedCallSales : "—"}
-          </div>
-          <div className="small muted" style={{ marginTop: 4 }}>
-            of {data ? data.totals.bookedCalls : "—"} booked calls •{" "}
-            {data ? `${data.totals.bookedCallToSalePct.toFixed(1)}%` : "—"}
-          </div>
-        </div>
-
-        <div className="card">
-          <h3>Calls by Sales Rep</h3>
-          {!data || data.byRep.length === 0 ? (
-            <p className="small">No calls for this range.</p>
-          ) : (
-            <div className="grid">
-              <div className="row" style={{ fontWeight: 600, borderBottom: "1px solid var(--border)", paddingBottom: 6 }}>
-                <div style={{ flex: 2 }}>Sales Rep</div>
-                <div style={{ width: 120, textAlign: "right" }}>Calls</div>
-                <div style={{ width: 120, textAlign: "right" }}>% of total</div>
-              </div>
-              {data.byRep.map((r) => (
-                <div className="row" key={r.staff} style={{ borderBottom: "1px solid var(--border)", padding: "6px 0" }}>
-                  <div style={{ flex: 2 }}>{r.staff}</div>
-                  <div style={{ width: 120, textAlign: "right" }}>{r.count}</div>
-                  <div style={{ width: 120, textAlign: "right" }}>
-                    {data.totals.totalCalls > 0
-                      ? ((r.count / data.totals.totalCalls) * 100).toFixed(1) + "%"
-                      : "—"}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
-    </div>
-  );
 }
