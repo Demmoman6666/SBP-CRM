@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
 /* ---------------- helpers ---------------- */
-
 async function readBody(req: Request) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
 
@@ -17,6 +16,7 @@ async function readBody(req: Request) {
     return Object.fromEntries(new URLSearchParams(text));
   }
 
+  // fallbacks
   try { return await req.json(); } catch {}
   try {
     const text = await req.text();
@@ -39,7 +39,7 @@ const isCuid = (s: string) => /^c[a-z0-9]{24,}$/i.test(s);
  *  - 29/08/2025, 21:02
  *  - 29-08-2025 21:02
  */
-function parseDateTime(val: unknown): Date | null {
+function parseFollowUp(val: unknown): Date | null {
   if (!val) return null;
   const raw = String(val).trim();
 
@@ -47,8 +47,10 @@ function parseDateTime(val: unknown): Date | null {
   const d1 = new Date(raw);
   if (!isNaN(d1.getTime())) return d1;
 
-  // dd/mm/yyyy hh:mm
-  const m = raw.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})(?:[ ,T]+(\d{2}):(\d{2}))?$/);
+  // try dd/mm/yyyy hh:mm
+  const m = raw.match(
+    /^(\d{2})[\/\-](\d{2})[\/\-](\d{4})(?:[ ,T]+(\d{2}):(\d{2}))?$/
+  );
   if (m) {
     const [, dd, mm, yyyy, hh = "00", min = "00"] = m;
     const iso = `${yyyy}-${mm}-${dd}T${hh}:${min}:00`;
@@ -58,25 +60,19 @@ function parseDateTime(val: unknown): Date | null {
   return null;
 }
 
-/** Parse "HH:mm" into Date (today) */
-function parseTimeToday(val: unknown): Date | null {
-  if (!val) return null;
-  const m = String(val).trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!m) return null;
-  const [, hh, mm] = m;
-  const now = new Date();
-  const iso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
-    now.getDate()
-  ).padStart(2, "0")}T${String(hh).padStart(2, "0")}:${mm}:00`;
-  const d = new Date(iso);
+/* date filter helpers for GET */
+function parseDateStart(raw?: string | null): Date | null {
+  if (!raw) return null;
+  // if just yyyy-mm-dd, anchor to 00:00
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(`${raw}T00:00:00`);
+  const d = new Date(raw);
   return isNaN(d.getTime()) ? null : d;
 }
-
-function minutesBetween(a?: Date | null, b?: Date | null): number | null {
-  if (!a || !b) return null;
-  const diffMs = b.getTime() - a.getTime();
-  if (diffMs < 0) return 0;
-  return Math.round(diffMs / 60000);
+function parseDateEnd(raw?: string | null): Date | null {
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(`${raw}T23:59:59.999`);
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 /* --------------- POST /api/calls --------------- */
@@ -97,52 +93,57 @@ export async function POST(req: Request) {
     // required: sales rep (staff)
     const staff = String(body.salesRep ?? body.staff ?? "").trim();
     if (!staff) {
-      return NextResponse.json({ error: "Sales Rep is required." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Sales Rep is required." },
+        { status: 400 }
+      );
     }
 
     // required: summary
     const summary = String(body.summary ?? "").trim();
     if (!summary) {
-      return NextResponse.json({ error: "Summary is required." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Summary is required." },
+        { status: 400 }
+      );
     }
 
     // if existing, we need a valid customerId (cuid)
     let customerId: string | null = null;
     if (isExisting) {
-      const candidate = String(body.customerId ?? body.customer ?? "").trim();
+      const candidate = String(
+        body.customerId ?? body.customer ?? ""
+      ).trim();
+
       if (!candidate || !isCuid(candidate)) {
         return NextResponse.json(
-          { error: "Pick a customer from the list so we can attach the call to the account." },
+          {
+            error:
+              "Pick a customer from the list (don’t type free text) so we can attach the call to the account.",
+          },
           { status: 400 }
         );
       }
       customerId = candidate;
     }
 
-    // callType limited to two options
-    let callType: string | null = null;
-    if (body.callType) {
-      const ct = String(body.callType).toLowerCase();
-      if (ct === "cold call" || ct === "cold") callType = "Cold Call";
-      else if (ct === "booked call" || ct === "booked") callType = "Booked Call";
-      else callType = String(body.callType);
-    }
+    // optional fields
+    const callType = body.callType ? String(body.callType) : null;
+    const outcome = body.outcome ? String(body.outcome) : null;
+    const followUpAt = parseFollowUp(
+      body.followUpAt ?? body.followUp ?? body.followupAt
+    );
 
-    const outcome    = body.outcome ? String(body.outcome) : null;
-    const followUpAt = parseDateTime(body.followUpAt ?? body.followUp ?? body.followupAt);
+    // allow client timestamp (not required)
+    const clientLoggedAt = body.clientLoggedAt ? new Date(String(body.clientLoggedAt)) : null;
 
-    // NEW: times + duration
-    const startTime = parseTimeToday(body.startTime);
-    const endTime   = parseTimeToday(body.endTime);
-    const durationMinutes = minutesBetween(startTime, endTime);
-
-    // NEW: appointment booked?
-    const appointmentBooked = toBool(body.appointmentBooked ?? body.apptBooked ?? body.appt) ?? false;
-
-    // non-existing snapshot (optional)
-    const customerName  = !isExisting && body.customerName ? String(body.customerName) : null;
-    const contactPhone  = !isExisting && body.contactPhone ? String(body.contactPhone) : null;
-    const contactEmail  = !isExisting && body.contactEmail ? String(body.contactEmail) : null;
+    // if NOT existing, keep a small lead snapshot (optional)
+    const customerName =
+      !isExisting && body.customerName ? String(body.customerName) : null;
+    const contactPhone =
+      !isExisting && body.contactPhone ? String(body.contactPhone) : null;
+    const contactEmail =
+      !isExisting && body.contactEmail ? String(body.contactEmail) : null;
 
     const created = await prisma.callLog.create({
       data: {
@@ -157,10 +158,9 @@ export async function POST(req: Request) {
         staff,
         followUpRequired: !!followUpAt,
         followUpAt,
-        startTime,
-        endTime,
-        durationMinutes,
-        appointmentBooked,
+        ...(clientLoggedAt && !isNaN(clientLoggedAt.getTime())
+          ? { createdAt: clientLoggedAt }
+          : {}),
       },
       select: { id: true, customerId: true },
     });
@@ -176,18 +176,57 @@ export async function POST(req: Request) {
     );
   } catch (err: any) {
     console.error("Create call error:", err);
-    return NextResponse.json({ error: err?.message ?? "Internal error" }, { status: 500 });
+    return NextResponse.json(
+      { error: err?.message ?? "Internal error" },
+      { status: 500 }
+    );
   }
 }
 
-/* --------------- GET /api/calls?customerId=... --------------- */
+/* --------------- GET /api/calls (filterable) --------------- */
+/**
+ * Query params:
+ *  - from=yyyy-mm-dd (or ISO)
+ *  - to=yyyy-mm-dd   (or ISO)
+ *  - callType=Cold Call|Booked Call|Booked Demo
+ *  - outcome=Sale|No Sale|Appointment booked|Demo Booked
+ *  - staff=<rep name>
+ *  - customerId=<cuid> (optional)
+ *  - limit=number (default 100, max 200)
+ */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
+
+  const from = parseDateStart(searchParams.get("from"));
+  const to   = parseDateEnd(searchParams.get("to"));
+
+  const callType = searchParams.get("callType") || undefined;
+  const outcome  = searchParams.get("outcome") || undefined;
+  const staff    = searchParams.get("staff") || undefined;
   const customerId = searchParams.get("customerId") || undefined;
 
+  const limit = Math.min(Math.max(Number(searchParams.get("limit") || 100), 1), 200);
+
+  const where: any = { ...(customerId ? { customerId } : {}) };
+
+  if (from || to) {
+    where.createdAt = {};
+    if (from) where.createdAt.gte = from;
+    if (to)   where.createdAt.lte = to;
+  }
+  if (callType) where.callType = callType;
+  if (outcome)  where.outcome  = outcome;
+  if (staff)    where.staff    = staff;
+
   const calls = await prisma.callLog.findMany({
-    where: { ...(customerId ? { customerId } : {}) },
+    where,
     orderBy: { createdAt: "desc" },
+    take: limit,
+    include: {
+      customer: {
+        select: { salonName: true, customerName: true }
+      }
+    }
   });
 
   return NextResponse.json(calls);
