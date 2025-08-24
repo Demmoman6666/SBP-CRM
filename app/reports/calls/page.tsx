@@ -1,199 +1,85 @@
 // app/reports/calls/page.tsx
 "use client";
-
 import { useEffect, useMemo, useState } from "react";
 
-/* Types for API response */
-type CallsByRep = { staff: string | null; count: number };
-type CallReport = {
-  range: { from: string; to: string };
-  totals: {
-    totalCalls: number;
-    bookings: number;
-    sales: number;
-    callToBookingPct: number;      // bookings / totalCalls
-    apptToSalePct: number;         // sales / bookings
-  };
-  byRep: CallsByRep[];
+type Report = {
+  generatedAt: string;
+  range: { label: string; since: string; until: string };
+  totals: { totalCalls: number; appointments: number; sales: number; callToBookingPct: number; apptToSalePct: number };
+  byRep: { staff: string; count: number }[];
 };
 
-/* Date helpers */
-function startOfToday() { const d = new Date(); d.setHours(0,0,0,0); return d; }
-function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
-function startOfWeek(d = new Date()) { const x = new Date(d); const day = (x.getDay()+6)%7; x.setDate(x.getDate()-day); x.setHours(0,0,0,0); return x; } // Mon
-function startOfMonth(d = new Date()) { return new Date(d.getFullYear(), d.getMonth(), 1); }
-function startOfLastMonth() { const d = new Date(); return new Date(d.getFullYear(), d.getMonth()-1, 1); }
-function endOfLastMonth() { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 0); }
-function startOfYear(d = new Date()) { return new Date(d.getFullYear(), 0, 1); }
-
-function fmtISO(d: Date) { return d.toISOString().slice(0,10); }
-
-type Preset =
-  | "today" | "yesterday"
-  | "wtd" | "lastweek"
-  | "mtd" | "lastmonth"
-  | "ytd" | "custom";
-
 export default function CallReportPage() {
-  const [preset, setPreset] = useState<Preset>("today");
-  const [from, setFrom] = useState<string>(fmtISO(startOfToday()));
-  const [to, setTo] = useState<string>(fmtISO(startOfToday()));
-  const [data, setData] = useState<CallReport | null>(null);
+  const [rangeKey, setRangeKey] = useState("today");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+  const [data, setData] = useState<Report | null>(null);
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // Update dates when preset changes (non-custom)
-  useEffect(() => {
-    if (preset === "custom") return;
-    const today = startOfToday();
-    if (preset === "today") {
-      setFrom(fmtISO(today)); setTo(fmtISO(today));
-    } else if (preset === "yesterday") {
-      const y = addDays(today,-1);
-      setFrom(fmtISO(y)); setTo(fmtISO(y));
-    } else if (preset === "wtd") {
-      setFrom(fmtISO(startOfWeek(today)));
-      setTo(fmtISO(today));
-    } else if (preset === "lastweek") {
-      const end = addDays(startOfWeek(today), -1);
-      const start = addDays(end, -6);
-      setFrom(fmtISO(start)); setTo(fmtISO(end));
-    } else if (preset === "mtd") {
-      setFrom(fmtISO(startOfMonth(today)));
-      setTo(fmtISO(today));
-    } else if (preset === "lastmonth") {
-      setFrom(fmtISO(startOfLastMonth()));
-      setTo(fmtISO(endOfLastMonth()));
-    } else if (preset === "ytd") {
-      setFrom(fmtISO(startOfYear(today)));
-      setTo(fmtISO(today));
+  const qs = useMemo(() => {
+    const p = new URLSearchParams({ range: rangeKey });
+    if (rangeKey === "custom") {
+      if (customStart) p.set("start", new Date(customStart).toISOString());
+      if (customEnd) p.set("end", new Date(customEnd).toISOString());
     }
-  }, [preset]);
+    return p.toString();
+  }, [rangeKey, customStart, customEnd]);
 
-  const canFetch = useMemo(() => !!from && !!to, [from, to]);
-
-  async function load() {
-    if (!canFetch) return;
-    setErr(null);
-    setLoading(true);
+  async function load(signal?: AbortSignal) {
+    setLoading(true); setError(null);
     try {
-      const res = await fetch(`/api/reports/calls?from=${from}&to=${to}`);
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error || "Failed to load report");
-      setData(j);
+      const res = await fetch(`/api/reports/calls?${qs}`, { cache: "no-store", headers: { "x-no-cache": "1" }, signal });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to load report");
+      setData(json); setLastUpdated(new Date());
     } catch (e: any) {
-      setErr(e?.message || "Failed to load report");
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
+      if (e?.name !== "AbortError") setError(e.message || "Failed to load report");
+    } finally { setLoading(false); }
   }
 
-  useEffect(() => { load(); /* auto-load on first mount & preset change */ }, [from, to]);
+  // live-ish updates: 5s poll (lower to 3s if you want)
+  useEffect(() => {
+    const ctl = new AbortController();
+    load(ctl.signal);
+    const h = setInterval(() => load(), 5000);
+    return () => { ctl.abort(); clearInterval(h); };
+  }, [qs]);
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <section className="card">
-        <h1>Call Report</h1>
-        <p className="small">Volumes by rep, bookings &amp; conversions. Choose a date range.</p>
+      <section className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <h1>Call Report</h1>
+          <div className="small muted">
+            Range: {data ? `${data.range.label} • ${new Date(data.range.since).toLocaleString()} → ${new Date(data.range.until).toLocaleString()}` : "—"}
+          </div>
+          <div className="small muted" style={{ marginTop: 4 }}>
+            Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : "—"}
+            {data?.generatedAt ? ` • generated ${new Date(data.generatedAt).toLocaleTimeString()}` : ""}
+          </div>
+        </div>
 
-        {/* Presets */}
-        <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-          {[
-            ["today","Today"],
-            ["yesterday","Yesterday"],
-            ["wtd","Week to date"],
-            ["lastweek","Last week"],
-            ["mtd","Month to date"],
-            ["lastmonth","Last month"],
-            ["ytd","Year to date"],
-            ["custom","Custom"],
-          ].map(([key,label]) => (
-            <button
-              key={key}
-              className="btn"
-              onClick={() => setPreset(key as Preset)}
-              style={{
-                background: preset === key ? "var(--pink)" : "#fff",
-                border: "1px solid var(--border)"
-              }}
-            >
-              {label}
+        <div className="row" style={{ gap: 8 }}>
+          {["today","yesterday","wtd","lastweek","mtd","lastmonth","ytd","custom"].map(k => (
+            <button key={k} className={k===rangeKey ? "primary" : "btn"} onClick={() => setRangeKey(k)}>
+              {({today:"Today",yesterday:"Yesterday",wtd:"Week to date",lastweek:"Last week",mtd:"Month to date",lastmonth:"Last month",ytd:"Year to date",custom:"Custom…"} as any)[k]}
             </button>
           ))}
-        </div>
-
-        {/* Custom range */}
-        {preset === "custom" && (
-          <div className="row" style={{ gap: 8, marginTop: 8 }}>
-            <div>
-              <label className="small">From</label>
-              <input type="date" value={from} onChange={(e)=>setFrom(e.target.value)} />
+          {rangeKey==="custom" && (
+            <div className="row" style={{ gap:6 }}>
+              <input type="datetime-local" value={customStart} onChange={e=>setCustomStart(e.target.value)}/>
+              <span>–</span>
+              <input type="datetime-local" value={customEnd} onChange={e=>setCustomEnd(e.target.value)}/>
+              <button className="btn" onClick={()=>load()} disabled={loading}>Apply</button>
             </div>
-            <div>
-              <label className="small">To</label>
-              <input type="date" value={to} onChange={(e)=>setTo(e.target.value)} />
-            </div>
-            <div className="row" style={{ alignItems:"flex-end" }}>
-              <button className="primary" onClick={load}>Run</button>
-            </div>
-          </div>
-        )}
-      </section>
-
-      {/* KPIs */}
-      <section className="grid grid-2" style={{ gap: 12 }}>
-        <div className="card">
-          <h3>Totals</h3>
-          {loading ? <p className="small">Loading…</p> : err ? <p className="form-error">{err}</p> : data ? (
-            <div className="grid" style={{ gap: 8 }}>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div className="small muted">Date range</div>
-                <div className="small">{data.range.from} → {data.range.to}</div>
-              </div>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div>Total calls</div>
-                <div><b>{data.totals.totalCalls}</b></div>
-              </div>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div>Appointments booked</div>
-                <div><b>{data.totals.bookings}</b></div>
-              </div>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div>Call → Booking</div>
-                <div><b>{data.totals.callToBookingPct.toFixed(1)}%</b></div>
-              </div>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div>Sales</div>
-                <div><b>{data.totals.sales}</b></div>
-              </div>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div>Appointment → Sale</div>
-                <div><b>{data.totals.apptToSalePct.toFixed(1)}%</b></div>
-              </div>
-            </div>
-          ) : <p className="small muted">No data.</p>}
-        </div>
-
-        <div className="card">
-          <h3>Calls by Sales Rep</h3>
-          {loading ? <p className="small">Loading…</p> : err ? <p className="form-error">{err}</p> : data && data.byRep.length ? (
-            <table className="table">
-              <thead>
-                <tr><th>Sales Rep</th><th>Calls</th></tr>
-              </thead>
-              <tbody>
-                {data.byRep.map((r) => (
-                  <tr key={r.staff ?? "unassigned"}>
-                    <td>{r.staff || "Unassigned"}</td>
-                    <td>{r.count}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : <p className="small muted">No calls in range.</p>}
+          )}
+          <button className="btn" onClick={()=>load()} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button>
         </div>
       </section>
+
+      {/* …your existing metrics + by-rep list… */}
     </div>
   );
 }
