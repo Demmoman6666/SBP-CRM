@@ -2,24 +2,16 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+/* ------------ body reader (json/form) ------------ */
 async function readBody(req: Request) {
-  const contentType = (req.headers.get("content-type") || "").toLowerCase();
+  const ct = (req.headers.get("content-type") || "").toLowerCase();
 
-  if (contentType.includes("application/json")) return await req.json();
-
-  if (contentType.includes("application/x-www-form-urlencoded")) {
+  if (ct.includes("application/json"))        return await req.json();
+  if (ct.includes("multipart/form-data"))     return Object.fromEntries((await req.formData()).entries());
+  if (ct.includes("application/x-www-form-urlencoded")) {
     const text = await req.text();
     return Object.fromEntries(new URLSearchParams(text));
   }
-
-  if (contentType.includes("multipart/form-data")) {
-    const form = await req.formData();
-    return Object.fromEntries(
-      Array.from(form.entries()).map(([k, v]) => [k, typeof v === "string" ? v : v.name]),
-    );
-  }
-
-  // Fallbacks
   try { return await req.json(); } catch {}
   try {
     const text = await req.text();
@@ -28,10 +20,7 @@ async function readBody(req: Request) {
   return {};
 }
 
-/* -----------------------------
-   POST /api/customers
-   Create customer (JSON or form)
------------------------------- */
+/* ------------------ POST /api/customers ------------------ */
 export async function POST(req: Request) {
   try {
     const contentType = (req.headers.get("content-type") || "").toLowerCase();
@@ -39,7 +28,7 @@ export async function POST(req: Request) {
       contentType.includes("application/x-www-form-urlencoded") ||
       contentType.includes("multipart/form-data");
 
-    const body = await readBody(req);
+    const body: any = await readBody(req);
 
     const toInt = (v: unknown) => {
       if (v == null || v === "") return null;
@@ -48,39 +37,43 @@ export async function POST(req: Request) {
     };
 
     const data = {
-      salonName: (body.salonName ?? null) as string | null,
-      customerName: (body.customerName ?? null) as string | null,
-      addressLine1: (body.addressLine1 ?? null) as string | null,
-      addressLine2: (body.addressLine2 ?? null) as string | null,
-      town: (body.town ?? null) as string | null,
-      county: (body.county ?? null) as string | null,
-      postCode: (body.postCode ?? null) as string | null,
-      daysOpen: (body.daysOpen ?? null) as string | null,
-      brandsInterestedIn: (body.brandsInterestedIn ?? null) as string | null, // "Brands Used"
-      notes: (body.notes ?? null) as string | null,
-      salesRep: (body.salesRep ?? null) as string | null,
-      customerNumber: (body.customerNumber ?? null) as string | null,          // Contact Number
-      customerTelephone: (body.customerTelephone ?? null) as string | null,    // Customer Telephone Number
-      customerEmailAddress: (body.customerEmailAddress ?? null) as string | null,
-      openingHours: (body.openingHours ?? null) as string | null,
-      numberOfChairs: toInt(body.numberOfChairs),
+      salonName:             (body.salonName ?? "").toString().trim(),
+      customerName:          (body.customerName ?? "").toString().trim(),
+      addressLine1:          (body.addressLine1 ?? "").toString().trim(),
+      addressLine2:          (body.addressLine2 ?? "") || null,
+      town:                  (body.town ?? "") || null,
+      county:                (body.county ?? "") || null,
+      postCode:              (body.postCode ?? "") || null,
+      daysOpen:              (body.daysOpen ?? "") || null,
+      brandsInterestedIn:    (body.brandsInterestedIn ?? "") || null,
+      notes:                 (body.notes ?? "") || null,
+      salesRep:              (body.salesRep ?? "").toString().trim(), // REQUIRED
+      customerNumber:        (body.customerNumber ?? "") || null,
+      customerTelephone:     (body.customerTelephone ?? "") || null,
+      customerEmailAddress:  (body.customerEmailAddress ?? "") || null,
+      openingHours:          (body.openingHours ?? "") || null,
+      numberOfChairs:        toInt(body.numberOfChairs),
     };
 
     if (!data.salonName || !data.customerName || !data.addressLine1) {
       return NextResponse.json(
         { error: "Missing required fields: salonName, customerName, addressLine1" },
-        { status: 400 },
+        { status: 400 }
+      );
+    }
+
+    if (!data.salesRep) {
+      return NextResponse.json(
+        { error: "Sales Rep is required." },
+        { status: 400 }
       );
     }
 
     const created = await prisma.customer.create({ data });
 
     if (isForm) {
-      // Redirect browsers that posted a regular HTML form
       return NextResponse.redirect(new URL(`/customers/${created.id}`, req.url), { status: 303 });
     }
-
-    // Programmatic clients
     return NextResponse.json(created, { status: 201 });
   } catch (err: any) {
     console.error("Create customer error:", err);
@@ -88,12 +81,7 @@ export async function POST(req: Request) {
   }
 }
 
-/* -----------------------------
-   GET /api/customers
-   Search (for pickers) and list
-   - ?search= / ?q=  : query string
-   - ?take=number    : limit (default 20; max 50)
------------------------------- */
+/* ------------------ GET /api/customers (search) ------------------ */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const q = (searchParams.get("search") || searchParams.get("q") || "").trim();
@@ -103,12 +91,12 @@ export async function GET(req: Request) {
   const where = q
     ? {
         OR: [
-          { salonName: { contains: q, mode: "insensitive" as const } },
-          { customerName: { contains: q, mode: "insensitive" as const } },
+          { salonName:            { contains: q, mode: "insensitive" as const } },
+          { customerName:         { contains: q, mode: "insensitive" as const } },
           { customerEmailAddress: { contains: q, mode: "insensitive" as const } },
-          { town: { contains: q, mode: "insensitive" as const } },
-          { county: { contains: q, mode: "insensitive" as const } },
-          { postCode: { contains: q, mode: "insensitive" as const } },
+          { town:                 { contains: q, mode: "insensitive" as const } },
+          { county:               { contains: q, mode: "insensitive" as const } },
+          { postCode:             { contains: q, mode: "insensitive" as const } },
         ],
       }
     : {};
@@ -117,7 +105,6 @@ export async function GET(req: Request) {
     where,
     orderBy: q ? { salonName: "asc" } : { createdAt: "desc" },
     take: q ? take : 50,
-    // Include fields needed for pickers and previews
     select: {
       id: true,
       salonName: true,
@@ -130,7 +117,7 @@ export async function GET(req: Request) {
       customerEmailAddress: true,
       customerNumber: true,
       customerTelephone: true,
-      salesRep: true, // <-- used to auto-fill Sales Rep on Log Call
+      salesRep: true,
     },
   });
 
