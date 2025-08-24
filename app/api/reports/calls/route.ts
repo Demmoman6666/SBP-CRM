@@ -13,11 +13,14 @@ type Report = {
     sales: number;
     callToBookingPct: number;
     apptToSalePct: number;
-    /** ✅ NEW for step 2 */
+    // Step 2 (already present)
     callToSalePct: number;
     bookedCalls: number;
     bookedCallSales: number;
     bookedCallToSalePct: number;
+    // ✅ NEW: durations
+    totalDurationMinutes: number;
+    avgDurationMinutes: number;
   };
   byRep: Array<{ staff: string; count: number }>;
 };
@@ -199,14 +202,29 @@ export default function CallReportPage() {
             <div className="small muted" style={{ marginTop: 4 }}>
               Booking → Sale: {data ? `${data.totals.apptToSalePct.toFixed(1)}%` : "—"}
             </div>
-            {/* ✅ NEW for step 2 */}
             <div className="small muted" style={{ marginTop: 2 }}>
               Call → Sale: {data ? `${data.totals.callToSalePct.toFixed(1)}%` : "—"}
             </div>
           </div>
         </div>
 
-        {/* ✅ NEW – Booked Calls → Sales mini-card */}
+        {/* ✅ NEW: Duration cards */}
+        <div className="grid grid-2">
+          <div className="card">
+            <div className="small muted">Total Duration (mins)</div>
+            <div style={{ fontSize: 28, fontWeight: 700 }}>
+              {data ? Math.round(data.totals.totalDurationMinutes) : "—"}
+            </div>
+          </div>
+          <div className="card">
+            <div className="small muted">Average Duration (mins)</div>
+            <div style={{ fontSize: 28, fontWeight: 700 }}>
+              {data ? data.totals.avgDurationMinutes.toFixed(1) : "—"}
+            </div>
+          </div>
+        </div>
+
+        {/* Booked Calls → Sales mini-card */}
         <div className="card">
           <div className="small muted">Booked Calls → Sales</div>
           <div style={{ fontSize: 24, fontWeight: 700 }}>
