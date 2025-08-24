@@ -4,12 +4,11 @@ import Link from "next/link";
 export default function HomePage() {
   return (
     <div className="grid" style={{ gap: 16 }}>
-      {/* Header card with gear dropdown in the top-right */}
       <section className="card" style={{ position: "relative" }}>
         <h1>Welcome to the Salon Brands Pro CRM</h1>
         <p className="small">Use the tiles below to get started.</p>
 
-        {/* Gear dropdown */}
+        {/* Gear dropdown (no event handlers so it's server-safe) */}
         <details style={{ position: "absolute", top: 12, right: 12 }}>
           <summary
             aria-label="Open admin actions"
@@ -24,17 +23,12 @@ export default function HomePage() {
               border: "1px solid var(--border)",
               background: "#fff",
               boxShadow: "var(--shadow)",
-            }}
-            onClick={(e) => {
-              // prevent focus ring flicker in some browsers
-              (e.currentTarget as HTMLElement).blur();
+              userSelect: "none",
             }}
           >
-            {/* Simple gear glyph */}
             <span aria-hidden>⚙️</span>
           </summary>
 
-          {/* Dropdown panel */}
           <div
             style={{
               position: "absolute",
@@ -67,7 +61,6 @@ export default function HomePage() {
         </details>
       </section>
 
-      {/* Tiles (unchanged) */}
       <section className="home-actions">
         <Link href="/customers/new" className="action-tile">
           <div className="action-title">New Customer</div>
