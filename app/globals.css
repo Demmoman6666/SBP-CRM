@@ -30,28 +30,23 @@ body {
   --pink-600: #F9A8DC;
   --pink-700: #F493D4;
   --text: #111111;
-  --muted: #6b7280;        /* gray-500 */
+  --muted: #6b7280;
   --bg: #ffffff;
   --surface: #ffffff;
-  --border: #e5e7eb;       /* gray-200 */
+  --border: #e5e7eb;
   --shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(17,17,17,.03);
   --radius: 12px;
   --radius-sm: 10px;
-  --ring: 0 0 0 3px rgba(254,179,228,.55); /* pink focus ring */
+  --ring: 0 0 0 3px rgba(254,179,228,.55);
 }
 
 /* 3) Typography */
-h1,h2,h3,h4 {
-  margin: 0 0 .6rem 0;
-  line-height: 1.2;
-  color: var(--text);
-}
+h1,h2,h3,h4 { margin: 0 0 .6rem 0; line-height: 1.2; color: var(--text); }
 h1 { font-size: clamp(1.6rem, 1.2rem + 1.2vw, 2.1rem); }
 h2 { font-size: clamp(1.3rem, 1.1rem + .6vw, 1.6rem); }
 h3 { font-size: 1.1rem; }
 
 p { margin: 0 0 .9rem 0; }
-
 .small { font-size: .9rem; color: var(--muted); }
 .muted { color: var(--muted); }
 
@@ -59,28 +54,15 @@ p { margin: 0 0 .9rem 0; }
 a { color: inherit; text-underline-offset: 3px; }
 a:hover { text-decoration: underline; }
 
-/* 5) Layout Utilities */
-.container {
-  width: 100%;
-  max-width: 1100px;
-  margin-inline: auto;
-  padding-inline: 16px;
-}
+/* 5) Layout */
+.container { width: 100%; max-width: 1100px; margin-inline: auto; padding-inline: 16px; }
 .row { display: flex; gap: 10px; }
 .grid { display: grid; gap: 12px; }
-
 .grid-2 { grid-template-columns: 1fr; gap: 12px; }
-@media (min-width: 768px) {
-  .grid-2 { grid-template-columns: repeat(2, 1fr); }
-}
+@media (min-width: 768px) { .grid-2 { grid-template-columns: repeat(2, 1fr); } }
 
-/* 6) Header + Logo */
-.brand-logo {
-  height: 55px;
-  width: auto;
-  display: block;
-  image-rendering: -webkit-optimize-contrast;
-}
+/* 6) Header logo */
+.brand-logo { height: 55px; width: auto; display: block; image-rendering: -webkit-optimize-contrast; }
 @media (min-width: 1024px) { .brand-logo { height: 60px; } }
 
 /* 7) Cards */
@@ -97,7 +79,6 @@ button, .btn, .primary {
   --btn-bg: var(--pink);
   --btn-fg: #111;
   --btn-border: transparent;
-
   appearance: none;
   border: 1px solid var(--btn-border);
   background: var(--btn-bg);
@@ -118,7 +99,7 @@ button, .btn, .primary {
 .primary:focus-visible { outline: none; box-shadow: var(--ring); }
 button:disabled, .btn:disabled { opacity: .55; cursor: not-allowed; }
 
-/* 9) Forms — unified look */
+/* 9) Forms — unified look everywhere */
 label {
   display: block;
   font-size: .85rem;
@@ -136,21 +117,23 @@ input[type="password"],
 textarea,
 select {
   width: 100%;
+  appearance: none;          /* normalize */
   background: #fff;
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 14px;         /* consistent rounding everywhere */
+  border-radius: 14px;       /* identical rounding */
   padding: 10px 12px;
   line-height: 1.4;
+  height: 42px;              /* identical height */
   outline: none;
   transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
-  font-variant-numeric: tabular-nums; /* cleaner number alignment */
+  font-variant-numeric: tabular-nums; /* clean number columns */
 }
 
-textarea { resize: vertical; }
+textarea { height: auto; resize: vertical; }
 
 input::placeholder,
-textarea::placeholder { color: #9ca3af; } /* gray-400 */
+textarea::placeholder { color: #9ca3af; }
 
 input:focus,
 textarea:focus,
@@ -159,58 +142,40 @@ select:focus {
   box-shadow: var(--ring);
 }
 
-/* Select tweaks (fix 2-digit cutoff on time dropdowns) */
+/* 🔧 Key fix: give selects a generous minimum so 2-digit values never clip */
 select {
-  min-width: 72px;           /* ensures HH / MM both visible */
-  padding-right: 28px;       /* space for native chevron */
-  text-align: center;        /* hours/mins look nicer */
+  min-width: 96px;          /* was 72; bumping to guarantee space for HH / MM + chevron */
+  padding-right: 28px;      /* room for native chevron */
 }
-select:invalid { color: inherit; }
 
-/* If you prefer left-aligned text on full-width selects (brands / reps),
-   this keeps them left without affecting the compact time selects. */
-select:not([data-compact]) { text-align: left; }
-
-/* Inline help / messages */
-.form-hint { font-size: .85rem; color: var(--muted); }
-.form-error { color: #b91c1c; } /* red-700 */
-.form-success { color: #065f46; } /* emerald-800 */
-
-/* 10) Tables (for lists) */
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
+/* Center just compact numeric dropdowns (hour/min) if they’re marked up */
+select[data-compact="true"] {
+  text-align: center;
 }
-.table th, .table td {
+
+/* If your full-width selects should be left-aligned, this helps keep them natural */
+select:not([data-compact="true"]) {
   text-align: left;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
 }
-.table th {
-  font-size: .85rem;
-  color: var(--muted);
-  background: #fafafa;
-  font-weight: 600;
-}
+
+/* Optional: if you wrap your opening-hours grid with .opening-hours,
+   these rules will lock widths even if inline styles exist */
+.opening-hours select { min-width: 100px !important; }
+.opening-hours select[data-min="true"] { min-width: 80px !important; }
+
+/* Inline messages */
+.form-hint { font-size: .85rem; color: var(--muted); }
+.form-error { color: #b91c1c; }
+.form-success { color: #065f46; }
+
+/* 10) Tables */
+.table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.table th, .table td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.table th { font-size: .85rem; color: var(--muted); background: #fafafa; font-weight: 600; }
 .table tr:hover td { background: #fafafa; }
 
-/* 11) Chips / Badges */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 9999px;
-  border: 1px solid var(--border);
-  background: #fff;
-  font-size: .8rem;
-  color: var(--text);
-}
+/* 11) Badges */
+.badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 9999px; border: 1px solid var(--border); background: #fff; font-size: .8rem; color: var(--text); }
 .badge.pink { border-color: transparent; background: var(--pink); font-weight: 600; }
 
 /* 12) Footer */
@@ -222,12 +187,8 @@ footer small { color: var(--muted); }
 .nowrap { white-space: nowrap; }
 .hidden { display: none !important; }
 
-/* 14) Home action tiles */
-.home-actions {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
-}
+/* 14) Home Tiles */
+.home-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
 .action-tile {
   aspect-ratio: 1 / 1;
   display: flex;
@@ -245,11 +206,7 @@ footer small { color: var(--muted); }
   overflow: hidden;
   transition: transform .15s ease, box-shadow .2s ease, border-color .2s ease;
 }
-.action-tile:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 10px 26px rgba(0,0,0,.08);
-  border-color: #f8d2ea;
-}
+.action-tile:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(0,0,0,.08); border-color: #f8d2ea; }
 .action-tile::after {
   content: "";
   position: absolute;
@@ -266,26 +223,9 @@ footer small { color: var(--muted); }
 .action-title { font-weight: 800; font-size: 1.1rem; letter-spacing: .2px; margin-bottom: 4px; }
 .action-sub { font-size: .875rem; color: var(--muted); }
 
-/* 15) Uniform field styling helper (used in forms) */
+/* 15) Field helper */
 .field > input,
 .field > select,
-.field > textarea {
-  width: 100%;
-  border-radius: 14px;
-  padding: 12px 14px;
-  height: 42px;
-}
+.field > textarea { width: 100%; border-radius: 14px; padding: 12px 14px; height: 42px; }
 .field > textarea { height: auto; }
-.field > label {
-  display: block;
-  font-size: .85rem;
-  color: var(--muted);
-  margin: 0 0 6px 0;
-  font-weight: 600;
-}
-
-/* 16) Optional: explicitly compact selects you may tag */
-[data-compact="true"] {
-  text-align: center;
-  min-width: 72px;
-}
+.field > label { display: block; font-size: .85rem; color: var(--muted); margin: 0 0 6px 0; font-weight: 600; }
