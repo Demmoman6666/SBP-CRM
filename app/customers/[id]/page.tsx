@@ -1,4 +1,6 @@
 // app/customers/[id]/page.tsx
+import Link from "next/link";
+import DeleteCustomerButton from "@/components/DeleteCustomerButton";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 
@@ -17,13 +19,7 @@ type OpeningHoursObj = Record<string, OpeningForDay>;
 
 /* Helpers to present address & opening hours nicely */
 function addressLines(c: any): string[] {
-  return [
-    c.addressLine1,
-    c.addressLine2,
-    c.town,
-    c.county,
-    c.postCode,
-  ].filter(Boolean);
+  return [c.addressLine1, c.addressLine2, c.town, c.county, c.postCode].filter(Boolean);
 }
 
 function parseOpeningHours(src?: string | null): OpeningHoursObj | null {
@@ -111,7 +107,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     "use server";
     const dateStr = String(formData.get("date") || "");
     const summary = String(formData.get("summary") || "");
-    const staff = String(formData.get("staff") || "");
+    the staff = String(formData.get("staff") || "");
     await prisma.visit.create({
       data: {
         customerId: customer.id,
@@ -124,16 +120,26 @@ export default async function CustomerDetail({ params }: { params: { id: string 
   }
 
   const contactBlock =
-    [customer.customerEmailAddress, customer.customerNumber]
-      .filter(Boolean)
-      .join("\n") || "-";
+    [customer.customerEmailAddress, customer.customerNumber].filter(Boolean).join("\n") || "-";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       {/* Header card */}
       <div className="card">
-        <h2>{customer.salonName}</h2>
-        <p className="small">{customer.customerName}</p>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "start" }}>
+          <div>
+            <h2>{customer.salonName}</h2>
+            <p className="small">{customer.customerName}</p>
+          </div>
+
+          {/* NEW: Actions */}
+          <div className="right" style={{ gap: 8 }}>
+            <Link href={`/customers/${customer.id}/edit`} className="btn">
+              Edit
+            </Link>
+            <DeleteCustomerButton id={customer.id} />
+          </div>
+        </div>
 
         <div className="grid grid-2" style={{ marginTop: 10 }}>
           {/* Contact */}
@@ -192,7 +198,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
               <label>Note</label>
               <textarea name="text" rows={3} required />
             </div>
-            <button className="primary" type="submit">Save Note</button>
+            <button className="primary" type="submit">
+              Save Note
+            </button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Notes</h3>
@@ -237,7 +245,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
               <label>Summary</label>
               <textarea name="summary" rows={3} placeholder="What happened?" />
             </div>
-            <button className="primary" type="submit">Save Visit</button>
+            <button className="primary" type="submit">
+              Save Visit
+            </button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Visits</h3>
