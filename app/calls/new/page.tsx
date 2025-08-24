@@ -21,26 +21,15 @@ type CustomerLite = {
 type SalesRepLite = { id: string; name: string };
 
 function formatNow(d: Date) {
-  // dd/mm/yyyy, HH:MM:SS
   const pad = (n: number) => n.toString().padStart(2, "0");
-  const day = pad(d.getDate());
-  const mon = pad(d.getMonth() + 1);
-  const yr = d.getFullYear();
-  const hh = pad(d.getHours());
-  const mm = pad(d.getMinutes());
-  const ss = pad(d.getSeconds());
-  return `${day}/${mon}/${yr}, ${hh}:${mm}:${ss}`;
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}, ${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function joinAddressLines(c?: CustomerLite | null) {
   if (!c) return { lines: "", contact: "" };
-  const lines = [
-    c.addressLine1,
-    c.addressLine2,
-    c.town,
-    c.county,
-    c.postCode,
-  ].filter(Boolean);
+  const lines = [c.addressLine1, c.addressLine2, c.town, c.county, c.postCode].filter(Boolean);
   const contact = [c.customerEmailAddress, c.customerNumber || c.customerTelephone]
     .filter(Boolean)
     .join(" • ");
@@ -66,8 +55,8 @@ function minutesBetween(start?: string, end?: string): number | null {
 }
 
 export default function NewCallPage() {
-  // Live timestamp (display-only; DB `createdAt` is already server-now)
-  const [now, setNow] = useState<Date>(new Date());
+  // Live timestamp display
+  const [now, setNow] = useState(new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
@@ -91,23 +80,23 @@ export default function NewCallPage() {
 
   // call details
   const [callType, setCallType] = useState<string>("");
-  const [outcome, setOutcome] = useState<string>("");
+  const [outcome, setOutcome] = useState<string>(""); // DROPDOWN NOW
   const [followDate, setFollowDate] = useState<string>(""); // yyyy-mm-dd
   const [followTime, setFollowTime] = useState<string>(""); // HH:mm
   const [summary, setSummary] = useState<string>("");
 
   // timing + duration + appointment booked
-  const [startTime, setStartTime] = useState<string>(""); // HH:mm
-  const [endTime, setEndTime] = useState<string>(""); // HH:mm
+  const [startTime, setStartTime] = useState<string>("");
+  const [endTime, setEndTime] = useState<string>("");
   const [duration, setDuration] = useState<number | null>(null);
   const [appointmentBooked, setAppointmentBooked] = useState<null | boolean>(null);
 
-  // duration autocalc
+  // auto duration
   useEffect(() => {
     setDuration(minutesBetween(startTime, endTime));
   }, [startTime, endTime]);
 
-  // fetch reps once
+  // fetch reps
   useEffect(() => {
     (async () => {
       try {
@@ -117,7 +106,7 @@ export default function NewCallPage() {
     })();
   }, []);
 
-  // predictive search: fetch when typing (existing only)
+  // predictive customers
   useEffect(() => {
     if (isExisting !== true) return;
     const q = customerQuery.trim();
@@ -156,7 +145,7 @@ export default function NewCallPage() {
     if (!salesRep) return alert("Please select a Sales Rep.");
     if (!summary.trim()) return alert("Please add a summary.");
 
-    // build follow-up ISO if provided
+    // build follow-up iso if provided
     let followUpAt: string | undefined;
     if (followDate) {
       const time = followTime || "00:00";
@@ -174,7 +163,6 @@ export default function NewCallPage() {
       endTime: endTime || null,
       appointmentBooked:
         appointmentBooked === true ? "true" : appointmentBooked === false ? "false" : "",
-      // client-side timestamp (displayed above; not stored by API unless you add a column)
       clientLoggedAt: new Date().toISOString(),
     };
 
@@ -190,7 +178,6 @@ export default function NewCallPage() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
-
     const data = await r.json();
     if (!r.ok) return alert(data?.error || "Failed to save call");
 
@@ -318,9 +305,9 @@ export default function NewCallPage() {
                 <div className="card" style={{ marginTop: 8 }}>
                   <b>Customer details</b>
                   <div className="small" style={{ marginTop: 6, whiteSpace: "pre-line" }}>
-                    {addressBlock?.lines || "-"}
+                    {(addressBlock && addressBlock.lines) || "-"}
                     <br />
-                    {addressBlock?.contact || "-"}
+                    {(addressBlock && addressBlock.contact) || "-"}
                   </div>
                 </div>
               )}
@@ -349,14 +336,16 @@ export default function NewCallPage() {
               </select>
             </div>
 
-            {/* Outcome */}
+            {/* Outcome (DROPDOWN) */}
             <div>
               <label>Outcome</label>
-              <input
-                value={outcome}
-                onChange={(e) => setOutcome(e.target.value)}
-                placeholder="e.g. Left message, Resolved"
-              />
+              <select value={outcome} onChange={(e) => setOutcome(e.target.value)}>
+                <option value="">— Select —</option>
+                <option>Sale</option>
+                <option>No Sale</option>
+                <option>Appointment booked</option>
+                <option>Demo Booked</option>
+              </select>
             </div>
           </div>
 
