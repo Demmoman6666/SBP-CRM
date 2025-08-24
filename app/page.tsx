@@ -20,10 +20,14 @@ export default function HomePage() {
           <div className="action-sub">Search & update customers</div>
         </Link>
 
-        {/* NEW: Log Call tile */}
         <Link href="/calls/new" className="action-tile">
           <div className="action-title">Log Call</div>
-          <div className="action-sub">Record a phone call and details</div>
+          <div className="action-sub">Capture a call with a customer/lead</div>
+        </Link>
+
+        <Link href="/calls" className="action-tile">
+          <div className="action-title">View Call Log</div>
+          <div className="action-sub">Live calls with powerful filters</div>
         </Link>
       </section>
     </div>
