@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 type Report = {
   generatedAt: string;
   range: { from: string; to: string };
+  filter?: { staff: string | null };
   totals: {
     totalCalls: number;
     bookings: number;
@@ -16,38 +17,16 @@ type Report = {
   byRep: Array<{ staff: string; count: number }>;
 };
 
-function pad(n: number) {
-  return n < 10 ? `0${n}` : String(n);
-}
-function ymdLocal(d: Date) {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-function addDaysLocal(d: Date, n: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-}
-function mondayOfWeek(d: Date) {
-  // Monday = start of week
-  const dow = d.getDay(); // 0 Sun .. 6 Sat
-  const delta = dow === 0 ? -6 : 1 - dow;
-  return addDaysLocal(d, delta);
-}
-function firstOfMonth(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-function lastMonthFirst(d: Date) {
-  const m = new Date(d.getFullYear(), d.getMonth() - 1, 1);
-  return m;
-}
-function lastMonthLast(d: Date) {
-  const firstThis = new Date(d.getFullYear(), d.getMonth(), 1);
-  const lastPrev = addDaysLocal(firstThis, -1);
-  return lastPrev;
-}
-function ytdFirst(d: Date) {
-  return new Date(d.getFullYear(), 0, 1);
-}
+type Rep = { id: string; name: string };
+
+function pad(n: number) { return n < 10 ? `0${n}` : String(n); }
+function ymdLocal(d: Date) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+function addDaysLocal(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
+function mondayOfWeek(d: Date) { const dow = d.getDay(); const delta = dow === 0 ? -6 : 1 - dow; return addDaysLocal(d, delta); }
+function firstOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+function lastMonthFirst(d: Date) { return new Date(d.getFullYear(), d.getMonth()-1, 1); }
+function lastMonthLast(d: Date) { const firstThis = new Date(d.getFullYear(), d.getMonth(), 1); return addDaysLocal(firstThis, -1); }
+function ytdFirst(d: Date) { return new Date(d.getFullYear(), 0, 1); }
 
 export default function CallReportPage() {
   const today = useMemo(() => new Date(), []);
@@ -58,15 +37,29 @@ export default function CallReportPage() {
   const [err, setErr] = useState<string | null>(null);
   const [data, setData] = useState<Report | null>(null);
 
-  async function load(range?: { from: string; to: string }) {
+  // NEW: sales rep filter
+  const [reps, setReps] = useState<Rep[]>([]);
+  const [repFilter, setRepFilter] = useState<string>(""); // "" = All reps
+
+  useEffect(() => {
+    // populate Sales Rep list (uses your existing /api/sales-reps)
+    fetch("/api/sales-reps", { cache: "no-store" })
+      .then(r => r.json())
+      .then((list: Rep[]) => setReps(list ?? []))
+      .catch(() => setReps([]));
+  }, []);
+
+  async function load(range?: { from: string; to: string; staff?: string }) {
     const f = range?.from ?? from;
     const t = range?.to ?? to;
+    const staff = range?.staff ?? repFilter;
+
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch(`/api/reports/calls?from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`, {
-        cache: "no-store",
-      });
+      const qs = new URLSearchParams({ from: f, to: t });
+      if (staff) qs.set("staff", staff);
+      const res = await fetch(`/api/reports/calls?${qs.toString()}`, { cache: "no-store" });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to load report");
       setData(json as Report);
@@ -80,71 +73,57 @@ export default function CallReportPage() {
 
   // initial fetch (Today)
   useEffect(() => {
-    load({ from, to });
+    load({ from, to, staff: repFilter });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function pickRange(kind: string) {
     const now = new Date();
-    let f = from;
-    let t = to;
+    let f = from, t = to;
 
-    if (kind === "today") {
-      f = ymdLocal(now);
-      t = ymdLocal(now);
-    } else if (kind === "yesterday") {
-      const y = addDaysLocal(now, -1);
-      f = ymdLocal(y);
-      t = ymdLocal(y);
-    } else if (kind === "wtd") {
-      const start = mondayOfWeek(now);
-      f = ymdLocal(start);
-      t = ymdLocal(now);
-    } else if (kind === "lweek") {
-      const thisMon = mondayOfWeek(now);
-      const lastMon = addDaysLocal(thisMon, -7);
-      const lastSun = addDaysLocal(thisMon, -1);
-      f = ymdLocal(lastMon);
-      t = ymdLocal(lastSun);
-    } else if (kind === "mtd") {
-      f = ymdLocal(firstOfMonth(now));
-      t = ymdLocal(now);
-    } else if (kind === "lmonth") {
-      f = ymdLocal(lastMonthFirst(now));
-      t = ymdLocal(lastMonthLast(now));
-    } else if (kind === "ytd") {
-      f = ymdLocal(ytdFirst(now));
-      t = ymdLocal(now);
-    } else if (kind === "custom") {
-      const input = prompt(
-        "Enter custom range as YYYY-MM-DD to YYYY-MM-DD",
-        `${from} to ${to}`
-      );
+    if (kind === "today") { f = ymdLocal(now); t = ymdLocal(now); }
+    else if (kind === "yesterday") { const y = addDaysLocal(now, -1); f = ymdLocal(y); t = ymdLocal(y); }
+    else if (kind === "wtd") { const start = mondayOfWeek(now); f = ymdLocal(start); t = ymdLocal(now); }
+    else if (kind === "lweek") { const thisMon = mondayOfWeek(now); f = ymdLocal(addDaysLocal(thisMon, -7)); t = ymdLocal(addDaysLocal(thisMon, -1)); }
+    else if (kind === "mtd") { f = ymdLocal(firstOfMonth(now)); t = ymdLocal(now); }
+    else if (kind === "lmonth") { f = ymdLocal(lastMonthFirst(now)); t = ymdLocal(lastMonthLast(now)); }
+    else if (kind === "ytd") { f = ymdLocal(ytdFirst(now)); t = ymdLocal(now); }
+    else if (kind === "custom") {
+      const input = prompt("Enter custom range as YYYY-MM-DD to YYYY-MM-DD", `${from} to ${to}`);
       if (!input) return;
       const m = /^\s*(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})\s*$/i.exec(input);
-      if (!m) {
-        alert("Invalid format. Example: 2025-08-01 to 2025-08-24");
-        return;
-      }
-      f = m[1];
-      t = m[2];
+      if (!m) { alert("Invalid format. Example: 2025-08-01 to 2025-08-24"); return; }
+      f = m[1]; t = m[2];
     }
 
-    setFrom(f);
-    setTo(t);
-    load({ from: f, to: t });
+    setFrom(f); setTo(t);
+    load({ from: f, to: t, staff: repFilter });
   }
 
-  const lastUpdated = data?.generatedAt
-    ? new Date(data.generatedAt).toLocaleString()
-    : "—";
+  const lastUpdated = data?.generatedAt ? new Date(data.generatedAt).toLocaleString() : "—";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12 }}>
           <h1>Call Report</h1>
-          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+
+          {/* Controls */}
+          <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {/* NEW: Sales Rep filter */}
+            <div className="row" style={{ gap: 6, alignItems: "center" }}>
+              <label className="small muted">Sales Rep</label>
+              <select
+                value={repFilter}
+                onChange={(e) => { setRepFilter(e.target.value); load({ from, to, staff: e.target.value }); }}
+              >
+                <option value="">All reps</option>
+                {reps.map(r => (
+                  <option key={r.id} value={r.name}>{r.name}</option>
+                ))}
+              </select>
+            </div>
+
             <button className="primary" onClick={() => pickRange("today")}>Today</button>
             <button className="primary" onClick={() => pickRange("yesterday")}>Yesterday</button>
             <button className="primary" onClick={() => pickRange("wtd")}>Week to date</button>
@@ -160,12 +139,11 @@ export default function CallReportPage() {
         </div>
 
         <div className="small" style={{ marginTop: 8 }}>
-          <div>Range: <b>{from}</b> to <b>{to}</b></div>
+          <div>Range: <b>{from}</b> to <b>{to}</b>{repFilter ? <> • Rep: <b>{repFilter}</b></> : null}</div>
           <div>Last updated: <b>{lastUpdated}</b></div>
         </div>
       </section>
 
-      {/* Error */}
       {err && (
         <div className="card" style={{ borderColor: "#fca5a5" }}>
           <div className="small" style={{ color: "#b91c1c" }}>{err}</div>
@@ -177,31 +155,24 @@ export default function CallReportPage() {
         <div className="grid grid-3">
           <div className="card">
             <div className="small muted">Total Calls</div>
-            <div style={{ fontSize: 28, fontWeight: 700 }}>
-              {data ? data.totals.totalCalls : "—"}
-            </div>
+            <div style={{ fontSize: 28, fontWeight: 700 }}>{data ? data.totals.totalCalls : "—"}</div>
           </div>
           <div className="card">
             <div className="small muted">Appointments Booked</div>
-            <div style={{ fontSize: 28, fontWeight: 700 }}>
-              {data ? data.totals.bookings : "—"}
-            </div>
+            <div style={{ fontSize: 28, fontWeight: 700 }}>{data ? data.totals.bookings : "—"}</div>
             <div className="small muted" style={{ marginTop: 4 }}>
               Call → Booking: {data ? `${data.totals.callToBookingPct.toFixed(1)}%` : "—"}
             </div>
           </div>
           <div className="card">
             <div className="small muted">Sales</div>
-            <div style={{ fontSize: 28, fontWeight: 700 }}>
-              {data ? data.totals.sales : "—"}
-            </div>
+            <div style={{ fontSize: 28, fontWeight: 700 }}>{data ? data.totals.sales : "—"}</div>
             <div className="small muted" style={{ marginTop: 4 }}>
               Booking → Sale: {data ? `${data.totals.apptToSalePct.toFixed(1)}%` : "—"}
             </div>
           </div>
         </div>
 
-        {/* By rep */}
         <div className="card">
           <h3>Calls by Sales Rep</h3>
           {!data || data.byRep.length === 0 ? (
