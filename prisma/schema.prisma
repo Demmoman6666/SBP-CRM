@@ -103,7 +103,7 @@ model CallLog {
   followUpRequired   Boolean   @default(false)
   followUpAt         DateTime?
 
-  // NEW:
+  // NEW call timing fields
   startTime          DateTime?
   endTime            DateTime?
   durationMinutes    Int?
@@ -113,7 +113,7 @@ model CallLog {
   @@index([isExistingCustomer, customerId])
 }
 
-/* NEW: separate table for stocked brands (distinct from Brand/competitors) */
+// NEW: separate table for stocked brands (distinct from competitor Brand)
 model StockedBrand {
   id        String   @id @default(cuid())
   name      String   @unique
