@@ -39,9 +39,7 @@ function prettyTime(s?: string | null): string | null {
 
 function renderOpeningHours(openingHours?: string | null) {
   const parsed = parseOpeningHours(openingHours);
-  if (!parsed) {
-    return <p className="small">{openingHours || "-"}</p>;
-  }
+  if (!parsed) return <p className="small">{openingHours || "-"}</p>;
 
   return (
     <div
@@ -60,9 +58,7 @@ function renderOpeningHours(openingHours?: string | null) {
         const isOpen = !!it.open;
         const from = prettyTime(it.from);
         const to = prettyTime(it.to);
-
-        let text = "Closed";
-        if (isOpen) text = from && to ? `${from} – ${to}` : "Open";
+        const text = isOpen ? (from && to ? `${from} – ${to}` : "Open") : "Closed";
 
         return (
           <div key={d} style={{ display: "contents" }}>
@@ -79,9 +75,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
     include: {
-      visits: { orderBy: { date: "desc" } },                // kept in data (in case used elsewhere)
+      visits: { orderBy: { date: "desc" } },                // kept for data consistency
       notesLog: { orderBy: { createdAt: "desc" } },
-      callLogs: { orderBy: { createdAt: "desc" } },         // <-- Call logs back
+      callLogs: { orderBy: { createdAt: "desc" } },
     },
   });
 
@@ -99,8 +95,8 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     revalidatePath(`/customers/${customer.id}`);
   }
 
-  const contactBlock =
-    [customer.customerEmailAddress, customer.customerNumber].filter(Boolean).join("\n") || "-";
+  // Contact number: prefer telephone, fallback to "customerNumber" if that’s what you used historically
+  const contactNumber = customer.customerTelephone || customer.customerNumber || "-";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -109,7 +105,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <h2>{customer.salonName}</h2>
-            <p className="small">{customer.customerName}</p>
+            {/* Removed contact name from under the title per request */}
           </div>
           <div className="row" style={{ gap: 8 }}>
             <Link
@@ -128,7 +124,11 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           <div>
             <b>Contact</b>
             <p className="small" style={{ whiteSpace: "pre-line", marginTop: 6 }}>
-              {contactBlock}
+              {customer.customerName || "-"}
+              {"\n"}
+              {contactNumber}
+              {"\n"}
+              {customer.customerEmailAddress || "-"}
             </p>
           </div>
 
@@ -140,9 +140,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             </p>
           </div>
 
-          {/* Salon meta */}
+          {/* Salon meta (renamed) */}
           <div>
-            <b>Salon</b>
+            <b>Salon Information</b>
             <p className="small" style={{ marginTop: 6 }}>
               Chairs: {customer.numberOfChairs ?? "-"}
               <br />
@@ -167,7 +167,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         )}
       </div>
 
-      {/* Add Note — full width (Log Visit removed) */}
+      {/* Add Note */}
       <div className="card">
         <h3>Add Note</h3>
         <form action={addNote} className="grid" style={{ gap: 8 }}>
@@ -207,7 +207,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         )}
       </div>
 
-      {/* Call Logs — back on the page */}
+      {/* Call Logs */}
       <div className="card">
         <h3>Call Logs</h3>
         {customer.callLogs.length === 0 ? (
