@@ -1,8 +1,8 @@
 // app/customers/[id]/page.tsx
 import Link from "next/link";
-import DeleteCustomerButton from "@/components/DeleteCustomerButton";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import DeleteCustomerButton from "@/components/DeleteCustomerButton";
 
 const DOW: Array<"Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"> = [
   "Mon",
@@ -17,7 +17,7 @@ const DOW: Array<"Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"> = [
 type OpeningForDay = { open?: boolean; from?: string | null; to?: string | null };
 type OpeningHoursObj = Record<string, OpeningForDay>;
 
-/* Helpers to present address & opening hours nicely */
+/* Helpers */
 function addressLines(c: any): string[] {
   return [c.addressLine1, c.addressLine2, c.town, c.county, c.postCode].filter(Boolean);
 }
@@ -34,14 +34,12 @@ function parseOpeningHours(src?: string | null): OpeningHoursObj | null {
 function prettyTime(s?: string | null): string | null {
   if (!s) return null;
   const t = String(s).trim();
-  // accept HH:mm or H:mm
-  return /^\d{1,2}:\d{2}$/.test(t) ? t : null;
+  return /^\d{1,2}:\d{2}$/.test(t) ? t : null; // accept HH:mm or H:mm
 }
 
 function renderOpeningHours(openingHours?: string | null) {
   const parsed = parseOpeningHours(openingHours);
   if (!parsed) {
-    // Fallback: show raw text or dash
     return <p className="small">{openingHours || "-"}</p>;
   }
 
@@ -58,7 +56,7 @@ function renderOpeningHours(openingHours?: string | null) {
       }}
     >
       {DOW.map((d) => {
-        const it: OpeningForDay = (parsed as any)[d] || {};
+        const it: OpeningForDay = parsed[d] || {};
         const isOpen = !!it.open;
         const from = prettyTime(it.from);
         const to = prettyTime(it.to);
@@ -85,7 +83,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     include: {
       visits: { orderBy: { date: "desc" } },
       notesLog: { orderBy: { createdAt: "desc" } },
-      callLogs: { orderBy: { createdAt: "desc" } },
+      // callLogs removed from the page, so we don't need to fetch them
     },
   });
 
@@ -107,7 +105,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     "use server";
     const dateStr = String(formData.get("date") || "");
     const summary = String(formData.get("summary") || "");
-    const staff = String(formData.get("staff") || ""); // ← FIXED
+    const staff = String(formData.get("staff") || "");
     await prisma.visit.create({
       data: {
         customerId: customer.id,
@@ -126,15 +124,19 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     <div className="grid" style={{ gap: 16 }}>
       {/* Header card */}
       <div className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "start" }}>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <h2>{customer.salonName}</h2>
             <p className="small">{customer.customerName}</p>
           </div>
-
-          {/* Actions */}
-          <div className="right" style={{ gap: 8 }}>
-            <Link href={`/customers/${customer.id}/edit`} className="btn">Edit</Link>
+          <div className="row" style={{ gap: 8 }}>
+            <Link
+              href={`/customers/${customer.id}/edit`}
+              className="primary"
+              style={{ padding: "6px 10px", borderRadius: 10 }}
+            >
+              Edit
+            </Link>
             <DeleteCustomerButton id={customer.id} />
           </div>
         </div>
@@ -148,7 +150,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             </p>
           </div>
 
-          {/* Location (stacked lines) */}
+          {/* Location */}
           <div>
             <b>Location</b>
             <p className="small" style={{ whiteSpace: "pre-line", marginTop: 6 }}>
@@ -168,7 +170,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             </p>
           </div>
 
-          {/* Opening hours (pretty) */}
+          {/* Opening hours */}
           <div>
             <b>Opening Hours</b>
             <div style={{ marginTop: 6 }}>{renderOpeningHours(customer.openingHours)}</div>
@@ -196,7 +198,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
               <label>Note</label>
               <textarea name="text" rows={3} required />
             </div>
-            <button className="primary" type="submit">Save Note</button>
+            <button className="primary" type="submit">
+              Save Note
+            </button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Notes</h3>
@@ -241,7 +245,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
               <label>Summary</label>
               <textarea name="summary" rows={3} placeholder="What happened?" />
             </div>
-            <button className="primary" type="submit">Save Visit</button>
+            <button className="primary" type="submit">
+              Save Visit
+            </button>
           </form>
 
           <h3 style={{ marginTop: 16 }}>Visits</h3>
@@ -270,44 +276,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
         </div>
       </div>
 
-      {/* Call logs */}
-      <div className="card">
-        <h3>Call Logs</h3>
-        {customer.callLogs.length === 0 ? (
-          <p className="small">No calls logged yet.</p>
-        ) : (
-          customer.callLogs.map((c) => (
-            <div
-              key={c.id}
-              className="row"
-              style={{
-                justifyContent: "space-between",
-                borderBottom: "1px solid var(--border)",
-                padding: "8px 0",
-              }}
-            >
-              <div>
-                <div className="small">
-                  {new Date(c.createdAt).toLocaleString()}
-                  {c.staff ? ` • ${c.staff}` : ""}
-                  {c.callType ? ` • ${c.callType}` : ""}
-                  {c.outcome ? ` • ${c.outcome}` : ""}
-                  {c.followUpAt ? ` • follow-up ${new Date(c.followUpAt as any).toLocaleString()}` : ""}
-                </div>
-                <div>{c.summary || "-"}</div>
-
-                {!c.isExistingCustomer && (
-                  <div className="small muted">
-                    Lead: {c.customerName || "-"}
-                    {c.contactPhone ? ` • ${c.contactPhone}` : ""}
-                    {c.contactEmail ? ` • ${c.contactEmail}` : ""}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+      {/* Call Logs section intentionally removed */}
     </div>
   );
 }
