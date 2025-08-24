@@ -3,9 +3,6 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-
 /* Parse yyyy-mm-dd safely (UTC) */
 function parseDay(s: string | null): Date | null {
   if (!s) return null;
@@ -25,13 +22,14 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const fromStr = searchParams.get("from");
     const toStr = searchParams.get("to");
+    const staff = (searchParams.get("staff") || "").trim(); // optional
 
     const from = parseDay(fromStr);
     const to = parseDay(toStr);
     if (!from || !to) {
       return NextResponse.json(
         { error: "Invalid or missing from/to (yyyy-mm-dd)" },
-        { status: 400, headers: { "Cache-Control": "no-store" } }
+        { status: 400 }
       );
     }
 
@@ -40,6 +38,10 @@ export async function GET(req: Request) {
     const lt = addDays(to, 1);
 
     const where: Prisma.CallLogWhereInput = { createdAt: { gte, lt } };
+    if (staff && staff.toLowerCase() !== "all") {
+      // match the "staff" (Sales Rep name) stored on CallLog
+      where.staff = staff;
+    }
 
     // Totals
     const [totalCalls, bookings, sales] = await Promise.all([
@@ -48,7 +50,7 @@ export async function GET(req: Request) {
       prisma.callLog.count({ where: { ...where, outcome: "Sale" } }),
     ]);
 
-    // By-rep counts (avoid Prisma groupBy typing issue)
+    // By-rep counts (keeps working when a single rep is selected)
     const reps = await prisma.callLog.findMany({
       where,
       select: { staff: true },
@@ -66,9 +68,10 @@ export async function GET(req: Request) {
     const callToBookingPct = totalCalls > 0 ? (bookings / totalCalls) * 100 : 0;
     const apptToSalePct = bookings > 0 ? (sales / bookings) * 100 : 0;
 
-    const payload = {
+    return NextResponse.json({
       generatedAt: new Date().toISOString(),
       range: { from: fromStr, to: toStr },
+      filter: { staff: staff || null },
       totals: {
         totalCalls,
         bookings,
@@ -77,25 +80,12 @@ export async function GET(req: Request) {
         apptToSalePct,
       },
       byRep,
-    };
-
-    return NextResponse.json(payload, {
-      headers: {
-        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-        "Pragma": "no-cache",
-        "Expires": "0",
-        "CDN-Cache-Control": "no-store",
-        "Vercel-CDN-Cache-Control": "no-store",
-      },
     });
   } catch (err: any) {
     console.error("Call report error:", err);
     return NextResponse.json(
       { error: err?.message ?? "Internal error" },
-      {
-        status: 500,
-        headers: { "Cache-Control": "no-store" },
-      }
+      { status: 500 }
     );
   }
 }
