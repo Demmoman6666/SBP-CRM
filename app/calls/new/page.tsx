@@ -80,7 +80,7 @@ export default function NewCallPage() {
 
   // call details
   const [callType, setCallType] = useState<string>("");
-  const [outcome, setOutcome] = useState<string>(""); // DROPDOWN NOW
+  const [outcome, setOutcome] = useState<string>("");
   const [followDate, setFollowDate] = useState<string>(""); // yyyy-mm-dd
   const [followTime, setFollowTime] = useState<string>(""); // HH:mm
   const [summary, setSummary] = useState<string>("");
@@ -326,17 +326,18 @@ export default function NewCallPage() {
           )}
 
           <div className="grid grid-2">
-            {/* Call Type */}
+            {/* Call Type (now with Booked Demo) */}
             <div>
               <label>Call Type</label>
               <select value={callType} onChange={(e) => setCallType(e.target.value)}>
                 <option value="">— Select —</option>
                 <option>Cold Call</option>
                 <option>Booked Call</option>
+                <option>Booked Demo</option>
               </select>
             </div>
 
-            {/* Outcome (DROPDOWN) */}
+            {/* Outcome dropdown */}
             <div>
               <label>Outcome</label>
               <select value={outcome} onChange={(e) => setOutcome(e.target.value)}>
