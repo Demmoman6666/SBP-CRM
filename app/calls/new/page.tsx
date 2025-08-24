@@ -20,8 +20,20 @@ type CustomerLite = {
 
 type SalesRepLite = { id: string; name: string };
 
+function formatNow(d: Date) {
+  // dd/mm/yyyy, HH:MM:SS
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  const day = pad(d.getDate());
+  const mon = pad(d.getMonth() + 1);
+  const yr = d.getFullYear();
+  const hh = pad(d.getHours());
+  const mm = pad(d.getMinutes());
+  const ss = pad(d.getSeconds());
+  return `${day}/${mon}/${yr}, ${hh}:${mm}:${ss}`;
+}
+
 function joinAddressLines(c?: CustomerLite | null) {
-  if (!c) return "";
+  if (!c) return { lines: "", contact: "" };
   const lines = [
     c.addressLine1,
     c.addressLine2,
@@ -54,6 +66,13 @@ function minutesBetween(start?: string, end?: string): number | null {
 }
 
 export default function NewCallPage() {
+  // Live timestamp (display-only; DB `createdAt` is already server-now)
+  const [now, setNow] = useState<Date>(new Date());
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
   // existing customer?
   const [isExisting, setIsExisting] = useState<null | boolean>(null);
 
@@ -62,9 +81,9 @@ export default function NewCallPage() {
   const [customerOpts, setCustomerOpts] = useState<CustomerLite[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerLite | null>(null);
   const addressBlock = useMemo(
-    () => (selectedCustomer ? joinAddressLines(selectedCustomer) : ""),
+    () => (selectedCustomer ? joinAddressLines(selectedCustomer) : null),
     [selectedCustomer]
-  ) as "" | { lines: string; contact: string };
+  );
 
   // sales reps
   const [reps, setReps] = useState<SalesRepLite[]>([]);
@@ -77,13 +96,13 @@ export default function NewCallPage() {
   const [followTime, setFollowTime] = useState<string>(""); // HH:mm
   const [summary, setSummary] = useState<string>("");
 
-  // NEW: timing + duration + appointment booked
+  // timing + duration + appointment booked
   const [startTime, setStartTime] = useState<string>(""); // HH:mm
   const [endTime, setEndTime] = useState<string>(""); // HH:mm
   const [duration, setDuration] = useState<number | null>(null);
   const [appointmentBooked, setAppointmentBooked] = useState<null | boolean>(null);
 
-  // live duration calc whenever either time changes
+  // duration autocalc
   useEffect(() => {
     setDuration(minutesBetween(startTime, endTime));
   }, [startTime, endTime]);
@@ -93,10 +112,7 @@ export default function NewCallPage() {
     (async () => {
       try {
         const r = await fetch("/api/sales-reps", { cache: "no-store" });
-        if (r.ok) {
-          const data: SalesRepLite[] = await r.json();
-          setReps(data);
-        }
+        if (r.ok) setReps(await r.json());
       } catch {}
     })();
   }, []);
@@ -128,6 +144,11 @@ export default function NewCallPage() {
     setCustomerOpts([]);
   }
 
+  function hhmm(d = new Date()) {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
 
@@ -149,11 +170,12 @@ export default function NewCallPage() {
       outcome: outcome || null,
       summary,
       followUpAt,
-      // NEW:
       startTime: startTime || null,
       endTime: endTime || null,
       appointmentBooked:
         appointmentBooked === true ? "true" : appointmentBooked === false ? "false" : "",
+      // client-side timestamp (displayed above; not stored by API unless you add a column)
+      clientLoggedAt: new Date().toISOString(),
     };
 
     if (isExisting) {
@@ -184,9 +206,12 @@ export default function NewCallPage() {
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h1>Log Call</h1>
-          <Link href="/" className="small" style={{ textDecoration: "none" }}>
-            ← Back
-          </Link>
+          <div className="row" style={{ gap: 16, alignItems: "center" }}>
+            <span className="small muted">Timestamp: {formatNow(now)}</span>
+            <Link href="/" className="small" style={{ textDecoration: "none" }}>
+              ← Back
+            </Link>
+          </div>
         </div>
       </section>
 
@@ -293,9 +318,9 @@ export default function NewCallPage() {
                 <div className="card" style={{ marginTop: 8 }}>
                   <b>Customer details</b>
                   <div className="small" style={{ marginTop: 6, whiteSpace: "pre-line" }}>
-                    {(addressBlock && (addressBlock as any).lines) || "-"}
+                    {addressBlock?.lines || "-"}
                     <br />
-                    {(addressBlock && (addressBlock as any).contact) || "-"}
+                    {addressBlock?.contact || "-"}
                   </div>
                 </div>
               )}
@@ -335,26 +360,46 @@ export default function NewCallPage() {
             </div>
           </div>
 
-          {/* NEW: Start/Finish/Duration + Appointment Booked */}
+          {/* Start/Finish/Duration + Appointment Booked */}
           <div className="grid grid-2">
             <div className="grid" style={{ gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
               <div>
                 <label>Start Time</label>
-                <input
-                  type="time"
-                  step={60}
-                  value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
-                />
+                <div className="row" style={{ gap: 6 }}>
+                  <input
+                    type="time"
+                    step={60}
+                    value={startTime}
+                    onChange={(e) => setStartTime(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setStartTime(hhmm())}
+                    title="Use current time"
+                  >
+                    Now
+                  </button>
+                </div>
               </div>
               <div>
                 <label>Finish Time</label>
-                <input
-                  type="time"
-                  step={60}
-                  value={endTime}
-                  onChange={(e) => setEndTime(e.target.value)}
-                />
+                <div className="row" style={{ gap: 6 }}>
+                  <input
+                    type="time"
+                    step={60}
+                    value={endTime}
+                    onChange={(e) => setEndTime(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setEndTime(hhmm())}
+                    title="Use current time"
+                  >
+                    Now
+                  </button>
+                </div>
               </div>
               <div>
                 <label>Total Duration (mins)</label>
