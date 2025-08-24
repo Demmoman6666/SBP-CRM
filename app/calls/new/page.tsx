@@ -55,7 +55,7 @@ function minutesBetween(start?: string, end?: string): number | null {
 }
 
 export default function NewCallPage() {
-  // Live timestamp display
+  // Live timestamp
   const [now, setNow] = useState(new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -145,7 +145,6 @@ export default function NewCallPage() {
     if (!salesRep) return alert("Please select a Sales Rep.");
     if (!summary.trim()) return alert("Please add a summary.");
 
-    // build follow-up iso if provided
     let followUpAt: string | undefined;
     if (followDate) {
       const time = followTime || "00:00";
@@ -263,7 +262,9 @@ export default function NewCallPage() {
             <div>
               <label>Customer *</label>
               <div style={{ position: "relative" }}>
+                {/* Set type="search" so it matches your global input styles */}
                 <input
+                  type="search"
                   value={customerQuery}
                   onChange={(e) => {
                     setCustomerQuery(e.target.value);
@@ -305,9 +306,9 @@ export default function NewCallPage() {
                 <div className="card" style={{ marginTop: 8 }}>
                   <b>Customer details</b>
                   <div className="small" style={{ marginTop: 6, whiteSpace: "pre-line" }}>
-                    {(addressBlock && addressBlock.lines) || "-"}
+                    {addressBlock?.lines || "-"}
                     <br />
-                    {(addressBlock && addressBlock.contact) || "-"}
+                    {addressBlock?.contact || "-"}
                   </div>
                 </div>
               )}
@@ -317,7 +318,9 @@ export default function NewCallPage() {
           {isExisting === false && (
             <div>
               <label>Customer (free entry)</label>
+              {/* Also set explicit type here so it styles like the others */}
               <input
+                type="text"
                 value={customerQuery}
                 onChange={(e) => setCustomerQuery(e.target.value)}
                 placeholder="Type a business/name"
@@ -326,7 +329,7 @@ export default function NewCallPage() {
           )}
 
           <div className="grid grid-2">
-            {/* Call Type (now with Booked Demo) */}
+            {/* Call Type (with Booked Demo) */}
             <div>
               <label>Call Type</label>
               <select value={callType} onChange={(e) => setCallType(e.target.value)}>
