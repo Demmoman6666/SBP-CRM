@@ -13,6 +13,11 @@ type Report = {
     sales: number;
     callToBookingPct: number;
     apptToSalePct: number;
+    /** ✅ NEW */
+    callToSalePct: number;
+    bookedCalls: number;
+    bookedCallSales: number;
+    bookedCallToSalePct: number;
   };
   byRep: Array<{ staff: string; count: number }>;
 };
@@ -194,6 +199,22 @@ export default function CallReportPage() {
             <div className="small muted" style={{ marginTop: 4 }}>
               Booking → Sale: {data ? `${data.totals.apptToSalePct.toFixed(1)}%` : "—"}
             </div>
+            {/* ✅ NEW */}
+            <div className="small muted" style={{ marginTop: 2 }}>
+              Call → Sale: {data ? `${data.totals.callToSalePct.toFixed(1)}%` : "—"}
+            </div>
+          </div>
+        </div>
+
+        {/* ✅ NEW – Booked Calls → Sales mini-card */}
+        <div className="card">
+          <div className="small muted">Booked Calls → Sales</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>
+            {data ? data.totals.bookedCallSales : "—"}
+          </div>
+          <div className="small muted" style={{ marginTop: 4 }}>
+            of {data ? data.totals.bookedCalls : "—"} booked calls •{" "}
+            {data ? `${data.totals.bookedCallToSalePct.toFixed(1)}%` : "—"}
           </div>
         </div>
 
