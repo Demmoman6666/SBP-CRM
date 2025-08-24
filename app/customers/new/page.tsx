@@ -5,14 +5,15 @@ import { useEffect, useMemo, useState } from "react";
 
 /* ------------ types ------------ */
 type Rep = { id: string; name: string };
+type Brand = { id: string; name: string };
 type DayKey = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
 
 type DayState = {
   enabled: boolean;
-  openH: string;  // "00".."23"
-  openM: string;  // "00","05",...,"55"
-  closeH: string; // "00".."23"
-  closeM: string; // "00","05",...,"55"
+  openH: string;
+  openM: string;
+  closeH: string;
+  closeM: string;
 };
 
 const DAYS: DayKey[] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -27,36 +28,28 @@ const makeDefaultDay = (): DayState => ({
   closeM: "00",
 });
 
-/* ------------ component ------------ */
 export default function NewCustomerPage() {
-  /* sales reps */
+  /* data sources */
   const [reps, setReps] = useState<Rep[]>([]);
+  const [brands, setBrands] = useState<Brand[]>([]);
+
   useEffect(() => {
-    fetch("/api/sales-reps")
-      .then(r => r.json())
-      .then(setReps)
-      .catch(() => setReps([]));
+    fetch("/api/sales-reps").then(r => r.json()).then(setReps).catch(() => setReps([]));
+    fetch("/api/brands").then(r => r.json()).then(setBrands).catch(() => setBrands([]));
   }, []);
 
   /* opening hours state */
-  const [oh, setOh] = useState<Record<DayKey, DayState>>(() =>
-    Object.fromEntries(DAYS.map(d => [d, makeDefaultDay()])) as Record<DayKey, DayState>
+  const [oh, setOh] = useState<Record<DayKey, DayState>>(
+    () => Object.fromEntries(DAYS.map(d => [d, makeDefaultDay()])) as Record<DayKey, DayState>
   );
 
   const openingHoursJSON = useMemo(() => {
-    // Serialize to a compact JSON object the API can store in `openingHours`
     const obj: Record<DayKey, any> = {} as any;
     for (const d of DAYS) {
       const s = oh[d];
-      if (!s.enabled) {
-        obj[d] = { open: false };
-      } else {
-        obj[d] = {
-          open: true,
-          from: `${s.openH}:${s.openM}`,
-          to: `${s.closeH}:${s.closeM}`,
-        };
-      }
+      obj[d] = s.enabled
+        ? { open: true, from: `${s.openH}:${s.openM}`, to: `${s.closeH}:${s.closeM}` }
+        : { open: false };
     }
     return JSON.stringify(obj);
   }, [oh]);
@@ -65,6 +58,10 @@ export default function NewCustomerPage() {
     setOh(prev => ({ ...prev, [day]: { ...prev[day], [key]: val } }));
   }
 
+  /* opening-hours grid columns (header & rows share this) */
+  const gridCols =
+    "120px 46px 64px 64px 50px 64px 64px"; // [Day] [Open] [Hr] [Min] [Close] [Hr] [Min]
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
@@ -72,7 +69,6 @@ export default function NewCustomerPage() {
       </section>
 
       <form method="POST" action="/api/customers" className="card grid" style={{ gap: 16 }}>
-        {/* keep the serialized openingHours in sync */}
         <input type="hidden" name="openingHours" value={openingHoursJSON} />
 
         <div className="grid grid-2">
@@ -109,7 +105,12 @@ export default function NewCustomerPage() {
           </div>
           <div className="field">
             <label>Brands Used</label>
-            <input name="brandsInterestedIn" placeholder="e.g. Wella" />
+            <select name="brandsInterestedIn" defaultValue="">
+              <option value="">— Select a brand —</option>
+              {brands.map(b => (
+                <option key={b.id} value={b.name}>{b.name}</option>
+              ))}
+            </select>
           </div>
 
           <div className="field">
@@ -140,27 +141,42 @@ export default function NewCustomerPage() {
         {/* Opening Hours */}
         <div className="grid" style={{ gap: 8 }}>
           <b>Opening Hours</b>
+
           <div className="card" style={{ padding: 12, border: "1px solid var(--border)" }}>
-            {/* header row */}
-            <div className="row" style={{ gap: 8, fontSize: ".85rem", color: "var(--muted)", marginBottom: 8 }}>
-              <div style={{ width: 48 }}></div>
-              <div style={{ width: 46 }}>Open</div>
-              <div className="row" style={{ gap: 6 }}>
-                <div style={{ width: 64 }}>Hour</div>
-                <div style={{ width: 64 }}>Min</div>
-              </div>
-              <div style={{ width: 50, marginLeft: 8 }}>Close</div>
-              <div className="row" style={{ gap: 6 }}>
-                <div style={{ width: 64 }}>Hour</div>
-                <div style={{ width: 64 }}>Min</div>
-              </div>
+            {/* header aligned to exact columns */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: gridCols,
+                columnGap: 8,
+                alignItems: "end",
+                marginBottom: 8,
+              }}
+            >
+              <div></div>
+              <div className="small muted" style={{ textAlign: "left" }}>Open</div>
+              <div className="small muted" style={{ textAlign: "left" }}>Hour</div>
+              <div className="small muted" style={{ textAlign: "left" }}>Min</div>
+              <div className="small muted" style={{ textAlign: "left" }}>Close</div>
+              <div className="small muted" style={{ textAlign: "left" }}>Hour</div>
+              <div className="small muted" style={{ textAlign: "left" }}>Min</div>
             </div>
 
             {DAYS.map(day => {
               const s = oh[day];
               return (
-                <div key={day} className="row" style={{ gap: 8, alignItems: "center", marginBottom: 8 }}>
-                  <label className="row" style={{ gap: 8, width: 120, alignItems: "center" }}>
+                <div
+                  key={day}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: gridCols,
+                    columnGap: 8,
+                    alignItems: "center",
+                    marginBottom: 8,
+                  }}
+                >
+                  {/* Day + checkbox */}
+                  <label className="row" style={{ gap: 8, alignItems: "center" }}>
                     <input
                       type="checkbox"
                       checked={s.enabled}
@@ -169,16 +185,15 @@ export default function NewCustomerPage() {
                     <span>{day}</span>
                   </label>
 
-                  {/* Open label */}
-                  <span className="small" style={{ width: 46, color: "var(--muted)" }}>Open</span>
+                  {/* spacer under "Open" header column */}
+                  <div></div>
 
-                  {/* Open time selects */}
+                  {/* Open Hr / Min */}
                   <select
                     aria-label={`${day} open hour`}
                     disabled={!s.enabled}
                     value={s.openH}
                     onChange={e => updateDay(day, "openH", e.target.value)}
-                    style={{ width: 64 }}
                   >
                     {H24.map(h => <option key={h} value={h}>{h}</option>)}
                   </select>
@@ -187,21 +202,19 @@ export default function NewCustomerPage() {
                     disabled={!s.enabled}
                     value={s.openM}
                     onChange={e => updateDay(day, "openM", e.target.value)}
-                    style={{ width: 64 }}
                   >
                     {M05.map(m => <option key={m} value={m}>{m}</option>)}
                   </select>
 
-                  {/* Close label */}
-                  <span className="small" style={{ width: 50, color: "var(--muted)", marginLeft: 8 }}>Close</span>
+                  {/* spacer under "Close" header column */}
+                  <div></div>
 
-                  {/* Close time selects */}
+                  {/* Close Hr / Min */}
                   <select
                     aria-label={`${day} close hour`}
                     disabled={!s.enabled}
                     value={s.closeH}
                     onChange={e => updateDay(day, "closeH", e.target.value)}
-                    style={{ width: 64 }}
                   >
                     {H24.map(h => <option key={h} value={h}>{h}</option>)}
                   </select>
@@ -210,7 +223,6 @@ export default function NewCustomerPage() {
                     disabled={!s.enabled}
                     value={s.closeM}
                     onChange={e => updateDay(day, "closeM", e.target.value)}
-                    style={{ width: 64 }}
                   >
                     {M05.map(m => <option key={m} value={m}>{m}</option>)}
                   </select>
