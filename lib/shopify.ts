@@ -2,10 +2,15 @@
 import { prisma } from "@/lib/prisma";
 import crypto from "crypto";
 
-const SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN!;
-const SHOP_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN!;
-const WEBHOOK_SECRET_RAW = process.env.SHOPIFY_WEBHOOK_SECRET || "";
-const WEBHOOK_SECRET = WEBHOOK_SECRET_RAW.trim(); // guard against copy/paste whitespace
+/** ───────────────── Env ───────────────── */
+const RAW_SHOP_DOMAIN = (process.env.SHOPIFY_SHOP_DOMAIN || "").trim();
+// Make sure we only keep the bare domain (no scheme accidentally pasted)
+const SHOP_DOMAIN = RAW_SHOP_DOMAIN.replace(/^https?:\/\//i, "");
+
+const SHOP_ADMIN_TOKEN = (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "").trim();
+export const SHOPIFY_API_VERSION = (process.env.SHOPIFY_API_VERSION || "2024-07").trim();
+
+const WEBHOOK_SECRET = (process.env.SHOPIFY_WEBHOOK_SECRET || "").trim(); // guard against copy/paste whitespace
 
 /** Small helper: safely coerce to number */
 function toNumber(v: any): number | null {
@@ -19,7 +24,7 @@ export async function shopifyRest(path: string, init: RequestInit = {}) {
   if (!SHOP_DOMAIN || !SHOP_ADMIN_TOKEN) {
     throw new Error("Missing SHOPIFY_SHOP_DOMAIN or SHOPIFY_ADMIN_ACCESS_TOKEN");
   }
-  const url = `https://${SHOP_DOMAIN}/admin/api/2024-07${path}`;
+  const url = `https://${SHOP_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}${path}`;
   const headers = new Headers(init.headers as any);
   headers.set("X-Shopify-Access-Token", SHOP_ADMIN_TOKEN);
   if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
@@ -42,30 +47,31 @@ export function verifyShopifyHmac(
       ? rawBody
       : Buffer.from(rawBody as ArrayBuffer);
 
-  // Digest as raw bytes (not base64 string yet)
-  const digestBytes = crypto.createHmac("sha256", WEBHOOK_SECRET).update(bodyBuf).digest(); // Buffer
+  // Compute digest as raw bytes (Buffer)
+  const digestBytes = crypto.createHmac("sha256", WEBHOOK_SECRET).update(bodyBuf).digest();
+
+  // Header is base64; decode to bytes for constant-time comparison
   const providedBytes = Buffer.from(hmacHeader, "base64");
 
   let ok = false;
   try {
-    ok = providedBytes.length === digestBytes.length && crypto.timingSafeEqual(providedBytes, digestBytes);
+    ok =
+      providedBytes.length === digestBytes.length &&
+      crypto.timingSafeEqual(providedBytes, digestBytes);
   } catch {
     ok = false;
   }
 
-  // Optional diagnostic (set DEBUG_SHOPIFY_HMAC=1 once to see details)
+  // Optional diagnostics (enable by setting DEBUG_SHOPIFY_HMAC=1 in Vercel)
   if (!ok && process.env.DEBUG_SHOPIFY_HMAC === "1") {
-    console.error(
-      "[HMAC DEBUG] mismatch",
-      {
-        provided_b64: hmacHeader.slice(0, 16) + "...",
-        computed_b64: digestBytes.toString("base64").slice(0, 16) + "...",
-        provided_len: providedBytes.length,
-        computed_len: digestBytes.length,
-        secret_len: WEBHOOK_SECRET.length,
-        raw_len: bodyBuf.length,
-      }
-    );
+    console.error("[HMAC DEBUG] mismatch", {
+      provided_b64: hmacHeader.slice(0, 16) + "...",
+      computed_b64: digestBytes.toString("base64").slice(0, 16) + "...",
+      provided_len: providedBytes.length,
+      computed_len: digestBytes.length,
+      secret_len: WEBHOOK_SECRET.length,
+      raw_len: bodyBuf.length,
+    });
   }
 
   return ok;
@@ -162,7 +168,11 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
       shopifyOrderNumber: order.order_number ?? null,
       shopifyName: order.name ?? null,
       customerId: linkedCustomer ? linkedCustomer.id : null,
-      processedAt: order.processed_at ? new Date(order.processed_at) : order.created_at ? new Date(order.created_at) : null,
+      processedAt: order.processed_at
+        ? new Date(order.processed_at)
+        : order.created_at
+        ? new Date(order.created_at)
+        : null,
       currency: order.currency ?? null,
       financialStatus: order.financial_status ?? null,
       fulfillmentStatus: order.fulfillment_status ?? null,
@@ -176,7 +186,11 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
       shopifyOrderNumber: order.order_number ?? null,
       shopifyName: order.name ?? null,
       customerId: linkedCustomer ? linkedCustomer.id : null,
-      processedAt: order.processed_at ? new Date(order.processed_at) : order.created_at ? new Date(order.created_at) : null,
+      processedAt: order.processed_at
+        ? new Date(order.processed_at)
+        : order.created_at
+        ? new Date(order.created_at)
+        : null,
       currency: order.currency ?? null,
       financialStatus: order.financial_status ?? null,
       fulfillmentStatus: order.fulfillment_status ?? null,
@@ -246,7 +260,10 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
   let shopifyId = c.shopifyCustomerId || null;
 
   if (!shopifyId) {
-    const res = await shopifyRest(`/customers.json`, { method: "POST", body: JSON.stringify(payload) });
+    const res = await shopifyRest(`/customers.json`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`Shopify create failed: ${res.status} ${text}`);
@@ -260,7 +277,10 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
           shopifyCustomerId: shopifyId,
           shopifyLastSyncedAt: new Date(),
           shopifyTags: json?.customer?.tags
-            ? String(json.customer.tags).split(",").map((t: string) => t.trim()).filter(Boolean)
+            ? String(json.customer.tags)
+                .split(",")
+                .map((t: string) => t.trim())
+                .filter(Boolean)
             : c.shopifyTags ?? [],
         },
       });
@@ -268,7 +288,9 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
   } else {
     const res = await shopifyRest(`/customers/${shopifyId}.json`, {
       method: "PUT",
-      body: JSON.stringify({ customer: { id: Number(shopifyId), ...payload.customer } }),
+      body: JSON.stringify({
+        customer: { id: Number(shopifyId), ...payload.customer },
+      }),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -280,7 +302,10 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
       data: {
         shopifyLastSyncedAt: new Date(),
         shopifyTags: json?.customer?.tags
-          ? String(json.customer.tags).split(",").map((t: string) => t.trim()).filter(Boolean)
+          ? String(json.customer.tags)
+              .split(",")
+              .map((t: string) => t.trim())
+              .filter(Boolean)
           : c.shopifyTags ?? [],
       },
     });
