@@ -48,7 +48,6 @@ export function verifyShopifyHmac(
 export async function getSalesRepForTags(tags: string[]): Promise<string | null> {
   if (!tags || tags.length === 0) return null;
 
-  // Case-sensitive match; if you want case-insensitive tags, normalize to lower case on both sides.
   const rule = await prisma.salesRepTagRule.findFirst({
     where: { tag: { in: tags } },
     include: { salesRep: true },
@@ -212,4 +211,98 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
   }
 
   return ord;
+}
+
+/** ───────────────────────────────────────────────────────────
+ *  CRM → Shopify push (safe subset: contact + default address)
+ *  This will create the Shopify customer if missing, otherwise update it.
+ *  Does NOT alter tags yet.
+ *  ─────────────────────────────────────────────────────────── */
+export async function pushCustomerToShopifyById(crmCustomerId: string) {
+  const c = await prisma.customer.findUnique({ where: { id: crmCustomerId } });
+  if (!c) return;
+
+  // Split a first/last name guess from your customerName (Shopify likes it that way)
+  const parts = (c.customerName || "").trim().split(/\s+/);
+  const first_name = parts[0] || "";
+  const last_name = parts.slice(1).join(" ") || "";
+
+  const payload: any = {
+    customer: {
+      email: c.customerEmailAddress || undefined,
+      phone: c.customerTelephone || undefined,
+      first_name,
+      last_name,
+      // keep company/salon on the default address
+      addresses: [
+        {
+          default: true,
+          company: c.salonName || undefined,
+          address1: c.addressLine1 || undefined,
+          address2: c.addressLine2 || undefined,
+          city: c.town || undefined,
+          province: c.county || undefined,
+          zip: c.postCode || undefined,
+        },
+      ],
+    },
+  };
+
+  // Create or Update
+  let shopifyId = c.shopifyCustomerId || null;
+
+  if (!shopifyId) {
+    // Create
+    const res = await shopifyRest(`/customers.json`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Shopify create failed: ${res.status} ${text}`);
+    }
+    const json = await res.json();
+    shopifyId = String(json?.customer?.id ?? "");
+    if (shopifyId) {
+      await prisma.customer.update({
+        where: { id: c.id },
+        data: {
+          shopifyCustomerId: shopifyId,
+          shopifyLastSyncedAt: new Date(),
+          // mirror tags we got back (if present)
+          shopifyTags: json?.customer?.tags
+            ? String(json.customer.tags)
+                .split(",")
+                .map((t: string) => t.trim())
+                .filter(Boolean)
+            : c.shopifyTags ?? [],
+        },
+      });
+    }
+  } else {
+    // Update
+    const res = await shopifyRest(`/customers/${shopifyId}.json`, {
+      method: "PUT",
+      body: JSON.stringify({
+        customer: { id: Number(shopifyId), ...payload.customer },
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Shopify update failed: ${res.status} ${text}`);
+    }
+    const json = await res.json();
+    await prisma.customer.update({
+      where: { id: c.id },
+      data: {
+        shopifyLastSyncedAt: new Date(),
+        shopifyTags: json?.customer?.tags
+          ? String(json.customer.tags)
+              .split(",")
+              .map((t: string) => t.trim())
+              .filter(Boolean)
+          : c.shopifyTags ?? [],
+      },
+    });
+  }
 }
