@@ -28,6 +28,29 @@ const makeDefaultDay = (): DayState => ({
   closeM: "00",
 });
 
+/** Compact list of common countries (ISO-2 code + display name) */
+const COUNTRIES = [
+  { code: "GB", name: "United Kingdom" },
+  { code: "IE", name: "Ireland" },
+  { code: "US", name: "United States" },
+  { code: "CA", name: "Canada" },
+  { code: "AU", name: "Australia" },
+  { code: "NZ", name: "New Zealand" },
+  { code: "FR", name: "France" },
+  { code: "DE", name: "Germany" },
+  { code: "ES", name: "Spain" },
+  { code: "IT", name: "Italy" },
+  { code: "NL", name: "Netherlands" },
+  { code: "BE", name: "Belgium" },
+  { code: "SE", name: "Sweden" },
+  { code: "NO", name: "Norway" },
+  { code: "DK", name: "Denmark" },
+  { code: "CH", name: "Switzerland" },
+  { code: "AT", name: "Austria" },
+  { code: "PT", name: "Portugal" },
+  { code: "PL", name: "Poland" },
+];
+
 export default function NewCustomerPage() {
   /* data sources */
   const [reps, setReps] = useState<Rep[]>([]);
@@ -136,6 +159,19 @@ export default function NewCustomerPage() {
             <label>Number of Chairs</label>
             <input name="numberOfChairs" type="number" min={0} />
           </div>
+
+          {/* Country directly under Postcode (spacer on the right keeps layout) */}
+          <div className="field">
+            <label>Country</label>
+            <select name="country" defaultValue="GB">
+              {COUNTRIES.map(c => (
+                <option key={c.code} value={c.code}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">{/* spacer to keep grid alignment */}</div>
         </div>
 
         {/* Opening Hours */}
