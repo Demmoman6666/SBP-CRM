@@ -2,6 +2,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+
 /* ------------ body reader (json/form) ------------ */
 async function readBody(req: Request) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
@@ -20,6 +22,64 @@ async function readBody(req: Request) {
   return {};
 }
 
+/* ------------ helpers ------------ */
+const toInt = (v: unknown) => {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+// Normalize incoming country values to ISO-2 codes for Shopify friendliness
+function normalizeCountry(input: unknown): string | null {
+  if (input == null) return null;
+  const raw = String(input).trim();
+  if (!raw) return null;
+
+  const up = raw.toUpperCase();
+
+  // If already a 2-letter code, accept
+  if (/^[A-Z]{2}$/.test(up)) return up;
+
+  // Common name → code mappings (extend as needed)
+  const map: Record<string, string> = {
+    "UNITED KINGDOM": "GB",
+    "GREAT BRITAIN": "GB",
+    "UK": "GB",
+    "ENGLAND": "GB",
+    "SCOTLAND": "GB",
+    "WALES": "GB",
+    "NORTHERN IRELAND": "GB",
+
+    "UNITED STATES": "US",
+    "UNITED STATES OF AMERICA": "US",
+    "USA": "US",
+    "AMERICA": "US",
+
+    "IRELAND": "IE",
+    "REPUBLIC OF IRELAND": "IE",
+
+    "CANADA": "CA",
+    "AUSTRALIA": "AU",
+    "NEW ZEALAND": "NZ",
+    "FRANCE": "FR",
+    "GERMANY": "DE",
+    "SPAIN": "ES",
+    "ITALY": "IT",
+    "NETHERLANDS": "NL",
+    "BELGIUM": "BE",
+    "SWEDEN": "SE",
+    "NORWAY": "NO",
+    "DENMARK": "DK",
+    "SWITZERLAND": "CH",
+    "AUSTRIA": "AT",
+    "PORTUGAL": "PT",
+    "POLAND": "PL",
+  };
+
+  return map[up] || raw; // fall back to original text if not mapped
+}
+
+/* ------------------ POST /api/customers ------------------ */
 export async function POST(req: Request) {
   try {
     const contentType = (req.headers.get("content-type") || "").toLowerCase();
@@ -29,12 +89,6 @@ export async function POST(req: Request) {
 
     const body: any = await readBody(req);
 
-    const toInt = (v: unknown) => {
-      if (v == null || v === "") return null;
-      const n = Number(v);
-      return Number.isFinite(n) ? n : null;
-    };
-
     const data = {
       salonName:             (body.salonName ?? "").toString().trim(),
       customerName:          (body.customerName ?? "").toString().trim(),
@@ -43,7 +97,7 @@ export async function POST(req: Request) {
       town:                  (body.town ?? "") || null,
       county:                (body.county ?? "") || null,
       postCode:              (body.postCode ?? "") || null,
-      country:               (body.country ?? "") || null,         // <— NEW
+      country:               normalizeCountry(body.country),          // ← NEW (normalized)
       daysOpen:              (body.daysOpen ?? "") || null,
       brandsInterestedIn:    (body.brandsInterestedIn ?? "") || null,
       notes:                 (body.notes ?? "") || null,
@@ -81,6 +135,7 @@ export async function POST(req: Request) {
   }
 }
 
+/* ------------------ GET /api/customers (search) ------------------ */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const q = (searchParams.get("search") || searchParams.get("q") || "").trim();
@@ -96,7 +151,7 @@ export async function GET(req: Request) {
           { town:                 { contains: q, mode: "insensitive" as const } },
           { county:               { contains: q, mode: "insensitive" as const } },
           { postCode:             { contains: q, mode: "insensitive" as const } },
-          { country:              { contains: q, mode: "insensitive" as const } }, // <— NEW
+          { country:              { contains: q, mode: "insensitive" as const } }, // ← NEW
         ],
       }
     : {};
@@ -114,7 +169,7 @@ export async function GET(req: Request) {
       town: true,
       county: true,
       postCode: true,
-      country: true, // <— NEW
+      country: true, // ← NEW
       customerEmailAddress: true,
       customerNumber: true,
       customerTelephone: true,
