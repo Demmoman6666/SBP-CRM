@@ -4,7 +4,7 @@ import crypto from "crypto";
 
 /** ───────────────── Env ───────────────── */
 const RAW_SHOP_DOMAIN = (process.env.SHOPIFY_SHOP_DOMAIN || "").trim();
-const SHOP_DOMAIN = RAW_SHOP_DOMAIN.replace(/^https?:\/\//i, "");
+const SHOP_DOMAIN = RAW_SHOP_DOMAIN.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
 
 const SHOP_ADMIN_TOKEN = (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "").trim();
 export const SHOPIFY_API_VERSION = (process.env.SHOPIFY_API_VERSION || "2024-07").trim();
@@ -13,18 +13,29 @@ export const SHOPIFY_API_VERSION = (process.env.SHOPIFY_API_VERSION || "2024-07"
 const WEBHOOK_SECRET = (process.env.SHOPIFY_WEBHOOK_SECRET || "").trim();
 
 // Optional alternates in case Shopify is signing with a different secret than you expect.
-// If you have another candidate, put it in one of these env vars to try it without code changes.
 const ALT_SECRET_1 = (process.env.SHOPIFY_API_SECRET_KEY || "").trim();
 const ALT_SECRET_2 = (process.env.SHOPIFY_CLIENT_SECRET || "").trim();
 
 // Optional kill-switch for troubleshooting. DO NOT leave this enabled in production.
 const DISABLE_HMAC = (process.env.SHOPIFY_DISABLE_HMAC || "") === "1";
 
+// Optional default country when pushing to Shopify if CRM country is empty
+const DEFAULT_COUNTRY_NAME = (process.env.DEFAULT_COUNTRY_NAME || "United Kingdom").trim();
+const DEFAULT_COUNTRY_CODE = (process.env.DEFAULT_COUNTRY_CODE || "GB").trim();
+
 /** Small helper: safely coerce to number */
 function toNumber(v: any): number | null {
   if (v === null || v === undefined) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+/** Country fields helper for Shopify address payloads */
+function countryFields(country?: string): { country?: string; country_code?: string } {
+  if (!country) return { country: DEFAULT_COUNTRY_NAME, country_code: DEFAULT_COUNTRY_CODE };
+  const s = String(country).trim();
+  if (s.length === 2) return { country_code: s.toUpperCase() };
+  return { country: s };
 }
 
 /** Call Shopify REST Admin API */
@@ -62,10 +73,8 @@ export function verifyShopifyHmac(
   hmacHeader?: string | null
 ) {
   if (DISABLE_HMAC) return true; // ⚠️ troubleshooting only
-
   if (!hmacHeader) return false;
 
-  // Raw bytes exactly as received
   const bodyBuf =
     typeof rawBody === "string"
       ? Buffer.from(rawBody, "utf8")
@@ -88,11 +97,11 @@ export function verifyShopifyHmac(
     }
   }
 
-  // If none matched, print a single concise mismatch line when debugging
   if (process.env.DEBUG_SHOPIFY_HMAC === "1") {
-    const digestBytes = crypto.createHmac("sha256", WEBHOOK_SECRET || ALT_SECRET_1 || ALT_SECRET_2)
-      .update(bodyBuf)
-      .digest();
+    const fallbackSecret = WEBHOOK_SECRET || ALT_SECRET_1 || ALT_SECRET_2 || "";
+    const digestBytes = fallbackSecret
+      ? crypto.createHmac("sha256", fallbackSecret).update(bodyBuf).digest()
+      : Buffer.alloc(0);
     console.error("[HMAC DEBUG] mismatch", {
       provided_b64: hmacHeader.slice(0, 16) + "...",
       computed_b64: digestBytes.toString("base64").slice(0, 16) + "...",
@@ -130,7 +139,7 @@ export async function getSalesRepForTags(tags: string[]): Promise<string | null>
   return rule?.salesRep?.name ?? null;
 }
 
-/** Upsert Customer from Shopify payload */
+/** Upsert Customer from Shopify payload (pull → CRM) */
 export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
   const shopifyId = String(shop.id);
   const email: string | null = (shop.email || "").toLowerCase() || null;
@@ -160,6 +169,7 @@ export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
     town: addr.city || null,
     county: addr.province || null,
     postCode: addr.zip || null,
+    country: addr.country || null, // ← NEW: persist country from Shopify
     customerEmailAddress: email,
     customerTelephone: phone,
     shopifyCustomerId: shopifyId,
@@ -187,7 +197,7 @@ export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
   return prisma.customer.create({ data: createData });
 }
 
-/** Upsert Order + line items */
+/** Upsert Order + line items (pull → CRM) */
 export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
   const orderId = String(order.id);
   const custShopId = order.customer ? String(order.customer.id) : null;
@@ -277,6 +287,8 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
   const first_name = parts[0] || "";
   const last_name = parts.slice(1).join(" ") || "";
 
+  const cf = countryFields(c.country || undefined);
+
   const payload: any = {
     customer: {
       email: c.customerEmailAddress || undefined,
@@ -292,6 +304,8 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
           city: c.town || undefined,
           province: c.county || undefined,
           zip: c.postCode || undefined,
+          country: cf.country,
+          country_code: cf.country_code,
         },
       ],
     },
