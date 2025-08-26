@@ -34,6 +34,14 @@ model Customer {
   notesLog             Note[]
   callLogs             CallLog[]
 
+  // ── Shopify sync fields (Step 2)
+  shopifyCustomerId    String?   @unique
+  shopifyTags          String[]  @default([])
+  shopifyLastSyncedAt  DateTime?
+
+  // Orders relationship (sales data)
+  orders               Order[]
+
   @@index([customerEmailAddress])
 }
 
@@ -73,6 +81,9 @@ model SalesRep {
   name      String   @unique
   email     String?
   createdAt DateTime @default(now())
+
+  // Optional: reverse relation for tag rules
+  tagRules  SalesRepTagRule[]
 }
 
 model Brand {
@@ -103,7 +114,7 @@ model CallLog {
   followUpRequired   Boolean   @default(false)
   followUpAt         DateTime?
 
-  // NEW call timing fields
+  // call timing fields
   startTime          DateTime?
   endTime            DateTime?
   durationMinutes    Int?
@@ -113,10 +124,100 @@ model CallLog {
   @@index([isExistingCustomer, customerId])
 }
 
-// NEW: separate table for stocked brands (distinct from competitor Brand)
+// Separate table for stocked brands (distinct from competitor Brand)
 model StockedBrand {
   id        String   @id @default(cuid())
   name      String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Shopify integration (Step 2)
+   - Orders and line items for sales data
+   - Tag→SalesRep mapping rules
+   - Lightweight sync bookkeeping & webhook logging
+   ────────────────────────────────────────────────────────────── */
+
+model Order {
+  id                 String     @id @default(cuid())
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  // Shopify identifiers
+  shopifyOrderId     String?    @unique
+  shopifyOrderNumber Int?
+  shopifyName        String?    // e.g. "#1001"
+
+  // Customer link
+  customerId         String?
+  customer           Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  // Timestamps & status
+  processedAt        DateTime?
+  currency           String?
+  financialStatus    String?
+  fulfillmentStatus  String?
+
+  // Money (Decimal for currency safe math)
+  subtotal           Decimal?   @db.Decimal(12, 2)
+  total              Decimal?   @db.Decimal(12, 2)
+  taxes              Decimal?   @db.Decimal(12, 2)
+  discounts          Decimal?   @db.Decimal(12, 2)
+  shipping           Decimal?   @db.Decimal(12, 2)
+
+  lineItems          OrderLineItem[]
+
+  @@index([customerId, processedAt])
+}
+
+model OrderLineItem {
+  id                String   @id @default(cuid())
+  orderId           String
+  order             Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  // Shopify identifiers
+  shopifyLineItemId String?  @unique
+  productId         String?
+  productTitle      String?
+  variantId         String?
+  variantTitle      String?
+  sku               String?
+
+  quantity          Int      @default(1)
+  price             Decimal? @db.Decimal(12, 2) // unit price
+  total             Decimal? @db.Decimal(12, 2) // quantity * price (optional cache)
+
+  createdAt         DateTime @default(now())
+
+  @@index([orderId])
+}
+
+// Tag → Sales Rep mapping (e.g., tag "Alex" => rep Alex Krizan)
+model SalesRepTagRule {
+  id          String   @id @default(cuid())
+  tag         String   @unique
+  salesRepId  String
+  salesRep    SalesRep @relation(fields: [salesRepId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+}
+
+// Singleton-style row to track last sync cursors / timestamps
+model ShopifySyncState {
+  id                       Int      @id @default(1)
+  lastCustomersSyncedAt    DateTime?
+  lastOrdersSyncedAt       DateTime?
+  lastWebhookReceivedAt    DateTime?
+  updatedAt                DateTime @updatedAt
+}
+
+// Optional: store raw webhook payloads for debugging/auditing
+model WebhookLog {
+  id        String   @id @default(cuid())
+  topic     String
+  shopifyId String?
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@index([topic, createdAt])
 }
