@@ -2,25 +2,28 @@
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 
-function fmtMoney(value: number | null | undefined, currency?: string | null) {
-  const cur = currency || "GBP";
-  const n = typeof value === "number" ? value : 0;
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: cur }).format(n);
-}
-function fmtDate(d?: Date | null) {
-  if (!d) return "—";
-  return new Intl.DateTimeFormat("en-GB", {
-    year: "numeric", month: "short", day: "2-digit",
-    hour: "2-digit", minute: "2-digit"
-  }).format(new Date(d));
+function money(n?: any, currency?: string) {
+  if (n == null) return "-";
+  const num = typeof n === "string" ? parseFloat(n) : Number(n);
+  if (!Number.isFinite(num)) return String(n);
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: currency || "GBP",
+    }).format(num);
+  } catch {
+    return num.toFixed(2);
+  }
 }
 
-export default async function OrderPage({ params }: { params: { id: string } }) {
+export default async function OrderDetailPage({ params }: { params: { id: string } }) {
+  // ⬇️ This is the bit you asked about (placed at the top of the page component)
   const order = await prisma.order.findUnique({
     where: { id: params.id },
     include: {
       customer: { select: { id: true, salonName: true, customerName: true } },
-      lineItems: true, // if your relation is named "orderLineItems", change to { include: { orderLineItems: true } }
+      // NOTE: your schema's relation is `lineItems` (not `orderLineItems`)
+      lineItems: true,
     },
   });
 
@@ -28,93 +31,105 @@ export default async function OrderPage({ params }: { params: { id: string } }) 
     return (
       <div className="card">
         <h2>Order not found</h2>
-        <p className="small muted">No order with id {params.id}.</p>
         <Link className="primary" href="/customers">Back</Link>
       </div>
     );
   }
 
-  const currency = order.currency ?? "GBP";
-  const lines = (order as any).lineItems ?? (order as any).orderLineItems ?? [];
+  const lines = order.lineItems;
+  const when = order.processedAt ?? order.createdAt;
+  const currency = order.currency || "GBP";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <section className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <div>
-          <h1 style={{ marginBottom: 4 }}>{order.shopifyName ?? `Order #${order.shopifyOrderNumber ?? "—"}`}</h1>
-          <div className="small muted">
-            {order.customer ? (
-              <>
-                <Link href={`/customers/${order.customer.id}`}>{order.customer.salonName}</Link>{" "}
-                — {order.customer.customerName}
-              </>
-            ) : (
-              "Unlinked customer"
-            )}
-            {" • "}Placed: {fmtDate(order.processedAt)}
+      <div className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+          <h1 style={{ margin: 0 }}>{order.shopifyName || `Order ${order.shopifyOrderNumber ?? ""}`}</h1>
+          <Link
+            className="primary"
+            href={order.customer ? `/customers/${order.customer.id}` : "/customers"}
+          >
+            Back to customer
+          </Link>
+        </div>
+
+        <div className="grid grid-2" style={{ marginTop: 10 }}>
+          <div>
+            <b>Customer</b>
+            <p className="small" style={{ marginTop: 6 }}>
+              {order.customer?.salonName || "-"}
+              <br />
+              {order.customer?.customerName || ""}
+            </p>
+          </div>
+          <div>
+            <b>Date</b>
+            <p className="small" style={{ marginTop: 6 }}>
+              {when ? new Date(when).toLocaleString() : "-"}
+            </p>
+          </div>
+          <div>
+            <b>Financial Status</b>
+            <p className="small" style={{ marginTop: 6 }}>{order.financialStatus || "-"}</p>
+          </div>
+          <div>
+            <b>Fulfillment Status</b>
+            <p className="small" style={{ marginTop: 6 }}>{order.fulfillmentStatus || "-"}</p>
+          </div>
+          <div>
+            <b>Subtotal</b>
+            <p className="small" style={{ marginTop: 6 }}>{money(order.subtotal, currency)}</p>
+          </div>
+          <div>
+            <b>Taxes</b>
+            <p className="small" style={{ marginTop: 6 }}>{money(order.taxes, currency)}</p>
+          </div>
+          <div>
+            <b>Discounts</b>
+            <p className="small" style={{ marginTop: 6 }}>{money(order.discounts, currency)}</p>
+          </div>
+          <div>
+            <b>Shipping</b>
+            <p className="small" style={{ marginTop: 6 }}>{money(order.shipping, currency)}</p>
+          </div>
+          <div>
+            <b>Total</b>
+            <p className="small" style={{ marginTop: 6 }}>{money(order.total, currency)}</p>
           </div>
         </div>
-        <div className="right small">
-          <div>Financial: <b>{order.financialStatus ?? "—"}</b></div>
-          <div>Fulfilment: <b>{order.fulfillmentStatus ?? "—"}</b></div>
-        </div>
-      </section>
+      </div>
 
-      <section className="card">
-        <h3 style={{ marginTop: 0 }}>Line Items</h3>
-
+      <div className="card">
+        <h3>Line Items</h3>
         {lines.length === 0 ? (
-          <p className="small muted">No line items on this order.</p>
+          <p className="small">No items.</p>
         ) : (
-          <div className="table">
-            <div className="thead row muted small" style={{ gap: 12 }}>
-              <div style={{ flex: "2 1 320px" }}>Product</div>
-              <div style={{ flex: "1 1 180px" }}>Variant</div>
-              <div style={{ flex: "0 0 120px" }}>SKU</div>
-              <div style={{ flex: "0 0 80px", textAlign: "right" }}>Qty</div>
-              <div style={{ flex: "0 0 140px", textAlign: "right" }}>Unit</div>
-              <div style={{ flex: "0 0 160px", textAlign: "right" }}>Line Total</div>
-            </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr",
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
+            <div className="small muted">Product</div>
+            <div className="small muted">SKU</div>
+            <div className="small muted">Qty</div>
+            <div className="small muted">Unit</div>
+            <div className="small muted">Line Total</div>
 
-            {lines.map((li: any) => (
-              <div key={li.id ?? `${li.sku}-${li.productId}-${li.variantId}`} className="row"
-                   style={{ gap: 12, padding: "10px 0", borderTop: "1px solid var(--border)" }}>
-                <div style={{ flex: "2 1 320px" }}>{li.productTitle ?? "—"}</div>
-                <div style={{ flex: "1 1 180px" }}>{li.variantTitle ?? "—"}</div>
-                <div style={{ flex: "0 0 120px" }} className="small muted">{li.sku ?? "—"}</div>
-                <div style={{ flex: "0 0 80px", textAlign: "right" }}>{li.quantity ?? 0}</div>
-                <div style={{ flex: "0 0 140px", textAlign: "right" }}>{fmtMoney(li.price, currency)}</div>
-                <div style={{ flex: "0 0 160px", textAlign: "right", fontWeight: 600 }}>
-                  {fmtMoney(li.total, currency)}
-                </div>
+            {lines.map((li) => (
+              <div key={li.id} style={{ display: "contents" }}>
+                <div>{li.productTitle || li.variantTitle || "-"}</div>
+                <div>{li.sku || "-"}</div>
+                <div>{li.quantity}</div>
+                <div>{money(li.price, currency)}</div>
+                <div>{money(li.total, currency)}</div>
               </div>
             ))}
           </div>
         )}
-      </section>
-
-      <section className="card right" style={{ gap: 6 }}>
-        <div className="row" style={{ justifyContent: "flex-end", gap: 24 }}>
-          <div className="small muted">Subtotal</div>
-          <div style={{ minWidth: 140, textAlign: "right" }}>{fmtMoney(order.subtotal, currency)}</div>
-        </div>
-        <div className="row" style={{ justifyContent: "flex-end", gap: 24 }}>
-          <div className="small muted">Discounts</div>
-          <div style={{ minWidth: 140, textAlign: "right" }}>{fmtMoney(order.discounts, currency)}</div>
-        </div>
-        <div className="row" style={{ justifyContent: "flex-end", gap: 24 }}>
-          <div className="small muted">Shipping</div>
-          <div style={{ minWidth: 140, textAlign: "right" }}>{fmtMoney(order.shipping, currency)}</div>
-        </div>
-        <div className="row" style={{ justifyContent: "flex-end", gap: 24 }}>
-          <div className="small muted">Taxes</div>
-          <div style={{ minWidth: 140, textAlign: "right" }}>{fmtMoney(order.taxes, currency)}</div>
-        </div>
-        <div className="row" style={{ justifyContent: "flex-end", gap: 24, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-          <div style={{ fontWeight: 700 }}>Total</div>
-          <div style={{ minWidth: 140, textAlign: "right", fontWeight: 700 }}>{fmtMoney(order.total, currency)}</div>
-        </div>
-      </section>
+      </div>
     </div>
   );
 }
