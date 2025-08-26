@@ -1,15 +1,15 @@
 // app/api/customers/[id]/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { pushCustomerToShopifyById } from "@/lib/shopify"; // ← ADD
 
 export const dynamic = "force-dynamic";
 
 /* ------------ body reader (json/form) ------------ */
 async function readBody(req: Request) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
-  if (ct.includes("application/json")) return await req.json();
-  if (ct.includes("multipart/form-data")) return Object.fromEntries((await req.formData()).entries());
+
+  if (ct.includes("application/json"))        return await req.json();
+  if (ct.includes("multipart/form-data"))     return Object.fromEntries((await req.formData()).entries());
   if (ct.includes("application/x-www-form-urlencoded")) {
     const text = await req.text();
     return Object.fromEntries(new URLSearchParams(text));
@@ -27,13 +27,14 @@ const toInt = (v: unknown) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
+
 const norm = (v: unknown) => {
   if (v == null) return null;
   const s = String(v).trim();
   return s === "" ? null : s;
 };
 
-/* GET one */
+/* ------------------ GET /api/customers/[id] ------------------ */
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
@@ -47,7 +48,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   return NextResponse.json(customer);
 }
 
-/* PATCH update */
+/* ------------------ PATCH /api/customers/[id] ------------------ */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
     const existing = await prisma.customer.findUnique({ where: { id: params.id } });
@@ -75,6 +76,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       town:                 (body.town !== undefined ? norm(body.town) : existing.town),
       county:               (body.county !== undefined ? norm(body.county) : existing.county),
       postCode:             (body.postCode !== undefined ? norm(body.postCode) : existing.postCode),
+      country:              (body.country !== undefined ? norm(body.country) : existing.country), // <— NEW
       brandsInterestedIn:   (body.brandsInterestedIn !== undefined ? norm(body.brandsInterestedIn) : existing.brandsInterestedIn),
       notes:                (body.notes !== undefined ? norm(body.notes) : existing.notes),
       salesRep:             finalSalesRep,
@@ -85,10 +87,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       numberOfChairs:       (body.numberOfChairs !== undefined ? toInt(body.numberOfChairs) : existing.numberOfChairs),
     };
 
-    const updated = await prisma.customer.update({ where: { id: params.id }, data });
-
-    // fire-and-forget push to Shopify
-    try { pushCustomerToShopifyById(updated.id); } catch {}
+    const updated = await prisma.customer.update({
+      where: { id: params.id },
+      data,
+    });
 
     return NextResponse.json(updated);
   } catch (err: any) {
@@ -97,10 +99,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 }
 
-/* DELETE */
 export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
   try {
-    await prisma.callLog.updateMany({ where: { customerId: params.id }, data: { customerId: null } });
+    await prisma.callLog.updateMany({ where: { customerId: params.id }, data:  { customerId: null } });
     await prisma.visit.deleteMany({ where: { customerId: params.id } });
     await prisma.note.deleteMany({ where: { customerId: params.id } });
     await prisma.customer.delete({ where: { id: params.id } });
