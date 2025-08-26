@@ -2,6 +2,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+
 /* ------------ body reader (json/form) ------------ */
 async function readBody(req: Request) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
@@ -31,6 +33,11 @@ const norm = (v: unknown) => {
   if (v == null) return null;
   const s = String(v).trim();
   return s === "" ? null : s;
+};
+
+const normEmail = (v: unknown) => {
+  const s = norm(v);
+  return s ? s.toLowerCase() : s;
 };
 
 /* ------------------ GET /api/customers/[id] ------------------ */
@@ -82,7 +89,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       salesRep:             finalSalesRep,
       customerNumber:       (body.customerNumber !== undefined ? norm(body.customerNumber) : existing.customerNumber),
       customerTelephone:    (body.customerTelephone !== undefined ? norm(body.customerTelephone) : existing.customerTelephone),
-      customerEmailAddress: (body.customerEmailAddress !== undefined ? norm(body.customerEmailAddress) : existing.customerEmailAddress),
+      customerEmailAddress: (body.customerEmailAddress !== undefined ? normEmail(body.customerEmailAddress) : existing.customerEmailAddress),
       openingHours:         (body.openingHours !== undefined ? (body.openingHours ?? null) : existing.openingHours),
       numberOfChairs:       (body.numberOfChairs !== undefined ? toInt(body.numberOfChairs) : existing.numberOfChairs),
     };
@@ -91,6 +98,17 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       where: { id: params.id },
       data,
     });
+
+    // 🔄 Best-effort push to Shopify (step 6). Uses dynamic import so this route
+    // still builds even if you haven’t added the helper yet.
+    try {
+      const mod: any = await import("@/lib/shopify");
+      if (typeof mod?.pushCustomerToShopifyById === "function") {
+        await mod.pushCustomerToShopifyById(updated.id);
+      }
+    } catch (e) {
+      console.warn("Shopify push skipped:", (e as Error)?.message ?? e);
+    }
 
     return NextResponse.json(updated);
   } catch (err: any) {
