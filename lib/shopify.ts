@@ -26,22 +26,30 @@ export async function shopifyRest(path: string, init: RequestInit = {}) {
   return fetch(url, { ...init, headers, cache: "no-store" });
 }
 
-/** Verify Shopify webhook HMAC */
+/** ✅ Verify Shopify webhook HMAC (byte-level timing-safe) */
 export function verifyShopifyHmac(
   rawBody: ArrayBuffer | Buffer | string,
   hmacHeader?: string | null
 ) {
   if (!WEBHOOK_SECRET || !hmacHeader) return false;
+
   const bodyBuf =
     typeof rawBody === "string" ? Buffer.from(rawBody) : Buffer.from(rawBody as ArrayBuffer);
-  const digest = crypto.createHmac("sha256", WEBHOOK_SECRET).update(bodyBuf).digest("base64");
+
+  // Expected digest as raw bytes
+  const expected = crypto.createHmac("sha256", WEBHOOK_SECRET).update(bodyBuf).digest();
+
+  // Shopify sends base64 string; decode to bytes
+  let received: Buffer;
   try {
-    const a = Buffer.from(hmacHeader, "utf8");
-    const b = Buffer.from(digest, "utf8");
-    return a.length === b.length && crypto.timingSafeEqual(a, b);
+    received = Buffer.from(hmacHeader, "base64");
   } catch {
-    return digest === hmacHeader;
+    return false;
   }
+  if (received.length !== expected.length) return false;
+
+  // Constant-time compare
+  return crypto.timingSafeEqual(received, expected);
 }
 
 /** Tag → Sales Rep mapping, using your SalesRepTagRule model */
@@ -264,18 +272,21 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
     const json = await res.json();
     shopifyId = String(json?.customer?.id ?? "");
     if (shopifyId) {
+      // Mirror tags if Shopify returned any; use Prisma list update `{ set: [...] }`
+      const tagsArr =
+        json?.customer?.tags
+          ? String(json.customer.tags)
+              .split(",")
+              .map((t: string) => t.trim())
+              .filter(Boolean)
+          : c.shopifyTags ?? [];
+
       await prisma.customer.update({
         where: { id: c.id },
         data: {
           shopifyCustomerId: shopifyId,
           shopifyLastSyncedAt: new Date(),
-          // mirror tags we got back (if present)
-          shopifyTags: json?.customer?.tags
-            ? String(json.customer.tags)
-                .split(",")
-                .map((t: string) => t.trim())
-                .filter(Boolean)
-            : c.shopifyTags ?? [],
+          shopifyTags: { set: tagsArr },
         },
       });
     }
@@ -292,16 +303,20 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
       throw new Error(`Shopify update failed: ${res.status} ${text}`);
     }
     const json = await res.json();
+
+    const tagsArr =
+      json?.customer?.tags
+        ? String(json.customer.tags)
+            .split(",")
+            .map((t: string) => t.trim())
+            .filter(Boolean)
+        : c.shopifyTags ?? [];
+
     await prisma.customer.update({
       where: { id: c.id },
       data: {
         shopifyLastSyncedAt: new Date(),
-        shopifyTags: json?.customer?.tags
-          ? String(json.customer.tags)
-              .split(",")
-              .map((t: string) => t.trim())
-              .filter(Boolean)
-          : c.shopifyTags ?? [],
+        shopifyTags: { set: tagsArr },
       },
     });
   }
