@@ -14,8 +14,8 @@ export async function shopifyRest(path: string, init: RequestInit = {}) {
   const url = `https://${SHOP_DOMAIN}/admin/api/2024-07${path}`;
   const headers = new Headers(init.headers as any);
   headers.set("X-Shopify-Access-Token", SHOP_ADMIN_TOKEN);
-  // Keep JSON as default; callers can override if needed
   if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  headers.set("Accept", "application/json");
   return fetch(url, { ...init, headers, cache: "no-store" });
 }
 
@@ -29,12 +29,10 @@ export function verifyShopifyHmac(
     typeof rawBody === "string" ? Buffer.from(rawBody) : Buffer.from(rawBody as ArrayBuffer);
   const digest = crypto.createHmac("sha256", WEBHOOK_SECRET).update(bodyBuf).digest("base64");
   try {
-    // Use timingSafeEqual where possible
     const a = Buffer.from(hmacHeader, "utf8");
     const b = Buffer.from(digest, "utf8");
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   } catch {
-    // lengths differed etc.
     return digest === hmacHeader;
   }
 }
@@ -44,7 +42,8 @@ export async function getSalesRepForTags(tags: string[]): Promise<string | null>
   if (!tags || tags.length === 0) return null;
   const rule = await prisma.salesRepTagRule.findFirst({
     where: { tag: { in: tags } },
-    orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
+    // Your model doesn't have `priority`; use createdAt as a deterministic tie-breaker.
+    orderBy: { createdAt: "asc" },
   });
   return rule?.salesRepName ?? null;
 }
@@ -67,7 +66,7 @@ export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
 
   const mappedRep = await getSalesRepForTags(tags);
 
-  // Your schema has non-null fields for salonName & customerName → provide safe fallbacks
+  // Safe fallbacks to satisfy non-null fields in your schema
   const salonName = company || fullName || "Shopify Customer";
   const customerName = fullName || company || "Unknown";
 
