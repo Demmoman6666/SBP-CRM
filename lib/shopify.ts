@@ -6,6 +6,13 @@ const SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN!;
 const SHOP_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN!;
 const WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET!;
 
+/** Small helper: safely coerce to number */
+function toNumber(v: any): number | null {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 /** Call Shopify REST Admin API (bump the version if you prefer) */
 export async function shopifyRest(path: string, init: RequestInit = {}) {
   if (!SHOP_DOMAIN || !SHOP_ADMIN_TOKEN) {
@@ -15,7 +22,7 @@ export async function shopifyRest(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers as any);
   headers.set("X-Shopify-Access-Token", SHOP_ADMIN_TOKEN);
   if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  if (!headers.has("Accept")) headers.set("Accept", "application/json");
+  headers.set("Accept", "application/json");
   return fetch(url, { ...init, headers, cache: "no-store" });
 }
 
@@ -37,14 +44,17 @@ export function verifyShopifyHmac(
   }
 }
 
-/** Tag → Sales Rep mapping using your SalesRepTagRule (joins to SalesRep for the name) */
+/** Tag → Sales Rep mapping, using your SalesRepTagRule model */
 export async function getSalesRepForTags(tags: string[]): Promise<string | null> {
   if (!tags || tags.length === 0) return null;
+
+  // Case-sensitive match; if you want case-insensitive tags, normalize to lower case on both sides.
   const rule = await prisma.salesRepTagRule.findFirst({
     where: { tag: { in: tags } },
-    include: { salesRep: true }, // <-- so we can read the rep's name
+    include: { salesRep: true },
     orderBy: { createdAt: "asc" }, // deterministic tie-breaker
   });
+
   return rule?.salesRep?.name ?? null;
 }
 
@@ -57,6 +67,7 @@ export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
   const fullName = [shop.first_name, shop.last_name].filter(Boolean).join(" ").trim();
   const company = addr.company || "";
   const phone = shop.phone || addr.phone || null;
+
   const tags: string[] = shop.tags
     ? String(shop.tags)
         .split(",")
@@ -109,118 +120,96 @@ export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
 }
 
 /** Upsert Shopify Order + line items (links to Customer via shopifyCustomerId) */
-export async function upsertOrderFromShopify(order: any, shopDomain: string) {
+export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
   const orderId = String(order.id);
   const custShopId = order.customer ? String(order.customer.id) : null;
 
   const linkedCustomer =
     custShopId ? await prisma.customer.findFirst({ where: { shopifyCustomerId: custShopId } }) : null;
 
-  // Upsert the order
-  const ord = await prisma.shopifyOrder.upsert({
+  // Compute shipping (best-effort)
+  const shippingFromSet =
+    order?.total_shipping_price_set?.shop_money?.amount ??
+    order?.total_shipping_price_set?.presentment_money?.amount ??
+    null;
+  const shipping = toNumber(shippingFromSet) ?? toNumber(order?.shipping_lines?.[0]?.price) ?? null;
+
+  // Upsert the order (uses prisma.order — matches your schema)
+  const ord = await prisma.order.upsert({
     where: { shopifyOrderId: orderId },
     create: {
       shopifyOrderId: orderId,
-      shopDomain,
-      createdAtShopify: new Date(order.created_at),
-      processedAt: order.processed_at ? new Date(order.processed_at) : null,
-      currency: order.currency || null,
-      totalPrice: Number(order.total_price || 0),
-      subtotalPrice: Number(order.subtotal_price || 0),
-      totalTax: Number(order.total_tax || 0),
-      totalDiscounts: Number(order.total_discounts || 0),
-      financialStatus: order.financial_status || null,
-      fulfillmentStatus: order.fulfillment_status || null,
+      shopifyOrderNumber: order.order_number ?? null,
+      shopifyName: order.name ?? null,
+
       customerId: linkedCustomer ? linkedCustomer.id : null,
+
+      processedAt: order.processed_at
+        ? new Date(order.processed_at)
+        : order.created_at
+        ? new Date(order.created_at)
+        : null,
+
+      currency: order.currency ?? null,
+      financialStatus: order.financial_status ?? null,
+      fulfillmentStatus: order.fulfillment_status ?? null,
+
+      subtotal: toNumber(order.subtotal_price),
+      total: toNumber(order.total_price),
+      taxes: toNumber(order.total_tax),
+      discounts: toNumber(order.total_discounts),
+      shipping,
     },
     update: {
-      processedAt: order.processed_at ? new Date(order.processed_at) : null,
-      currency: order.currency || null,
-      totalPrice: Number(order.total_price || 0),
-      subtotalPrice: Number(order.subtotal_price || 0),
-      totalTax: Number(order.total_tax || 0),
-      totalDiscounts: Number(order.total_discounts || 0),
-      financialStatus: order.financial_status || null,
-      fulfillmentStatus: order.fulfillment_status || null,
+      shopifyOrderNumber: order.order_number ?? null,
+      shopifyName: order.name ?? null,
+
       customerId: linkedCustomer ? linkedCustomer.id : null,
+
+      processedAt: order.processed_at
+        ? new Date(order.processed_at)
+        : order.created_at
+        ? new Date(order.created_at)
+        : null,
+
+      currency: order.currency ?? null,
+      financialStatus: order.financial_status ?? null,
+      fulfillmentStatus: order.fulfillment_status ?? null,
+
+      subtotal: toNumber(order.subtotal_price),
+      total: toNumber(order.total_price),
+      taxes: toNumber(order.total_tax),
+      discounts: toNumber(order.total_discounts),
+      shipping,
     },
   });
 
   // Replace line items on each upsert for simplicity
-  await prisma.shopifyOrderLineItem.deleteMany({ where: { orderId: ord.id } });
-  const rows =
-    (order.line_items || []).map((li: any) => ({
-      orderId: ord.id,
-      shopifyLineItemId: String(li.id),
-      title: li.title || "",
-      sku: li.sku || null,
-      quantity: Number(li.quantity || 0),
-      price: Number(li.price || 0),
-      productId: li.product_id ? String(li.product_id) : null,
-      variantId: li.variant_id ? String(li.variant_id) : null,
-    })) ?? [];
-  if (rows.length) await prisma.shopifyOrderLineItem.createMany({ data: rows });
+  await prisma.orderLineItem.deleteMany({ where: { orderId: ord.id } });
+
+  const items =
+    (order.line_items || []).map((li: any) => {
+      const qty = Number(li.quantity ?? 0);
+      const unit = toNumber(li.price);
+      const total = unit != null ? (qty ? unit * qty : unit) : null;
+
+      return {
+        orderId: ord.id,
+        shopifyLineItemId: li.id ? String(li.id) : null,
+        productId: li.product_id ? String(li.product_id) : null,
+        productTitle: li.title ?? null,
+        variantId: li.variant_id ? String(li.variant_id) : null,
+        variantTitle: li.variant_title ?? null,
+        sku: li.sku ?? null,
+        quantity: qty,
+        price: unit,
+        total,
+      };
+    }) ?? [];
+
+  if (items.length) {
+    await prisma.orderLineItem.createMany({ data: items });
+  }
 
   return ord;
-}
-
-/** (For step 6 later) Push a CRM customer → Shopify (create or update), then store shopifyCustomerId */
-export async function pushCustomerToShopify(customerId: string) {
-  const c = await prisma.customer.findUnique({ where: { id: customerId } });
-  if (!c) return;
-
-  // Build Shopify payload
-  const [firstName, ...rest] = (c.customerName || "").split(" ");
-  const lastName = rest.join(" ").trim() || null;
-
-  const payload: any = {
-    customer: {
-      email: c.customerEmailAddress || undefined,
-      phone: c.customerTelephone || undefined,
-      first_name: firstName || null,
-      last_name: lastName || null,
-      tags: (c.shopifyTags || []).join(", "),
-      addresses: [
-        {
-          address1: c.addressLine1 || "",
-          address2: c.addressLine2 || null,
-          city: c.town || null,
-          province: c.county || null,
-          zip: c.postCode || null,
-          company: c.salonName || null,
-        },
-      ],
-    },
-  };
-
-  if (c.shopifyCustomerId) {
-    // Update existing
-    const res = await shopifyRest(`/customers/${c.shopifyCustomerId}.json`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(`Shopify update failed (${res.status}): ${txt}`);
-    }
-    return;
-  }
-
-  // Create new
-  const res = await shopifyRest(`/customers.json`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`Shopify create failed (${res.status}): ${txt}`);
-  }
-  const json = await res.json();
-  const newId = json?.customer?.id ? String(json.customer.id) : null;
-  if (newId) {
-    await prisma.customer.update({
-      where: { id: c.id },
-      data: { shopifyCustomerId: newId, shopifyShopDomain: SHOP_DOMAIN },
-    });
-  }
 }
