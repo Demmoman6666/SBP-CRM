@@ -1,6 +1,7 @@
 // lib/shopify.ts
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
+import { createHmac, timingSafeEqual } from "crypto";
 
 /* ----------------------------------------------------------------------------
    Minimal Shopify REST helper
@@ -19,9 +20,41 @@ export function shopifyRest(path: string, init: RequestInit = {}) {
   return fetch(`${base}${path}`, {
     ...init,
     headers,
-    // don't cache any Shopify requests
+    // never cache Shopify admin calls
     next: { revalidate: 0 },
   });
+}
+
+/* ----------------------------------------------------------------------------
+   Webhook HMAC verifier (🔧 NEW)
+   - Use your app’s “API secret key” as SHOPIFY_WEBHOOK_SECRET
+   - Compare the raw request body against X-Shopify-Hmac-Sha256
+---------------------------------------------------------------------------- */
+export function verifyShopifyHmac(
+  rawBody: string | Buffer,
+  hmacHeader: string | null | undefined
+): boolean {
+  const secret =
+    process.env.SHOPIFY_WEBHOOK_SECRET ||
+    process.env.SHOPIFY_API_SECRET || // fallback if you named it this way
+    "";
+
+  if (!secret || !hmacHeader) return false;
+
+  const digestBase64 = createHmac("sha256", secret)
+    .update(rawBody)
+    .digest("base64");
+
+  try {
+    // Compare in constant time
+    const a = Buffer.from(digestBase64, "utf8"); // base64 string bytes
+    const b = Buffer.from(hmacHeader, "utf8");
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  } catch {
+    // Fallback (non-constant) if lengths mismatch or Node throws
+    return digestBase64 === hmacHeader;
+  }
 }
 
 /* ----------------------------------------------------------------------------
@@ -41,14 +74,14 @@ function normalizeTags(raw: unknown): string[] {
 async function resolveSalesRepFromTags(tags: string[]): Promise<string | null> {
   if (!tags.length) return null;
 
-  // Look up any DB rules that match these tags (highest priority wins)
+  // DB rules
   const rule = await prisma.tagSalesRepRule.findFirst({
     where: { tag: { in: tags } },
     orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
   });
   if (rule?.salesRepName) return rule.salesRepName;
 
-  // Fallback static mappings requested
+  // Static fallbacks requested
   const fallback: Record<string, string> = {
     alex: "Alex Krizan",
     laura: "Laura Dobbins",
@@ -63,7 +96,6 @@ async function resolveSalesRepFromTags(tags: string[]): Promise<string | null> {
 
 /* ----------------------------------------------------------------------------
    Upsert Customer from Shopify payload
-   - Fixes TS error by using { set: [...] } when updating a string[] field
 ---------------------------------------------------------------------------- */
 export async function upsertCustomerFromShopify(c: any, shopDomain: string) {
   const shopifyId = String(c.id);
@@ -113,7 +145,7 @@ export async function upsertCustomerFromShopify(c: any, shopDomain: string) {
   };
 
   if (existing) {
-    // ⚠️ For list fields, use { set: [...] } on update
+    // IMPORTANT: list fields need { set: [...] } on update
     const data: Prisma.CustomerUpdateInput = {
       salonName: base.salonName,
       customerName: base.customerName,
@@ -140,7 +172,7 @@ export async function upsertCustomerFromShopify(c: any, shopDomain: string) {
       data: {
         ...base,
         shopifyTags: tags,
-        // make sure addressLine1 isn't empty on create
+        // ensure addressLine1 is not empty
         addressLine1: base.addressLine1 || "—",
         ...(rep ? { salesRep: rep } : {}),
       },
