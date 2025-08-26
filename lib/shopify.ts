@@ -4,7 +4,8 @@ import crypto from "crypto";
 
 const SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN!;
 const SHOP_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN!;
-const WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET!;
+const WEBHOOK_SECRET_RAW = process.env.SHOPIFY_WEBHOOK_SECRET || "";
+const WEBHOOK_SECRET = WEBHOOK_SECRET_RAW.trim(); // guard against copy/paste whitespace
 
 /** Small helper: safely coerce to number */
 function toNumber(v: any): number | null {
@@ -13,7 +14,7 @@ function toNumber(v: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Call Shopify REST Admin API (bump the version if you prefer) */
+/** Call Shopify REST Admin API */
 export async function shopifyRest(path: string, init: RequestInit = {}) {
   if (!SHOP_DOMAIN || !SHOP_ADMIN_TOKEN) {
     throw new Error("Missing SHOPIFY_SHOP_DOMAIN or SHOPIFY_ADMIN_ACCESS_TOKEN");
@@ -26,46 +27,64 @@ export async function shopifyRest(path: string, init: RequestInit = {}) {
   return fetch(url, { ...init, headers, cache: "no-store" });
 }
 
-/** ✅ Verify Shopify webhook HMAC (byte-level timing-safe) */
+/** Verify Shopify webhook HMAC — byte-safe + optional debug */
 export function verifyShopifyHmac(
   rawBody: ArrayBuffer | Buffer | string,
   hmacHeader?: string | null
 ) {
   if (!WEBHOOK_SECRET || !hmacHeader) return false;
 
+  // Raw bytes exactly as received
   const bodyBuf =
-    typeof rawBody === "string" ? Buffer.from(rawBody) : Buffer.from(rawBody as ArrayBuffer);
+    typeof rawBody === "string"
+      ? Buffer.from(rawBody, "utf8")
+      : Buffer.isBuffer(rawBody)
+      ? rawBody
+      : Buffer.from(rawBody as ArrayBuffer);
 
-  // Expected digest as raw bytes
-  const expected = crypto.createHmac("sha256", WEBHOOK_SECRET).update(bodyBuf).digest();
+  // Digest as raw bytes (not base64 string yet)
+  const digestBytes = crypto.createHmac("sha256", WEBHOOK_SECRET).update(bodyBuf).digest(); // Buffer
+  const providedBytes = Buffer.from(hmacHeader, "base64");
 
-  // Shopify sends base64 string; decode to bytes
-  let received: Buffer;
+  let ok = false;
   try {
-    received = Buffer.from(hmacHeader, "base64");
+    ok = providedBytes.length === digestBytes.length && crypto.timingSafeEqual(providedBytes, digestBytes);
   } catch {
-    return false;
+    ok = false;
   }
-  if (received.length !== expected.length) return false;
 
-  // Constant-time compare
-  return crypto.timingSafeEqual(received, expected);
+  // Optional diagnostic (set DEBUG_SHOPIFY_HMAC=1 once to see details)
+  if (!ok && process.env.DEBUG_SHOPIFY_HMAC === "1") {
+    console.error(
+      "[HMAC DEBUG] mismatch",
+      {
+        provided_b64: hmacHeader.slice(0, 16) + "...",
+        computed_b64: digestBytes.toString("base64").slice(0, 16) + "...",
+        provided_len: providedBytes.length,
+        computed_len: digestBytes.length,
+        secret_len: WEBHOOK_SECRET.length,
+        raw_len: bodyBuf.length,
+      }
+    );
+  }
+
+  return ok;
 }
 
-/** Tag → Sales Rep mapping, using your SalesRepTagRule model */
+/** Tag → Sales Rep mapping */
 export async function getSalesRepForTags(tags: string[]): Promise<string | null> {
   if (!tags || tags.length === 0) return null;
 
   const rule = await prisma.salesRepTagRule.findFirst({
     where: { tag: { in: tags } },
     include: { salesRep: true },
-    orderBy: { createdAt: "asc" }, // deterministic tie-breaker
+    orderBy: { createdAt: "asc" },
   });
 
   return rule?.salesRep?.name ?? null;
 }
 
-/** Upsert a CRM Customer from a Shopify customer payload */
+/** Upsert Customer from Shopify payload */
 export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
   const shopifyId = String(shop.id);
   const email: string | null = (shop.email || "").toLowerCase() || null;
@@ -84,7 +103,6 @@ export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
 
   const mappedRep = await getSalesRepForTags(tags);
 
-  // Safe fallbacks to satisfy non-null fields in your schema
   const salonName = company || fullName || "Shopify Customer";
   const customerName = fullName || company || "Unknown";
 
@@ -102,7 +120,6 @@ export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
     shopifyShopDomain: shopDomain,
   };
 
-  // Prefer match by Shopify ID
   const byShopId = await prisma.customer.findFirst({ where: { shopifyCustomerId: shopifyId } });
   if (byShopId) {
     const updateData: any = { ...base, shopifyTags: { set: tags } };
@@ -110,7 +127,6 @@ export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
     return prisma.customer.update({ where: { id: byShopId.id }, data: updateData });
   }
 
-  // Else try by email (link existing CRM record)
   if (email) {
     const byEmail = await prisma.customer.findFirst({ where: { customerEmailAddress: email } });
     if (byEmail) {
@@ -120,13 +136,12 @@ export async function upsertCustomerFromShopify(shop: any, shopDomain: string) {
     }
   }
 
-  // Create new
   const createData: any = { ...base, shopifyTags: tags };
   if (mappedRep) createData.salesRep = mappedRep;
   return prisma.customer.create({ data: createData });
 }
 
-/** Upsert Shopify Order + line items (links to Customer via shopifyCustomerId) */
+/** Upsert Order + line items */
 export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
   const orderId = String(order.id);
   const custShopId = order.customer ? String(order.customer.id) : null;
@@ -134,33 +149,23 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
   const linkedCustomer =
     custShopId ? await prisma.customer.findFirst({ where: { shopifyCustomerId: custShopId } }) : null;
 
-  // Compute shipping (best-effort)
   const shippingFromSet =
     order?.total_shipping_price_set?.shop_money?.amount ??
     order?.total_shipping_price_set?.presentment_money?.amount ??
     null;
   const shipping = toNumber(shippingFromSet) ?? toNumber(order?.shipping_lines?.[0]?.price) ?? null;
 
-  // Upsert the order (uses prisma.order — matches your schema)
   const ord = await prisma.order.upsert({
     where: { shopifyOrderId: orderId },
     create: {
       shopifyOrderId: orderId,
       shopifyOrderNumber: order.order_number ?? null,
       shopifyName: order.name ?? null,
-
       customerId: linkedCustomer ? linkedCustomer.id : null,
-
-      processedAt: order.processed_at
-        ? new Date(order.processed_at)
-        : order.created_at
-        ? new Date(order.created_at)
-        : null,
-
+      processedAt: order.processed_at ? new Date(order.processed_at) : order.created_at ? new Date(order.created_at) : null,
       currency: order.currency ?? null,
       financialStatus: order.financial_status ?? null,
       fulfillmentStatus: order.fulfillment_status ?? null,
-
       subtotal: toNumber(order.subtotal_price),
       total: toNumber(order.total_price),
       taxes: toNumber(order.total_tax),
@@ -170,19 +175,11 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
     update: {
       shopifyOrderNumber: order.order_number ?? null,
       shopifyName: order.name ?? null,
-
       customerId: linkedCustomer ? linkedCustomer.id : null,
-
-      processedAt: order.processed_at
-        ? new Date(order.processed_at)
-        : order.created_at
-        ? new Date(order.created_at)
-        : null,
-
+      processedAt: order.processed_at ? new Date(order.processed_at) : order.created_at ? new Date(order.created_at) : null,
       currency: order.currency ?? null,
       financialStatus: order.financial_status ?? null,
       fulfillmentStatus: order.fulfillment_status ?? null,
-
       subtotal: toNumber(order.subtotal_price),
       total: toNumber(order.total_price),
       taxes: toNumber(order.total_tax),
@@ -191,7 +188,6 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
     },
   });
 
-  // Replace line items on each upsert for simplicity
   await prisma.orderLineItem.deleteMany({ where: { orderId: ord.id } });
 
   const items =
@@ -199,7 +195,6 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
       const qty = Number(li.quantity ?? 0);
       const unit = toNumber(li.price);
       const total = unit != null ? (qty ? unit * qty : unit) : null;
-
       return {
         orderId: ord.id,
         shopifyLineItemId: li.id ? String(li.id) : null,
@@ -214,23 +209,16 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
       };
     }) ?? [];
 
-  if (items.length) {
-    await prisma.orderLineItem.createMany({ data: items });
-  }
+  if (items.length) await prisma.orderLineItem.createMany({ data: items });
 
   return ord;
 }
 
-/** ───────────────────────────────────────────────────────────
- *  CRM → Shopify push (safe subset: contact + default address)
- *  This will create the Shopify customer if missing, otherwise update it.
- *  Does NOT alter tags yet.
- *  ─────────────────────────────────────────────────────────── */
+/** Push CRM → Shopify (safe subset) */
 export async function pushCustomerToShopifyById(crmCustomerId: string) {
   const c = await prisma.customer.findUnique({ where: { id: crmCustomerId } });
   if (!c) return;
 
-  // Split a first/last name guess from your customerName (Shopify likes it that way)
   const parts = (c.customerName || "").trim().split(/\s+/);
   const first_name = parts[0] || "";
   const last_name = parts.slice(1).join(" ") || "";
@@ -241,7 +229,6 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
       phone: c.customerTelephone || undefined,
       first_name,
       last_name,
-      // keep company/salon on the default address
       addresses: [
         {
           default: true,
@@ -256,15 +243,10 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
     },
   };
 
-  // Create or Update
   let shopifyId = c.shopifyCustomerId || null;
 
   if (!shopifyId) {
-    // Create
-    const res = await shopifyRest(`/customers.json`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    const res = await shopifyRest(`/customers.json`, { method: "POST", body: JSON.stringify(payload) });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`Shopify create failed: ${res.status} ${text}`);
@@ -272,51 +254,34 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
     const json = await res.json();
     shopifyId = String(json?.customer?.id ?? "");
     if (shopifyId) {
-      // Mirror tags if Shopify returned any; use Prisma list update `{ set: [...] }`
-      const tagsArr =
-        json?.customer?.tags
-          ? String(json.customer.tags)
-              .split(",")
-              .map((t: string) => t.trim())
-              .filter(Boolean)
-          : c.shopifyTags ?? [];
-
       await prisma.customer.update({
         where: { id: c.id },
         data: {
           shopifyCustomerId: shopifyId,
           shopifyLastSyncedAt: new Date(),
-          shopifyTags: { set: tagsArr },
+          shopifyTags: json?.customer?.tags
+            ? String(json.customer.tags).split(",").map((t: string) => t.trim()).filter(Boolean)
+            : c.shopifyTags ?? [],
         },
       });
     }
   } else {
-    // Update
     const res = await shopifyRest(`/customers/${shopifyId}.json`, {
       method: "PUT",
-      body: JSON.stringify({
-        customer: { id: Number(shopifyId), ...payload.customer },
-      }),
+      body: JSON.stringify({ customer: { id: Number(shopifyId), ...payload.customer } }),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`Shopify update failed: ${res.status} ${text}`);
     }
     const json = await res.json();
-
-    const tagsArr =
-      json?.customer?.tags
-        ? String(json.customer.tags)
-            .split(",")
-            .map((t: string) => t.trim())
-            .filter(Boolean)
-        : c.shopifyTags ?? [];
-
     await prisma.customer.update({
       where: { id: c.id },
       data: {
         shopifyLastSyncedAt: new Date(),
-        shopifyTags: { set: tagsArr },
+        shopifyTags: json?.customer?.tags
+          ? String(json.customer.tags).split(",").map((t: string) => t.trim()).filter(Boolean)
+          : c.shopifyTags ?? [],
       },
     });
   }
