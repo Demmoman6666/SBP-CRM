@@ -1,6 +1,7 @@
 // app/api/customers/[id]/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { pushCustomerToShopifyById } from "@/lib/shopify";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,11 @@ const norm = (v: unknown) => {
   if (v == null) return null;
   const s = String(v).trim();
   return s === "" ? null : s;
+};
+
+const normEmail = (v: unknown) => {
+  const s = norm(v);
+  return s ? s.toLowerCase() : s;
 };
 
 /* ------------------ GET /api/customers/[id] ------------------ */
@@ -76,13 +82,13 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       town:                 (body.town !== undefined ? norm(body.town) : existing.town),
       county:               (body.county !== undefined ? norm(body.county) : existing.county),
       postCode:             (body.postCode !== undefined ? norm(body.postCode) : existing.postCode),
-      country:              (body.country !== undefined ? norm(body.country) : existing.country), // <— NEW
+      country:              (body.country !== undefined ? norm(body.country) : existing.country),
       brandsInterestedIn:   (body.brandsInterestedIn !== undefined ? norm(body.brandsInterestedIn) : existing.brandsInterestedIn),
       notes:                (body.notes !== undefined ? norm(body.notes) : existing.notes),
       salesRep:             finalSalesRep,
       customerNumber:       (body.customerNumber !== undefined ? norm(body.customerNumber) : existing.customerNumber),
       customerTelephone:    (body.customerTelephone !== undefined ? norm(body.customerTelephone) : existing.customerTelephone),
-      customerEmailAddress: (body.customerEmailAddress !== undefined ? norm(body.customerEmailAddress) : existing.customerEmailAddress),
+      customerEmailAddress: (body.customerEmailAddress !== undefined ? normEmail(body.customerEmailAddress) : existing.customerEmailAddress),
       openingHours:         (body.openingHours !== undefined ? (body.openingHours ?? null) : existing.openingHours),
       numberOfChairs:       (body.numberOfChairs !== undefined ? toInt(body.numberOfChairs) : existing.numberOfChairs),
     };
@@ -92,6 +98,14 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       data,
     });
 
+    // Push safe subset + ensure rep tag is maintained on Shopify
+    try {
+      await pushCustomerToShopifyById(updated.id);
+    } catch (e: any) {
+      console.error("pushCustomerToShopifyById error:", e?.message || e);
+      // Do not fail the PATCH if Shopify push has a transient error
+    }
+
     return NextResponse.json(updated);
   } catch (err: any) {
     console.error("PATCH /api/customers/[id] error:", err);
@@ -99,6 +113,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 }
 
+/* ------------------ DELETE /api/customers/[id] ------------------ */
 export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
   try {
     await prisma.callLog.updateMany({ where: { customerId: params.id }, data:  { customerId: null } });
