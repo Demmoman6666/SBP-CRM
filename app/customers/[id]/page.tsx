@@ -3,6 +3,7 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import DeleteCustomerButton from "@/components/DeleteCustomerButton";
+import RecentOrders from "./RecentOrders";
 
 const DOW: Array<"Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"> = [
   "Mon",
@@ -166,6 +167,9 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           </div>
         )}
       </div>
+
+      {/* Recent Orders */}
+      <RecentOrders customerId={params.id} />
 
       {/* Add Note */}
       <div className="card">
