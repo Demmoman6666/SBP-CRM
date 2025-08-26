@@ -42,12 +42,14 @@ export default async function EditCustomerPage({
             town: customer.town || "",
             county: customer.county || "",
             postCode: customer.postCode || "",
+            country: customer.country || "",                 // ← NEW
             customerTelephone: customer.customerTelephone || "",
             customerEmailAddress: customer.customerEmailAddress || "",
             brandsInterestedIn: customer.brandsInterestedIn || "",
             salesRep: customer.salesRep || "",
             numberOfChairs: customer.numberOfChairs ?? undefined,
             notes: customer.notes || "",
+            openingHours: customer.openingHours || "",        // ← NEW
           }}
           reps={reps}
           brands={brands}
