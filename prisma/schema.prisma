@@ -20,6 +20,7 @@ model Customer {
   town                 String?
   county               String?
   postCode             String?
+  country              String?   // NEW: Country for Shopify addresses.country
   daysOpen             String?
   brandsInterestedIn   String?
   notes                String?
@@ -34,9 +35,8 @@ model Customer {
   notesLog             Note[]
   callLogs             CallLog[]
 
-  // Shopify sync fields
+  // ── Shopify sync fields (Step 2)
   shopifyCustomerId    String?   @unique
-  shopifyShopDomain    String?
   shopifyTags          String[]  @default([])
   shopifyLastSyncedAt  DateTime?
 
@@ -83,6 +83,7 @@ model SalesRep {
   email     String?
   createdAt DateTime @default(now())
 
+  // Optional: reverse relation for tag rules
   tagRules  SalesRepTagRule[]
 }
 
@@ -132,7 +133,6 @@ model StockedBrand {
   updatedAt DateTime @updatedAt
 }
 
-// Normalized orders (Shopify-backed), linked to Customer when possible
 model Order {
   id                 String     @id @default(cuid())
   createdAt          DateTime   @default(now())
@@ -153,7 +153,7 @@ model Order {
   financialStatus    String?
   fulfillmentStatus  String?
 
-  // Money (Decimal for currency-safe math)
+  // Money (Decimal for currency safe math)
   subtotal           Decimal?   @db.Decimal(12, 2)
   total              Decimal?   @db.Decimal(12, 2)
   taxes              Decimal?   @db.Decimal(12, 2)
@@ -194,18 +194,15 @@ model SalesRepTagRule {
   salesRepId  String
   salesRep    SalesRep @relation(fields: [salesRepId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
-
-  @@index([tag])
-  @@index([salesRepId])
 }
 
 // Singleton-style row to track last sync cursors / timestamps
 model ShopifySyncState {
-  id                    Int      @id @default(1)
-  lastCustomersSyncedAt DateTime?
-  lastOrdersSyncedAt    DateTime?
-  lastWebhookReceivedAt DateTime?
-  updatedAt             DateTime @updatedAt
+  id                       Int      @id @default(1)
+  lastCustomersSyncedAt    DateTime?
+  lastOrdersSyncedAt       DateTime?
+  lastWebhookReceivedAt    DateTime?
+  updatedAt                DateTime @updatedAt
 }
 
 // Optional: store raw webhook payloads for debugging/auditing
