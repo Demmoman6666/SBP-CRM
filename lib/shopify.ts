@@ -4,13 +4,21 @@ import crypto from "crypto";
 
 /** ───────────────── Env ───────────────── */
 const RAW_SHOP_DOMAIN = (process.env.SHOPIFY_SHOP_DOMAIN || "").trim();
-// Make sure we only keep the bare domain (no scheme accidentally pasted)
 const SHOP_DOMAIN = RAW_SHOP_DOMAIN.replace(/^https?:\/\//i, "");
 
 const SHOP_ADMIN_TOKEN = (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "").trim();
 export const SHOPIFY_API_VERSION = (process.env.SHOPIFY_API_VERSION || "2024-07").trim();
 
-const WEBHOOK_SECRET = (process.env.SHOPIFY_WEBHOOK_SECRET || "").trim(); // guard against copy/paste whitespace
+// Primary secret you set (usually the App's “API secret key”)
+const WEBHOOK_SECRET = (process.env.SHOPIFY_WEBHOOK_SECRET || "").trim();
+
+// Optional alternates in case Shopify is signing with a different secret than you expect.
+// If you have another candidate, put it in one of these env vars to try it without code changes.
+const ALT_SECRET_1 = (process.env.SHOPIFY_API_SECRET_KEY || "").trim();
+const ALT_SECRET_2 = (process.env.SHOPIFY_CLIENT_SECRET || "").trim();
+
+// Optional kill-switch for troubleshooting. DO NOT leave this enabled in production.
+const DISABLE_HMAC = (process.env.SHOPIFY_DISABLE_HMAC || "") === "1";
 
 /** Small helper: safely coerce to number */
 function toNumber(v: any): number | null {
@@ -32,12 +40,30 @@ export async function shopifyRest(path: string, init: RequestInit = {}) {
   return fetch(url, { ...init, headers, cache: "no-store" });
 }
 
-/** Verify Shopify webhook HMAC — byte-safe + optional debug */
+/** Internal helper: compute & compare HMAC with a specific secret */
+function verifyWithSecret(secret: string, rawBytes: Buffer, hmacHeader: string) {
+  if (!secret) return false;
+  const providedBytes = Buffer.from(hmacHeader, "base64");
+  const digestBytes = crypto.createHmac("sha256", secret).update(rawBytes).digest();
+
+  try {
+    return (
+      providedBytes.length === digestBytes.length &&
+      crypto.timingSafeEqual(providedBytes, digestBytes)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Verify Shopify webhook HMAC — byte-safe + optional debug + alternate secrets */
 export function verifyShopifyHmac(
   rawBody: ArrayBuffer | Buffer | string,
   hmacHeader?: string | null
 ) {
-  if (!WEBHOOK_SECRET || !hmacHeader) return false;
+  if (DISABLE_HMAC) return true; // ⚠️ troubleshooting only
+
+  if (!hmacHeader) return false;
 
   // Raw bytes exactly as received
   const bodyBuf =
@@ -47,34 +73,48 @@ export function verifyShopifyHmac(
       ? rawBody
       : Buffer.from(rawBody as ArrayBuffer);
 
-  // Compute digest as raw bytes (Buffer)
-  const digestBytes = crypto.createHmac("sha256", WEBHOOK_SECRET).update(bodyBuf).digest();
+  const secretsTried = [
+    { label: "SHOPIFY_WEBHOOK_SECRET", value: WEBHOOK_SECRET },
+    { label: "SHOPIFY_API_SECRET_KEY", value: ALT_SECRET_1 },
+    { label: "SHOPIFY_CLIENT_SECRET", value: ALT_SECRET_2 },
+  ].filter(s => !!s.value);
 
-  // Header is base64; decode to bytes for constant-time comparison
-  const providedBytes = Buffer.from(hmacHeader, "base64");
-
-  let ok = false;
-  try {
-    ok =
-      providedBytes.length === digestBytes.length &&
-      crypto.timingSafeEqual(providedBytes, digestBytes);
-  } catch {
-    ok = false;
+  for (const s of secretsTried) {
+    if (verifyWithSecret(s.value, bodyBuf, hmacHeader)) {
+      if (process.env.DEBUG_SHOPIFY_HMAC === "1") {
+        console.error(`[HMAC DEBUG] matched using ${s.label} (${mask(s.value)})`);
+      }
+      return true;
+    }
   }
 
-  // Optional diagnostics (enable by setting DEBUG_SHOPIFY_HMAC=1 in Vercel)
-  if (!ok && process.env.DEBUG_SHOPIFY_HMAC === "1") {
+  // If none matched, print a single concise mismatch line when debugging
+  if (process.env.DEBUG_SHOPIFY_HMAC === "1") {
+    const digestBytes = crypto.createHmac("sha256", WEBHOOK_SECRET || ALT_SECRET_1 || ALT_SECRET_2)
+      .update(bodyBuf)
+      .digest();
     console.error("[HMAC DEBUG] mismatch", {
       provided_b64: hmacHeader.slice(0, 16) + "...",
       computed_b64: digestBytes.toString("base64").slice(0, 16) + "...",
-      provided_len: providedBytes.length,
+      provided_len: Buffer.from(hmacHeader, "base64").length,
       computed_len: digestBytes.length,
-      secret_len: WEBHOOK_SECRET.length,
+      secret_used: WEBHOOK_SECRET
+        ? "SHOPIFY_WEBHOOK_SECRET"
+        : ALT_SECRET_1
+        ? "SHOPIFY_API_SECRET_KEY"
+        : ALT_SECRET_2
+        ? "SHOPIFY_CLIENT_SECRET"
+        : "(none set)",
       raw_len: bodyBuf.length,
     });
   }
 
-  return ok;
+  return false;
+}
+
+function mask(s: string) {
+  if (s.length <= 8) return "********";
+  return s.slice(0, 4) + "…" + s.slice(-4);
 }
 
 /** Tag → Sales Rep mapping */
