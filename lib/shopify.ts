@@ -15,7 +15,7 @@ export async function shopifyRest(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers as any);
   headers.set("X-Shopify-Access-Token", SHOP_ADMIN_TOKEN);
   if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  headers.set("Accept", "application/json");
+  if (!headers.has("Accept")) headers.set("Accept", "application/json");
   return fetch(url, { ...init, headers, cache: "no-store" });
 }
 
@@ -37,15 +37,15 @@ export function verifyShopifyHmac(
   }
 }
 
-/** Tag → Sales Rep mapping, using your SalesRepTagRule model */
+/** Tag → Sales Rep mapping using your SalesRepTagRule (joins to SalesRep for the name) */
 export async function getSalesRepForTags(tags: string[]): Promise<string | null> {
   if (!tags || tags.length === 0) return null;
   const rule = await prisma.salesRepTagRule.findFirst({
     where: { tag: { in: tags } },
-    // Your model doesn't have `priority`; use createdAt as a deterministic tie-breaker.
-    orderBy: { createdAt: "asc" },
+    include: { salesRep: true }, // <-- so we can read the rep's name
+    orderBy: { createdAt: "asc" }, // deterministic tie-breaker
   });
-  return rule?.salesRepName ?? null;
+  return rule?.salesRep?.name ?? null;
 }
 
 /** Upsert a CRM Customer from a Shopify customer payload */
@@ -162,4 +162,65 @@ export async function upsertOrderFromShopify(order: any, shopDomain: string) {
   if (rows.length) await prisma.shopifyOrderLineItem.createMany({ data: rows });
 
   return ord;
+}
+
+/** (For step 6 later) Push a CRM customer → Shopify (create or update), then store shopifyCustomerId */
+export async function pushCustomerToShopify(customerId: string) {
+  const c = await prisma.customer.findUnique({ where: { id: customerId } });
+  if (!c) return;
+
+  // Build Shopify payload
+  const [firstName, ...rest] = (c.customerName || "").split(" ");
+  const lastName = rest.join(" ").trim() || null;
+
+  const payload: any = {
+    customer: {
+      email: c.customerEmailAddress || undefined,
+      phone: c.customerTelephone || undefined,
+      first_name: firstName || null,
+      last_name: lastName || null,
+      tags: (c.shopifyTags || []).join(", "),
+      addresses: [
+        {
+          address1: c.addressLine1 || "",
+          address2: c.addressLine2 || null,
+          city: c.town || null,
+          province: c.county || null,
+          zip: c.postCode || null,
+          company: c.salonName || null,
+        },
+      ],
+    },
+  };
+
+  if (c.shopifyCustomerId) {
+    // Update existing
+    const res = await shopifyRest(`/customers/${c.shopifyCustomerId}.json`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`Shopify update failed (${res.status}): ${txt}`);
+    }
+    return;
+  }
+
+  // Create new
+  const res = await shopifyRest(`/customers.json`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Shopify create failed (${res.status}): ${txt}`);
+  }
+  const json = await res.json();
+  const newId = json?.customer?.id ? String(json.customer.id) : null;
+  if (newId) {
+    await prisma.customer.update({
+      where: { id: c.id },
+      data: { shopifyCustomerId: newId, shopifyShopDomain: SHOP_DOMAIN },
+    });
+  }
 }
