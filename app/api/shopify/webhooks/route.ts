@@ -1,66 +1,63 @@
 // app/api/shopify/webhooks/route.ts
 import { NextResponse } from "next/server";
 import { verifyShopifyHmac, upsertCustomerFromShopify, upsertOrderFromShopify } from "@/lib/shopify";
-import { prisma } from "@/lib/prisma"; // optional: for logging
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+export const runtime = "nodejs";         // ensure Node runtime (not edge)
+export const dynamic = "force-dynamic";  // never cache
+
+function ok() { return new NextResponse("ok", { status: 200 }); }
+function bad(msg: string, code = 400) {
+  console.error(msg);
+  return new NextResponse(msg, { status: code });
+}
 
 export async function POST(req: Request) {
-  const topic = req.headers.get("x-shopify-topic") ?? "";
-  const shopDomain = req.headers.get("x-shopify-shop-domain") ?? "";
-  const hmac = req.headers.get("x-shopify-hmac-sha256");
+  const topic = req.headers.get("x-shopify-topic") || "";
+  const shop  = req.headers.get("x-shopify-shop-domain") || "";
+  const hmac  = req.headers.get("x-shopify-hmac-sha256");
 
-  // Raw body for HMAC verification
-  const buf = await req.arrayBuffer();
+  // 1) Read RAW body first
+  const raw = await req.arrayBuffer();
 
-  // Verify HMAC
-  if (!verifyShopifyHmac(buf, hmac)) {
-    console.error("❌ Shopify webhook HMAC failed", { topic, shopDomain });
-    return new NextResponse("Invalid HMAC", { status: 401 });
+  // 2) Verify HMAC against the RAW bytes
+  const valid = verifyShopifyHmac(raw, hmac);
+  if (!valid) {
+    return bad(`Shopify webhook HMAC failed { topic: '${topic}', shopDomain: '${shop}' }`, 401);
   }
 
-  // Parse JSON once (do NOT call req.json() after reading the buffer)
-  let payload: any;
+  // 3) Parse after verification
+  let body: any;
   try {
-    payload = JSON.parse(new TextDecoder().decode(buf));
-  } catch (e) {
-    console.error("❌ Bad JSON in webhook", e);
-    return new NextResponse("Bad JSON", { status: 400 });
+    body = JSON.parse(Buffer.from(raw).toString("utf8"));
+  } catch (e: any) {
+    return bad(`Invalid JSON: ${e?.message || e}`, 400);
   }
 
   try {
-    // Optional: log the webhook for debugging (safe to remove later)
-    try {
-      await prisma.webhookLog.create({
-        data: {
-          topic,
-          shopifyId: payload?.id ? String(payload.id) : null,
-          payload,
-        },
-      });
-    } catch {}
-
-    // Route by topic
-    switch (topic) {
-      case "customers/create":
-      case "customers/update":
-        await upsertCustomerFromShopify(payload, shopDomain);
-        break;
-
-      case "orders/create":
-      case "orders/updated":
-        await upsertOrderFromShopify(payload, shopDomain);
-        break;
-
-      default:
-        // Unknown/unused topic — acknowledge 200 so Shopify stops retrying
-        break;
+    if (topic === "customers/create" || topic === "customers/update") {
+      const customer = body?.customer || body;
+      await upsertCustomerFromShopify(customer, shop);
+      console.log(`[WEBHOOK] customer upserted from ${topic} ${customer?.id ?? ""}`);
+      return ok();
     }
 
-    return new NextResponse("OK", { status: 200 });
-  } catch (e) {
-    console.error("❌ Webhook handler error", e);
-    return new NextResponse("Handler error", { status: 500 });
+    if (topic === "orders/create" || topic === "orders/updated") {
+      const order = body?.order || body;
+      await upsertOrderFromShopify(order, shop);
+      console.log(`[WEBHOOK] order upserted from ${topic} ${order?.id ?? ""}`);
+      return ok();
+    }
+
+    // unknown topic – still 200 so Shopify doesn’t retry forever
+    console.log(`[WEBHOOK] ignored topic '${topic}' from ${shop}`);
+    return ok();
+  } catch (err: any) {
+    console.error(`[WEBHOOK] handler error for ${topic}:`, err?.message || err);
+    return bad("Handler failed", 500);
   }
+}
+
+// Optional: a simple GET so you can quickly test the route is deployed
+export async function GET() {
+  return ok();
 }
