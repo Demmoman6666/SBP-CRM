@@ -131,14 +131,6 @@ model StockedBrand {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
-
-/* ──────────────────────────────────────────────────────────────
-   Shopify integration (Step 2)
-   - Orders and line items for sales data
-   - Tag→SalesRep mapping rules
-   - Lightweight sync bookkeeping & webhook logging
-   ────────────────────────────────────────────────────────────── */
-
 model Order {
   id                 String     @id @default(cuid())
   createdAt          DateTime   @default(now())
