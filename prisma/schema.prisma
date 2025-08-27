@@ -8,29 +8,71 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/* ---------------- New for Settings & Permissions ---------------- */
+// ---------------- Settings & Permissions ----------------
 enum Role {
-  USER
   ADMIN
+  MANAGER
+  REP
+  VIEWER
+}
+
+enum Permission {
+  VIEW_SALES_HUB
+  VIEW_REPORTS
+  VIEW_CUSTOMERS
+  EDIT_CUSTOMERS
+  VIEW_CALLS
+  EDIT_CALLS
+  VIEW_PROFIT_CALC
+  VIEW_SETTINGS
 }
 
 model User {
-  id            String   @id @default(cuid())
-  email         String   @unique
-  passwordHash  String
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  fullName      String?
-  phone         String?
-  role          Role     @default(USER)
+  fullName     String
+  email        String   @unique
+  phone        String?
+  passwordHash String
 
-  // Feature flags / permissions. Example:
-  // { "salesHub": true, "reports": true, "reports.calls": false, "tools.profitCalculator": true }
-  features      Json     @default("{}")
+  role         Role     @default(REP)
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  isActive     Boolean  @default(true)
+
+  // optional: link to a SalesRep row by name or email later if you choose
+  // salesRepId   String?
+  // salesRep     SalesRep? @relation(fields: [salesRepId], references: [id], onDelete: SetNull)
+
+  // per-user fine-grained permissions (in addition to role)
+  overrides    UserPermission[]
+
+  @@index([role])
 }
-/* ---------------------------------------------------------------- */
+
+model UserPermission {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  perm      Permission
+
+  createdAt DateTime   @default(now())
+
+  @@unique([userId, perm])
+  @@index([perm])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  details   Json?
+}
+
+// ---------------- Existing CRM models ----------------
 
 model Customer {
   id                   String    @id @default(cuid())
@@ -44,7 +86,7 @@ model Customer {
   town                 String?
   county               String?
   postCode             String?
-  country              String?   // Country for Shopify addresses.country
+  country              String?
   daysOpen             String?
   brandsInterestedIn   String?
   notes                String?
@@ -59,7 +101,7 @@ model Customer {
   notesLog             Note[]
   callLogs             CallLog[]
 
-  // ── Shopify sync fields
+  // Shopify sync fields
   shopifyCustomerId    String?   @unique
   shopifyTags          String[]  @default([])
   shopifyLastSyncedAt  DateTime?
@@ -68,7 +110,7 @@ model Customer {
   orders               Order[]
 
   @@index([customerEmailAddress])
-  @@index([salesRep]) // helps reports filtered by rep
+  @@index([salesRep])
 }
 
 model Visit {
@@ -108,7 +150,6 @@ model SalesRep {
   email     String?
   createdAt DateTime @default(now())
 
-  // Optional: reverse relation for tag rules
   tagRules  SalesRepTagRule[]
 }
 
@@ -140,7 +181,6 @@ model CallLog {
   followUpRequired   Boolean   @default(false)
   followUpAt         DateTime?
 
-  // call timing fields
   startTime          DateTime?
   endTime            DateTime?
   durationMinutes    Int?
@@ -166,8 +206,8 @@ model Order {
   // Shopify identifiers
   shopifyOrderId     String?    @unique
   shopifyOrderNumber Int?
-  shopifyName        String?    // e.g. "#1001"
-  shopifyCustomerId  String?    // NEW: who placed it (used for relinking)
+  shopifyName        String?
+  shopifyCustomerId  String?
 
   // Customer link
   customerId         String?
@@ -179,7 +219,7 @@ model Order {
   financialStatus    String?
   fulfillmentStatus  String?
 
-  // Money (Decimal for currency safe math)
+  // Money
   subtotal           Decimal?   @db.Decimal(12, 2)
   total              Decimal?   @db.Decimal(12, 2)
   taxes              Decimal?   @db.Decimal(12, 2)
@@ -189,7 +229,7 @@ model Order {
   lineItems          OrderLineItem[]
 
   @@index([customerId, processedAt])
-  @@index([shopifyCustomerId]) // NEW: speeds up backfill relinking
+  @@index([shopifyCustomerId])
 }
 
 model OrderLineItem {
@@ -205,12 +245,11 @@ model OrderLineItem {
   variantTitle      String?
   sku               String?
 
-  // vendor captured from Shopify line_items[].vendor
   productVendor     String?
 
   quantity          Int      @default(1)
-  price             Decimal? @db.Decimal(12, 2) // unit price
-  total             Decimal? @db.Decimal(12, 2) // quantity * price (optional cache)
+  price             Decimal? @db.Decimal(12, 2)
+  total             Decimal? @db.Decimal(12, 2)
 
   createdAt         DateTime @default(now())
 
@@ -218,7 +257,6 @@ model OrderLineItem {
   @@index([productVendor])
 }
 
-// Tag → Sales Rep mapping (e.g., tag "Alex" => rep Alex Krizan)
 model SalesRepTagRule {
   id          String   @id @default(cuid())
   tag         String   @unique
@@ -227,7 +265,6 @@ model SalesRepTagRule {
   createdAt   DateTime @default(now())
 }
 
-// Singleton-style row to track last sync cursors / timestamps
 model ShopifySyncState {
   id                       Int      @id @default(1)
   lastCustomersSyncedAt    DateTime?
@@ -236,7 +273,6 @@ model ShopifySyncState {
   updatedAt                DateTime @updatedAt
 }
 
-// Optional: store raw webhook payloads for debugging/auditing
 model WebhookLog {
   id        String   @id @default(cuid())
   topic     String
