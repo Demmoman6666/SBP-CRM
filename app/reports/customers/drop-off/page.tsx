@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-/* ───────────────────────── tiny reusable multiselect ───────────────────────── */
+/* ───────────────────────── anchored, opaque multiselect ───────────────────────── */
 type MultiSelectProps = {
   label: string;
   options: string[];
@@ -19,21 +19,52 @@ function MultiSelect({
   selected,
   onChange,
   placeholder = "Filter…",
-  maxHeight = 260,
+  maxHeight = 300,
 }: MultiSelectProps) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
-  // close on outside click
+  // anchored menu coords
+  const [menuRect, setMenuRect] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  const calcRect = () => {
+    if (!wrapRef.current) return;
+    const r = wrapRef.current.getBoundingClientRect();
+    setMenuRect({
+      top: Math.round(r.bottom + 6 + window.scrollY),
+      left: Math.round(r.left + window.scrollX),
+      width: Math.round(r.width),
+    });
+  };
+
+  const openMenu = () => {
+    calcRect();
+    setOpen(true);
+  };
+
+  // close on outside click, and reposition on scroll/resize while open
   useEffect(() => {
-    function onDocClick(e: MouseEvent) {
+    function onDocDown(e: MouseEvent) {
       if (!wrapRef.current) return;
       if (wrapRef.current.contains(e.target as Node)) return;
       setOpen(false);
     }
-    if (open) document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
+    function onScrollOrResize() {
+      if (!open) return;
+      calcRect();
+    }
+    if (open) {
+      document.addEventListener("mousedown", onDocDown);
+      window.addEventListener("scroll", onScrollOrResize, true);
+      window.addEventListener("resize", onScrollOrResize);
+    }
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const filtered = useMemo(() => {
@@ -50,9 +81,11 @@ function MultiSelect({
   return (
     <div className="field" ref={wrapRef} style={{ position: "relative" }}>
       <label>{label}</label>
+
+      {/* trigger */}
       <div
         className="row"
-        onClick={() => setOpen(v => !v)}
+        onClick={open ? undefined : openMenu}
         style={{
           border: "1px solid var(--border)",
           borderRadius: 10,
@@ -61,7 +94,7 @@ function MultiSelect({
           cursor: "pointer",
           flexWrap: "wrap",
           gap: 6,
-          background: "var(--card)",
+          background: "var(--card, #fff)",
         }}
       >
         {selected.length === 0 ? (
@@ -81,19 +114,21 @@ function MultiSelect({
         <div style={{ marginLeft: "auto" }} className="small muted">▼</div>
       </div>
 
-      {open && (
+      {/* anchored menu (fixed, opaque, high z-index) */}
+      {open && menuRect && (
         <div
           className="card"
           style={{
-            position: "absolute",
-            zIndex: 1000,
-            left: 0,
-            right: 0,
-            marginTop: 4,
+            position: "fixed",
+            top: menuRect.top,
+            left: menuRect.left,
+            width: menuRect.width,
+            zIndex: 9999,
+            background: "var(--panel, #fff)",
+            boxShadow: "0 12px 28px rgba(0,0,0,.15)",
             border: "1px solid var(--border)",
             borderRadius: 12,
             padding: 8,
-            background: "var(--card)",
           }}
         >
           <input
@@ -107,6 +142,7 @@ function MultiSelect({
               borderRadius: 8,
               padding: "6px 8px",
               marginBottom: 8,
+              background: "#fff",
             }}
           />
           <div
@@ -115,6 +151,7 @@ function MultiSelect({
               overflow: "auto",
               display: "grid",
               gap: 4,
+              background: "#fff",
             }}
           >
             {filtered.length === 0 && (
@@ -135,6 +172,7 @@ function MultiSelect({
               );
             })}
           </div>
+
           <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
             <button
               type="button"
@@ -164,7 +202,6 @@ type DropRow = {
   lastOrderAt: string | null; // ISO
   daysSince?: number;
 };
-
 type SortKey = "name" | "days";
 
 export default function CustomerDropOffReport() {
@@ -172,8 +209,7 @@ export default function CustomerDropOffReport() {
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [thresholdDays, setThresholdDays] = useState<number>(7);
   const [customDays, setCustomDays] = useState<string>("");
-
-  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortKey, setSortKey] = useState<SortKey>("days");
 
   const [rows, setRows] = useState<DropRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -213,7 +249,7 @@ export default function CustomerDropOffReport() {
         return { ...d, daysSince: days ?? undefined };
       });
 
-      // Group by rep
+      // group by rep
       const grouped = new Map<string, DropRow[]>();
       for (const r of withDays) {
         const key = r.salesRep || "(Unassigned)";
@@ -221,17 +257,17 @@ export default function CustomerDropOffReport() {
         grouped.get(key)!.push(r);
       }
 
-      // sort inside each group based on sortKey
-      for (const [key, list] of grouped.entries()) {
+      // sort per group
+      for (const [k, list] of grouped.entries()) {
         if (sortKey === "name") {
           list.sort((a, b) => (a.salonName || "").localeCompare(b.salonName || ""));
         } else {
-          list.sort((a, b) => (b.daysSince ?? -1) - (a.daysSince ?? -1)); // desc: longest inactive first
+          list.sort((a, b) => (b.daysSince ?? -1) - (a.daysSince ?? -1));
         }
-        grouped.set(key, list);
+        grouped.set(k, list);
       }
 
-      // flatten with group order stable A–Z
+      // flatten in rep A–Z order
       const flat: DropRow[] = [];
       Array.from(grouped.keys()).sort((a, b) => a.localeCompare(b)).forEach(k => {
         flat.push(...(grouped.get(k) || []));
@@ -246,28 +282,21 @@ export default function CustomerDropOffReport() {
     }
   };
 
-  // first load + refetch on filter/sort changes
   useEffect(() => { fetchReport(); /* eslint-disable-next-line */ }, []);
   useEffect(() => { fetchReport(); /* eslint-disable-next-line */ }, [thresholdDays, JSON.stringify(selectedReps), sortKey]);
 
-  const setQuick = (days: number) => {
-    setThresholdDays(days);
-    setCustomDays("");
-  };
-
+  const setQuick = (days: number) => { setThresholdDays(days); setCustomDays(""); };
   const applyCustom = () => {
     const n = Number(customDays);
     if (Number.isFinite(n) && n > 0) setThresholdDays(Math.floor(n));
   };
-
   const fmtDate = (iso?: string | null) => {
     if (!iso) return "Never";
     const d = new Date(iso);
-    if (isNaN(d.getTime())) return "Never";
-    return d.toLocaleDateString();
+    return isNaN(d.getTime()) ? "Never" : d.toLocaleDateString();
   };
 
-  // Build grouped view for render (rep → rows)
+  // group for render
   const groups = useMemo(() => {
     const m = new Map<string, DropRow[]>();
     for (const r of rows) {
@@ -285,7 +314,7 @@ export default function CustomerDropOffReport() {
         <p className="small">Customers who haven’t ordered in the selected period. Filter by Sales Rep.</p>
       </section>
 
-      {/* Filters */}
+      {/* Filters (allow visible dropdown overflow) */}
       <section className="card grid" style={{ gap: 12, overflow: "visible" }}>
         <div className="grid grid-4" style={{ gap: 12 }}>
           <MultiSelect
