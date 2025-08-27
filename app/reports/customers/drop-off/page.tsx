@@ -1,412 +1,268 @@
-// app/reports/customers/customer-dropoff/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-
-/* ───────────────────────── anchored, opaque multiselect ───────────────────────── */
-type MultiSelectProps = {
-  label: string;
-  options: string[];
-  selected: string[];
-  onChange: (next: string[]) => void;
-  placeholder?: string;
-  maxHeight?: number;
-};
-
-function MultiSelect({
-  label,
-  options,
-  selected,
-  onChange,
-  placeholder = "Filter…",
-  maxHeight = 300,
-}: MultiSelectProps) {
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-
-  // anchored menu coords
-  const [menuRect, setMenuRect] = useState<{ top: number; left: number; width: number } | null>(null);
-
-  const calcRect = () => {
-    if (!wrapRef.current) return;
-    const r = wrapRef.current.getBoundingClientRect();
-    setMenuRect({
-      top: Math.round(r.bottom + 6 + window.scrollY),
-      left: Math.round(r.left + window.scrollX),
-      width: Math.round(r.width),
-    });
-  };
-
-  const openMenu = () => {
-    calcRect();
-    setOpen(true);
-  };
-
-  // close on outside click, and reposition on scroll/resize while open
-  useEffect(() => {
-    function onDocDown(e: MouseEvent) {
-      if (!wrapRef.current) return;
-      if (wrapRef.current.contains(e.target as Node)) return;
-      setOpen(false);
-    }
-    function onScrollOrResize() {
-      if (!open) return;
-      calcRect();
-    }
-    if (open) {
-      document.addEventListener("mousedown", onDocDown);
-      window.addEventListener("scroll", onScrollOrResize, true);
-      window.addEventListener("resize", onScrollOrResize);
-    }
-    return () => {
-      document.removeEventListener("mousedown", onDocDown);
-      window.removeEventListener("scroll", onScrollOrResize, true);
-      window.removeEventListener("resize", onScrollOrResize);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    return s ? options.filter(o => o.toLowerCase().includes(s)) : options;
-  }, [options, q]);
-
-  const toggle = (opt: string) => {
-    const set = new Set(selected);
-    if (set.has(opt)) set.delete(opt); else set.add(opt);
-    onChange(Array.from(set));
-  };
-
-  return (
-    <div className="field" ref={wrapRef} style={{ position: "relative" }}>
-      <label>{label}</label>
-
-      {/* trigger */}
-      <div
-        className="row"
-        onClick={open ? undefined : openMenu}
-        style={{
-          border: "1px solid var(--border)",
-          borderRadius: 10,
-          padding: "6px 10px",
-          minHeight: 36,
-          cursor: "pointer",
-          flexWrap: "wrap",
-          gap: 6,
-          background: "var(--card, #fff)",
-        }}
-      >
-        {selected.length === 0 ? (
-          <span className="muted small">All</span>
-        ) : (
-          selected.map(s => (
-            <span
-              key={s}
-              className="tag"
-              onClick={(e) => { e.stopPropagation(); toggle(s); }}
-              style={{ userSelect: "none" }}
-            >
-              {s} ✕
-            </span>
-          ))
-        )}
-        <div style={{ marginLeft: "auto" }} className="small muted">▼</div>
-      </div>
-
-      {/* anchored menu (fixed, opaque, high z-index) */}
-      {open && menuRect && (
-        <div
-          className="card"
-          style={{
-            position: "fixed",
-            top: menuRect.top,
-            left: menuRect.left,
-            width: menuRect.width,
-            zIndex: 9999,
-            background: "var(--panel, #fff)",
-            boxShadow: "0 12px 28px rgba(0,0,0,.15)",
-            border: "1px solid var(--border)",
-            borderRadius: 12,
-            padding: 8,
-          }}
-        >
-          <input
-            placeholder={placeholder}
-            value={q}
-            onChange={e => setQ(e.target.value)}
-            className="small"
-            style={{
-              width: "100%",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: "6px 8px",
-              marginBottom: 8,
-              background: "#fff",
-            }}
-          />
-          <div
-            style={{
-              maxHeight,
-              overflow: "auto",
-              display: "grid",
-              gap: 4,
-              background: "#fff",
-            }}
-          >
-            {filtered.length === 0 && (
-              <div className="small muted" style={{ padding: 6 }}>No matches</div>
-            )}
-            {filtered.map(opt => {
-              const checked = selected.includes(opt);
-              return (
-                <label
-                  key={opt}
-                  className="row"
-                  style={{ gap: 8, alignItems: "center", cursor: "pointer" }}
-                  onClick={() => toggle(opt)}
-                >
-                  <input type="checkbox" checked={checked} readOnly />
-                  <span>{opt}</span>
-                </label>
-              );
-            })}
-          </div>
-
-          <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
-            <button
-              type="button"
-              className="small"
-              onClick={() => onChange([])}
-              style={{ textDecoration: "underline" }}
-            >
-              Clear
-            </button>
-            <button type="button" className="primary small" onClick={() => setOpen(false)}>
-              Done
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ───────────────────────────── page component ───────────────────────────── */
+import { useEffect, useMemo, useState } from "react";
 
 type Rep = { id: string; name: string };
-type DropRow = {
+type Row = {
   customerId: string;
   salonName: string;
+  customerName: string | null;
   salesRep: string | null;
   lastOrderAt: string | null; // ISO
-  daysSince?: number;
+  daysSince: number; // Infinity if never ordered
 };
-type SortKey = "name" | "days";
+type Resp = {
+  asOf: string;
+  days: number;
+  total: number;
+  rows: Row[];
+};
 
-export default function CustomerDropOffReport() {
-  const [reps, setReps] = useState<string[]>([]);
+function dropoffCsvHref({
+  bucket,
+  days,
+  selectedReps,
+}: {
+  bucket?: string | null;
+  days?: number | null;
+  selectedReps: string[];
+}) {
+  const qs = new URLSearchParams();
+  if (bucket) qs.set("bucket", bucket);
+  if (typeof days === "number") qs.set("days", String(days));
+  if (selectedReps?.length) qs.set("reps", selectedReps.join(","));
+  qs.set("format", "csv");
+  return `/api/reports/customer-dropoff?${qs.toString()}`;
+}
+
+function fmtDate(iso?: string | null) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-GB");
+}
+
+export default function CustomerDropOffPage() {
+  /* filters */
+  const [reps, setReps] = useState<Rep[]>([]);
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
-  const [thresholdDays, setThresholdDays] = useState<number>(7);
-  const [customDays, setCustomDays] = useState<string>("");
-  const [sortKey, setSortKey] = useState<SortKey>("days");
 
-  const [rows, setRows] = useState<DropRow[]>([]);
+  const [bucket, setBucket] = useState<"7" | "14" | "21" | "28" | "custom">("7");
+  const [customDays, setCustomDays] = useState<number>(35);
+
+  /* dropdown UI state */
+  const [repOpen, setRepOpen] = useState(false);
+
+  /* data */
+  const [data, setData] = useState<Resp | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // load reps
+  const days = bucket === "custom" ? customDays : Number(bucket);
+
   useEffect(() => {
-    (async () => {
-      try {
-        const r = await fetch("/api/sales-reps").then(x => x.json());
-        const names: string[] = Array.isArray(r)
-          ? (r as Rep[]).map(s => s.name)
-          : (r?.map?.((s: Rep) => s.name) ?? []);
-        setReps(names.sort((a, b) => a.localeCompare(b)));
-      } catch {
-        setReps([]);
-      }
-    })();
+    fetch("/api/sales-reps")
+      .then((r) => r.json())
+      .then((arr) => setReps(Array.isArray(arr) ? arr : []))
+      .catch(() => setReps([]));
   }, []);
 
-  const fetchReport = async () => {
+  async function run() {
     setLoading(true);
     try {
-      const qp = new URLSearchParams();
-      qp.set("thresholdDays", String(thresholdDays));
-      if (selectedReps.length) {
-        selectedReps.forEach(r => qp.append("rep", r));
-        qp.set("reps", selectedReps.join(","));
-      }
-      const res = await fetch(`/api/reports/customer-dropoff?${qp.toString()}`, { cache: "no-store" });
-      const json = await res.json();
-      const data: DropRow[] = Array.isArray(json?.rows) ? json.rows : [];
-
-      const withDays = data.map(d => {
-        if (typeof d.daysSince === "number") return d;
-        const last = d.lastOrderAt ? new Date(d.lastOrderAt) : null;
-        const days = last ? Math.floor((Date.now() - last.getTime()) / 86_400_000) : null;
-        return { ...d, daysSince: days ?? undefined };
-      });
-
-      // group by rep
-      const grouped = new Map<string, DropRow[]>();
-      for (const r of withDays) {
-        const key = r.salesRep || "(Unassigned)";
-        if (!grouped.has(key)) grouped.set(key, []);
-        grouped.get(key)!.push(r);
-      }
-
-      // sort per group
-      for (const [k, list] of grouped.entries()) {
-        if (sortKey === "name") {
-          list.sort((a, b) => (a.salonName || "").localeCompare(b.salonName || ""));
-        } else {
-          list.sort((a, b) => (b.daysSince ?? -1) - (a.daysSince ?? -1));
-        }
-        grouped.set(k, list);
-      }
-
-      // flatten in rep A–Z order
-      const flat: DropRow[] = [];
-      Array.from(grouped.keys()).sort((a, b) => a.localeCompare(b)).forEach(k => {
-        flat.push(...(grouped.get(k) || []));
-      });
-
-      setRows(flat);
-    } catch (e) {
-      console.error("Drop-off fetch failed", e);
-      setRows([]);
+      const qs = new URLSearchParams();
+      if (bucket) qs.set("bucket", bucket);
+      if (bucket === "custom") qs.set("days", String(customDays));
+      if (selectedReps.length) qs.set("reps", selectedReps.join(","));
+      const res = await fetch(`/api/reports/customer-dropoff?${qs.toString()}`);
+      const json = (await res.json()) as Resp;
+      setData(json);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  useEffect(() => { fetchReport(); /* eslint-disable-next-line */ }, []);
-  useEffect(() => { fetchReport(); /* eslint-disable-next-line */ }, [thresholdDays, JSON.stringify(selectedReps), sortKey]);
-
-  const setQuick = (days: number) => { setThresholdDays(days); setCustomDays(""); };
-  const applyCustom = () => {
-    const n = Number(customDays);
-    if (Number.isFinite(n) && n > 0) setThresholdDays(Math.floor(n));
-  };
-  const fmtDate = (iso?: string | null) => {
-    if (!iso) return "Never";
-    const d = new Date(iso);
-    return isNaN(d.getTime()) ? "Never" : d.toLocaleDateString();
-  };
-
-  // group for render
-  const groups = useMemo(() => {
-    const m = new Map<string, DropRow[]>();
-    for (const r of rows) {
-      const k = r.salesRep || "(Unassigned)";
-      if (!m.has(k)) m.set(k, []);
-      m.get(k)!.push(r);
-    }
-    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [rows]);
+  const csvHref = useMemo(
+    () => dropoffCsvHref({ bucket, days, selectedReps }),
+    [bucket, days, selectedReps]
+  );
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <h1>Customer Drop-off</h1>
-        <p className="small">Customers who haven’t ordered in the selected period. Filter by Sales Rep.</p>
-      </section>
-
-      {/* Filters (allow visible dropdown overflow) */}
-      <section className="card grid" style={{ gap: 12, overflow: "visible" }}>
-        <div className="grid grid-4" style={{ gap: 12 }}>
-          <MultiSelect
-            label="Sales Reps"
-            options={reps}
-            selected={selectedReps}
-            onChange={setSelectedReps}
-            placeholder="Filter reps…"
-          />
-
-          <div className="field">
-            <label>Quick range</label>
-            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              <button type="button" className={thresholdDays === 7  ? "primary" : ""} onClick={() => setQuick(7)}>1 week</button>
-              <button type="button" className={thresholdDays === 14 ? "primary" : ""} onClick={() => setQuick(14)}>2 weeks</button>
-              <button type="button" className={thresholdDays === 21 ? "primary" : ""} onClick={() => setQuick(21)}>3 weeks</button>
-              <button type="button" className={thresholdDays === 28 ? "primary" : ""} onClick={() => setQuick(28)}>4 weeks</button>
-            </div>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <div>
+            <h1>Customer Drop-Off</h1>
+            <p className="small">Customers who haven’t ordered in the selected time window.</p>
           </div>
 
-          <div className="field">
-            <label>Custom (days)</label>
-            <div className="row" style={{ gap: 8 }}>
-              <input
-                value={customDays}
-                onChange={e => setCustomDays(e.target.value)}
-                placeholder="e.g. 45"
-                inputMode="numeric"
-                style={{ maxWidth: 120 }}
-              />
-              <button type="button" onClick={applyCustom}>Apply</button>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            {/* Bucket */}
+            <div className="field">
+              <label>Window</label>
+              <select
+                value={bucket}
+                onChange={(e) => setBucket(e.target.value as any)}
+                style={{ minWidth: 160 }}
+              >
+                <option value="7">Last 7 days</option>
+                <option value="14">Last 14 days</option>
+                <option value="21">Last 21 days</option>
+                <option value="28">Last 28 days</option>
+                <option value="custom">Custom…</option>
+              </select>
             </div>
-            <div className="small muted" style={{ marginTop: 4 }}>
-              Current threshold: <b>{thresholdDays}</b> days
+
+            {bucket === "custom" && (
+              <div className="field">
+                <label>Days</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={customDays}
+                  onChange={(e) => setCustomDays(Math.max(1, Number(e.target.value || 1)))}
+                  style={{ width: 100 }}
+                />
+              </div>
+            )}
+
+            {/* Sales rep multi-select dropdown */}
+            <div className="field" style={{ position: "relative" }}>
+              <label>Sales Reps</label>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setRepOpen((v) => !v)}
+                style={{ minWidth: 220, textAlign: "left" }}
+              >
+                {selectedReps.length
+                  ? `${selectedReps.length} selected`
+                  : "Select reps…"}
+              </button>
+
+              {repOpen && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "100%",
+                    left: 0,
+                    right: 0,
+                    zIndex: 50,
+                    background: "white",
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    padding: 8,
+                    maxHeight: 240,
+                    overflowY: "auto",
+                    boxShadow: "0 6px 24px rgba(0,0,0,0.1)",
+                  }}
+                >
+                  {reps.length === 0 ? (
+                    <div className="small muted" style={{ padding: 8 }}>
+                      No reps.
+                    </div>
+                  ) : (
+                    reps.map((r) => {
+                      const checked = selectedReps.includes(r.name);
+                      return (
+                        <label
+                          key={r.id}
+                          className="row"
+                          style={{
+                            gap: 8,
+                            alignItems: "center",
+                            padding: "6px 4px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedReps((prev) => [...prev, r.name]);
+                              } else {
+                                setSelectedReps((prev) => prev.filter((x) => x !== r.name));
+                              }
+                            }}
+                          />
+                          <span>{r.name}</span>
+                        </label>
+                      );
+                    })
+                  )}
+
+                  <div className="row" style={{ gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedReps([]);
+                      }}
+                    >
+                      Clear
+                    </button>
+                    <button type="button" className="primary" onClick={() => setRepOpen(false)}>
+                      Done
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="row" style={{ alignItems: "flex-end", gap: 8 }}>
+              <button className="primary" onClick={run} disabled={loading}>
+                {loading ? "Loading…" : "Run"}
+              </button>
+              <a href={csvHref} className="primary" target="_blank" rel="noopener">
+                Export CSV
+              </a>
             </div>
           </div>
-
-          <div className="field">
-            <label>Sort by</label>
-            <select value={sortKey} onChange={e => setSortKey(e.target.value as SortKey)}>
-              <option value="name">Name (A–Z)</option>
-              <option value="days">Last order days (desc)</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="right">
-          <button className="primary" type="button" onClick={fetchReport} disabled={loading}>
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
         </div>
       </section>
 
       {/* Results */}
       <section className="card">
-        {loading && <div className="small muted">Loading…</div>}
-        {!loading && groups.length === 0 && (
-          <div className="small muted">No customers found for this filter.</div>
-        )}
-
-        {!loading && groups.length > 0 && (
-          <div className="grid" style={{ gap: 16 }}>
-            {groups.map(([rep, list]) => (
-              <div key={rep} className="card" style={{ border: "1px solid var(--border)" }}>
-                <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
-                  <h3>{rep}</h3>
-                  <div className="small muted">{list.length} customer{list.length === 1 ? "" : "s"}</div>
-                </div>
-
-                <div style={{ borderTop: "1px solid var(--border)", marginTop: 8, paddingTop: 8 }}>
-                  {list.map((r) => (
-                    <div
-                      key={r.customerId}
-                      className="row"
-                      style={{
-                        justifyContent: "space-between",
-                        borderBottom: "1px solid var(--border)",
-                        padding: "8px 0",
-                      }}
-                    >
-                      <div style={{ minWidth: 240 }}>{r.salonName}</div>
-                      <div className="small muted" style={{ minWidth: 120, textAlign: "right" }}>
-                        Last order: {fmtDate(r.lastOrderAt)}
-                      </div>
-                      <div className="small" style={{ minWidth: 130, textAlign: "right" }}>
-                        {typeof r.daysSince === "number" ? `${r.daysSince} days` : "—"}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
+        {!data ? (
+          <p className="small">Choose filters and click <b>Run</b>.</p>
+        ) : data.rows.length === 0 ? (
+          <p className="small">Everyone’s active within the last {data.days} days — nice!</p>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="small" style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                    Customer
+                  </th>
+                  <th style={{ textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                    Sales Rep
+                  </th>
+                  <th style={{ textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                    Last Order
+                  </th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                    Days Since
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.rows.map((r) => (
+                  <tr key={r.customerId}>
+                    <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                      {r.salonName}
+                    </td>
+                    <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                      {r.salesRep || "—"}
+                    </td>
+                    <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                      {fmtDate(r.lastOrderAt)}
+                    </td>
+                    <td style={{ textAlign: "right", padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                      {r.daysSince === Number.POSITIVE_INFINITY ? "Never" : r.daysSince}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </section>
