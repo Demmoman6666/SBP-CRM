@@ -1,46 +1,99 @@
 // app/api/stocked-brands/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { shopifyRest } from "@/lib/shopify";
 
-// POST /api/stocked-brands  -> { name: string }
-export async function POST(req: Request) {
-  try {
-    const { name } = await req.json().catch(() => ({} as any));
-    const trimmed = String(name || "").trim();
-    if (!trimmed) {
-      return NextResponse.json({ error: "Stocked brand name is required." }, { status: 400 });
+export const dynamic = "force-dynamic";
+
+// Parse the Link header to get next page_info (Shopify REST pagination)
+function getNextPageInfo(linkHeader?: string | null): string | null {
+  if (!linkHeader) return null;
+  // Example: <https://shop.myshopify.com/admin/api/2024-07/products.json?page_info=xxx&limit=250>; rel="next"
+  const parts = linkHeader.split(",");
+  for (const p of parts) {
+    const seg = p.trim();
+    if (seg.endsWith('rel="next"')) {
+      const m = seg.match(/<([^>]+)>/);
+      if (!m) continue;
+      try {
+        const url = new URL(m[1]);
+        const pi = url.searchParams.get("page_info");
+        if (pi) return pi;
+      } catch {}
     }
-
-    const created = await prisma.stockedBrand.create({
-      data: { name: trimmed },
-      select: { id: true, name: true, createdAt: true },
-    });
-
-    return NextResponse.json(created, { status: 201 });
-  } catch (err: any) {
-    // handle unique constraint nicely
-    if (String(err?.code) === "P2002") {
-      return NextResponse.json({ error: "That stocked brand already exists." }, { status: 409 });
-    }
-    console.error("POST /api/stocked-brands failed:", err);
-    return NextResponse.json({ error: "Failed to add stocked brand." }, { status: 500 });
   }
+  return null;
 }
 
-// GET /api/stocked-brands[?q=]
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const q = (searchParams.get("q") || "").trim();
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
-  const where = q
-    ? { name: { contains: q, mode: "insensitive" as const } }
-    : {};
-
-  const rows = await prisma.stockedBrand.findMany({
-    where,
+/** GET: list stocked brands (for UI vendor filter) */
+export async function GET() {
+  const brands = await prisma.stockedBrand.findMany({
     orderBy: { name: "asc" },
-    select: { id: true, name: true, createdAt: true },
+    select: { name: true },
   });
+  return NextResponse.json({ vendors: brands.map((b) => b.name) });
+}
 
-  return NextResponse.json(rows);
+/** POST: sync StockedBrand from Shopify products' vendor field */
+export async function POST(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const rpm = Math.max(30, Math.min(Number(searchParams.get("rpm") || 120), 240)); // 30–240
+  const delayMs = Math.ceil(60000 / rpm);
+
+  const vendors = new Set<string>();
+  let pageInfo: string | null = null;
+  let pages = 0;
+  let productsSeen = 0;
+
+  while (true) {
+    pages++;
+    const qp = new URLSearchParams();
+    qp.set("limit", "250");
+    qp.set("fields", "id,vendor");
+    qp.set("status", "any"); // include active, draft, archived
+    if (pageInfo) qp.set("page_info", pageInfo);
+
+    const res = await shopifyRest(`/products.json?${qp.toString()}`, { method: "GET" });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return NextResponse.json(
+        { error: `Shopify products fetch failed: ${res.status} ${text}` },
+        { status: 502 }
+      );
+    }
+
+    const json = await res.json();
+    const arr: any[] = json?.products ?? [];
+    productsSeen += arr.length;
+
+    for (const p of arr) {
+      const v = (p?.vendor || "").toString().trim();
+      if (v) vendors.add(v);
+    }
+
+    const link = res.headers.get("Link");
+    pageInfo = getNextPageInfo(link);
+    if (!pageInfo) break;
+
+    await sleep(delayMs); // rate limit
+  }
+
+  const names = Array.from(vendors).sort((a, b) => a.localeCompare(b));
+  if (names.length) {
+    await prisma.stockedBrand.createMany({
+      data: names.map((name) => ({ name })),
+      skipDuplicates: true,
+    });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    pages,
+    productsSeen,
+    vendorsFound: names.length,
+  });
 }
