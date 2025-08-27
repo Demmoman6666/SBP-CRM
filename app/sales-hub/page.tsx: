@@ -1,7 +1,7 @@
 // app/sales-hub/page.tsx
 import Link from "next/link";
 
-export const dynamic = "force-dynamic";   // ensure the page is always available
+export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default function SalesHub() {
