@@ -1,9 +1,7 @@
-// app/sales-hub/layout.tsx
-import type { ReactNode } from "react";
+// app/saleshub/layout.tsx
+export const dynamic = "force-static";
+export const revalidate = 1;
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-
-export default function SalesHubLayout({ children }: { children: ReactNode }) {
+export default function SaleshubLayout({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
