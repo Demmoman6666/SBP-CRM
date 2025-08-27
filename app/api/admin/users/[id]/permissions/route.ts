@@ -19,12 +19,12 @@ function coercePermissions(input: any): Permission[] | undefined {
     .filter((x) => valid.has(x as Permission)) as Permission[];
 }
 
-async function requireAdmin() {
+async function requireAdmin(): Promise<NextResponse | null> {
   const me = await getCurrentUser();
   if (!me || me.role !== "ADMIN") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  return null as const;
+  return null;
 }
 
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
@@ -52,10 +52,8 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
     const updated = await prisma.user.update({
       where: { id: params.id },
       data,
-      // NOTE: avoid `select` to dodge the TS error about 'features'
     });
 
-    // Manually shape the safe response
     return NextResponse.json({
       id: updated.id,
       email: updated.email,
