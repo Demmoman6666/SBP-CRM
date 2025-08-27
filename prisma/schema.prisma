@@ -28,25 +28,22 @@ enum Permission {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id           String           @id @default(cuid())
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
   fullName     String
-  email        String   @unique
+  email        String           @unique
   phone        String?
   passwordHash String
 
-  role         Role     @default(REP)
+  role         Role             @default(REP)
+  isActive     Boolean          @default(true)
 
-  isActive     Boolean  @default(true)
-
-  // optional: link to a SalesRep row by name or email later if you choose
-  // salesRepId   String?
-  // salesRep     SalesRep? @relation(fields: [salesRepId], references: [id], onDelete: SetNull)
-
-  // per-user fine-grained permissions (in addition to role)
+  // Fine-grained overrides in addition to role
   overrides    UserPermission[]
+  // Back-relation for AuditLog.user
+  auditLogs    AuditLog[]
 
   @@index([role])
 }
@@ -56,7 +53,6 @@ model UserPermission {
   userId    String
   user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   perm      Permission
-
   createdAt DateTime   @default(now())
 
   @@unique([userId, perm])
@@ -181,6 +177,7 @@ model CallLog {
   followUpRequired   Boolean   @default(false)
   followUpAt         DateTime?
 
+  // call timing fields
   startTime          DateTime?
   endTime            DateTime?
   durationMinutes    Int?
@@ -190,7 +187,6 @@ model CallLog {
   @@index([isExistingCustomer, customerId])
 }
 
-// Separate table for stocked brands (distinct from competitor Brand)
 model StockedBrand {
   id        String   @id @default(cuid())
   name      String   @unique
@@ -245,6 +241,7 @@ model OrderLineItem {
   variantTitle      String?
   sku               String?
 
+  // captured from Shopify line_items[].vendor
   productVendor     String?
 
   quantity          Int      @default(1)
