@@ -8,6 +8,30 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/* ---------------- New for Settings & Permissions ---------------- */
+enum Role {
+  USER
+  ADMIN
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+
+  fullName      String?
+  phone         String?
+  role          Role     @default(USER)
+
+  // Feature flags / permissions. Example:
+  // { "salesHub": true, "reports": true, "reports.calls": false, "tools.profitCalculator": true }
+  features      Json     @default("{}")
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+/* ---------------------------------------------------------------- */
+
 model Customer {
   id                   String    @id @default(cuid())
   createdAt            DateTime  @default(now())
