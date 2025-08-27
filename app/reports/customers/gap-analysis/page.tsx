@@ -3,193 +3,193 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type Row = {
+type Rep = { id: string; name: string };
+
+type ApiRow = {
   customerId: string;
   salonName: string;
-  customerName: string;
   salesRep: string | null;
-  currency: string | null;
-  subtotal?: number | null;
-  taxes?: number | null;
-  total?: number | null;
-  // optional vendor breakdown (if your API returns it)
-  byVendor?: Record<string, number>;
+  vendors: Record<string, number>;
+  subtotal: number;
+  taxes: number;
+  total: number;
 };
 
-type Rep = { id: string; name: string };
-type Brand = { id: string; name: string };
+type ApiResp = {
+  vendors: string[];
+  rows: ApiRow[];
+};
+
+const GBP = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
+
+function fmt(n?: number) {
+  const v = typeof n === "number" ? n : 0;
+  return v ? GBP.format(v) : "—";
+}
 
 export default function GapAnalysisPage() {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const [reps, setReps] = useState<Rep[]>([]);
-  const [vendors, setVendors] = useState<Brand[]>([]);
-  const [selectedReps, setSelectedReps] = useState<string[]>([]);
-  const [selectedVendors, setSelectedVendors] = useState<string[]>([]);
-  const [from, setFrom] = useState<string>("");
-  const [to, setTo] = useState<string>("");
-  const [rows, setRows] = useState<Row[]>([]);
+  const [repSel, setRepSel] = useState<string[]>([]);
+  const [vendorSel, setVendorSel] = useState<string[]>(["Goddess", "MY.ORGANICS", "Neal & Wolf", "Procare", "REF Stockholm"]);
+
+  const [data, setData] = useState<ApiResp | null>(null);
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
-  // options
+  // load reps
   useEffect(() => {
-    fetch("/api/sales-reps").then(r => r.json()).then(setReps).catch(() => setReps([]));
-    fetch("/api/stocked-brands").then(r => r.json()).then(setVendors).catch(() => setVendors([]));
+    fetch("/api/sales-reps")
+      .then(r => r.json())
+      .then((arr: Rep[]) => {
+        setReps(arr || []);
+        setRepSel(arr.map(r => r.name)); // default select all reps
+      })
+      .catch(() => setReps([]));
   }, []);
-
-  function toggle<T extends string>(arr: T[], v: T): T[] {
-    return arr.includes(v) ? arr.filter(x => x !== v) : [...arr, v];
-  }
-
-  const vendorColumns = useMemo(() => {
-    // use selected if any; otherwise derive from first row’s byVendor keys
-    if (selectedVendors.length) return selectedVendors;
-    const first = rows.find(r => r.byVendor && Object.keys(r.byVendor).length);
-    return first ? Object.keys(first.byVendor!) : [];
-  }, [rows, selectedVendors]);
 
   async function run() {
     setLoading(true);
-    setErr(null);
     try {
-      const params = new URLSearchParams();
-      if (from) params.set("from", from);
-      if (to) params.set("to", to);
-      if (selectedReps.length) params.set("reps", selectedReps.join(","));
-      if (selectedVendors.length) params.set("vendors", selectedVendors.join(","));
-
-      const res = await fetch(`/api/reports/vendor-spend?${params.toString()}`, {
-        cache: "no-store",
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      setRows(Array.isArray(data?.rows) ? data.rows : data);
-    } catch (e: any) {
-      setErr(e?.message || "Failed to load");
+      const qp = new URLSearchParams();
+      if (from) qp.set("from", from);
+      if (to) qp.set("to", to);
+      if (repSel.length) qp.set("reps", repSel.join(","));
+      if (vendorSel.length) qp.set("vendors", vendorSel.join(","));
+      const res = await fetch(`/api/reports/vendor-spend?${qp.toString()}`);
+      const json = (await res.json()) as ApiResp;
+      setData(json);
     } finally {
       setLoading(false);
     }
   }
 
-  function fmtMoney(n?: number | null, currency?: string | null) {
-    if (n == null) return "—";
-    try {
-      return new Intl.NumberFormat(undefined, {
-        style: "currency",
-        currency: currency || "GBP",
-        currencyDisplay: "narrowSymbol",
-        maximumFractionDigits: 2,
-      }).format(n);
-    } catch {
-      return n.toFixed(2);
-    }
-  }
+  const VENDORS = useMemo(
+    () => data?.vendors ?? vendorSel,
+    [data, vendorSel]
+  );
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
         <h1>GAP Analysis</h1>
-        <p className="small">
-          See spend by vendor per customer. Filter by sales rep, vendor, and date range.
-        </p>
+        <p className="small">See spend by vendor per customer. Filter by sales rep, vendor, and date range.</p>
       </section>
 
       {/* Filters */}
-      <section className="card grid" style={{ gap: 12 }}>
-        <div className="grid grid-3" style={{ gap: 12 }}>
-          <div className="field">
-            <label>From</label>
-            <input type="date" value={from} onChange={e => setFrom(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>To</label>
-            <input type="date" value={to} onChange={e => setTo(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>&nbsp;</label>
-            <button className="primary" type="button" onClick={run} disabled={loading}>
-              {loading ? "Loading…" : "Run"}
-            </button>
-          </div>
+      <section className="card grid" style={{ gap: 10 }}>
+        <div className="field">
+          <label>From</label>
+          <input placeholder="dd/mm/yyyy" value={from} onChange={e => setFrom(e.target.value)} />
+        </div>
+        <div className="field">
+          <label>To</label>
+          <input placeholder="dd/mm/yyyy" value={to} onChange={e => setTo(e.target.value)} />
         </div>
 
-        <div className="grid grid-2" style={{ gap: 12 }}>
-          <div className="field">
-            <label>Sales Reps</label>
-            <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
-              {reps.map(r => (
-                <label key={r.id} className="row" style={{ gap: 6 }}>
-                  <input
-                    type="checkbox"
-                    checked={selectedReps.includes(r.name)}
-                    onChange={() => setSelectedReps(prev => toggle(prev, r.name))}
-                  />
-                  <span className="small">{r.name}</span>
-                </label>
-              ))}
+        <div className="row" style={{ gap: 12, alignItems: "center" }}>
+          <button className="primary" onClick={run} disabled={loading}>
+            {loading ? "Running…" : "Run"}
+          </button>
+        </div>
+
+        <div className="row" style={{ gap: 24, flexWrap: "wrap" }}>
+          <div>
+            <div className="small" style={{ marginBottom: 6 }}>Sales Reps</div>
+            <div className="row small" style={{ gap: 12, flexWrap: "wrap" }}>
+              {reps.map(r => {
+                const checked = repSel.includes(r.name);
+                return (
+                  <label key={r.id} className="row" style={{ gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={e =>
+                        setRepSel(prev =>
+                          e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name)
+                        )
+                      }
+                    />
+                    {r.name}
+                  </label>
+                );
+              })}
             </div>
           </div>
 
-          <div className="field">
-            <label>Vendors</label>
-            <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
-              {vendors.map(v => (
-                <label key={v.id} className="row" style={{ gap: 6 }}>
-                  <input
-                    type="checkbox"
-                    checked={selectedVendors.includes(v.name)}
-                    onChange={() => setSelectedVendors(prev => toggle(prev, v.name))}
-                  />
-                  <span className="small">{v.name}</span>
-                </label>
-              ))}
+          <div>
+            <div className="small" style={{ marginBottom: 6 }}>Vendors</div>
+            <div className="row small" style={{ gap: 12, flexWrap: "wrap" }}>
+              {["Goddess", "MY.ORGANICS", "Neal & Wolf", "Procare", "REF Stockholm"].map(v => {
+                const checked = vendorSel.includes(v);
+                return (
+                  <label key={v} className="row" style={{ gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={e =>
+                        setVendorSel(prev =>
+                          e.target.checked ? [...prev, v] : prev.filter(x => x !== v)
+                        )
+                      }
+                    />
+                    {v}
+                  </label>
+                );
+              })}
             </div>
           </div>
         </div>
-
-        {err && <div className="small" style={{ color: "var(--danger)" }}>{err}</div>}
       </section>
 
       {/* Results */}
       <section className="card">
-        <div className="row" style={{ fontWeight: 600, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
-          <div style={{ flex: "0 0 260px" }}>Customer</div>
-          <div style={{ flex: "0 0 160px" }}>Sales Rep</div>
-          {/* dynamic vendor columns */}
-          {vendorColumns.map(v => (
-            <div key={v} style={{ flex: "0 0 160px" }}>{v}</div>
-          ))}
-          <div style={{ flex: "0 0 140px" }}>Subtotal</div>
-          <div style={{ flex: "0 0 120px" }}>Taxes</div>
-          <div style={{ flex: "0 0 140px" }}>Total</div>
-        </div>
-
-        {rows.length === 0 ? (
-          <p className="small" style={{ marginTop: 10 }}>
-            {loading ? "Loading…" : "No data yet. Pick filters and click Run."}
-          </p>
+        {!data ? (
+          <p className="small muted">Run the report to see results.</p>
         ) : (
-          rows.map((r) => (
-            <div key={r.customerId} className="row" style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
-              <div style={{ flex: "0 0 260px" }}>
-                <div>{r.salonName || r.customerName}</div>
-                <div className="small muted">{r.customerName}</div>
-              </div>
-              <div style={{ flex: "0 0 160px" }}>{r.salesRep || "—"}</div>
-
-              {vendorColumns.map(v => {
-                const val = r.byVendor?.[v] ?? null;
-                return (
-                  <div key={v} style={{ flex: "0 0 160px" }}>
-                    {fmtMoney(val, r.currency)}
-                  </div>
-                );
-              })}
-
-              <div style={{ flex: "0 0 140px" }}>{fmtMoney(r.subtotal ?? null, r.currency)}</div>
-              <div style={{ flex: "0 0 120px" }}>{fmtMoney(r.taxes ?? null, r.currency)}</div>
-              <div style={{ flex: "0 0 140px", fontWeight: 600 }}>{fmtMoney(r.total ?? null, r.currency)}</div>
+          <div style={{ overflowX: "auto" }}>
+            <div
+              className="small"
+              style={{
+                display: "grid",
+                gridTemplateColumns: `minmax(200px, 1.2fr) 160px ${VENDORS.map(() => "140px").join(" ")} 120px 120px 120px`,
+                columnGap: 12,
+                fontWeight: 600,
+                paddingBottom: 8,
+                borderBottom: "1px solid var(--border)",
+              }}
+            >
+              <div>Customer</div>
+              <div>Sales Rep</div>
+              {VENDORS.map(v => <div key={v}>{v}</div>)}
+              <div>Subtotal</div>
+              <div>Taxes</div>
+              <div>Total</div>
             </div>
-          ))
+
+            {data.rows.map(r => (
+              <div
+                key={r.customerId}
+                className="small"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: `minmax(200px, 1.2fr) 160px ${VENDORS.map(() => "140px").join(" ")} 120px 120px 120px`,
+                  columnGap: 12,
+                  padding: "8px 0",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
+                <div>{r.salonName}</div>
+                <div>{r.salesRep || "—"}</div>
+                {VENDORS.map(v => <div key={v}>{fmt(r.vendors[v])}</div>)}
+                <div>{fmt(r.subtotal)}</div>
+                <div>{fmt(r.taxes)}</div>
+                <div style={{ fontWeight: 600 }}>{fmt(r.total)}</div>
+              </div>
+            ))}
+
+            {data.rows.length === 0 && <p className="small muted" style={{ marginTop: 8 }}>No results.</p>}
+          </div>
         )}
       </section>
     </div>
