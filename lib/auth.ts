@@ -1,81 +1,54 @@
 // lib/auth.ts
 import { prisma } from "@/lib/prisma";
-import { cookies } from "next/headers";
-import bcrypt from "bcryptjs";
-import type { Role, Permission } from "@prisma/client";
+import { headers as nextHeaders, cookies as nextCookies } from "next/headers";
+import type { User } from "@prisma/client";
 
-/**
- * Hash a plaintext password using bcrypt.
- */
-export async function hashPassword(plaintext: string): Promise<string> {
-  const rounds = Number(process.env.BCRYPT_ROUNDS || 10);
-  const salt = await bcrypt.genSalt(rounds);
-  return bcrypt.hash(plaintext, salt);
-}
+export type SafeUser = Pick<
+  User,
+  "id" | "fullName" | "email" | "phone" | "role" | "isActive" | "createdAt" | "updatedAt"
+>;
 
-/**
- * Verify a plaintext password against a bcrypt hash.
- */
-export async function verifyPassword(
-  plaintext: string,
-  hash: string
-): Promise<boolean> {
-  try {
-    return await bcrypt.compare(plaintext, hash);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Look up a user by email (case-insensitive), returning safe public fields.
- */
-export async function getUserByEmail(email: string) {
-  const e = (email || "").trim().toLowerCase();
-  if (!e) return null;
-
+/** Look up a user by email and return a safe subset of fields. */
+export async function getUserByEmail(email: string): Promise<SafeUser | null> {
+  if (!email) return null;
   return prisma.user.findUnique({
-    where: { email: e },
+    where: { email },
     select: {
       id: true,
-      name: true,
+      fullName: true,
       email: true,
       phone: true,
       role: true,
-      features: true,
+      isActive: true,
       createdAt: true,
       updatedAt: true,
-      // passwordHash is intentionally NOT selected
     },
   });
 }
 
 /**
- * Resolve the current user from cookies.
- * Looks for common cookie names: sbp_email, userEmail, email.
- * If none found, returns null.
+ * Minimal “current user” helper for server code.
+ * - Reads `x-user-email` (or `x-user`) header first (useful in previews).
+ * - Falls back to cookies: `sbp_email` or `email`.
+ * Return null if not present.
  */
-export async function getCurrentUser() {
-  const jar = cookies();
-  const email =
-    jar.get("sbp_email")?.value ||
-    jar.get("userEmail")?.value ||
-    jar.get("email")?.value ||
-    "";
+export async function getCurrentUser(): Promise<SafeUser | null> {
+  try {
+    const hdrs = nextHeaders();
+    const emailFromHeader = hdrs.get("x-user-email") || hdrs.get("x-user");
+    const cookies = nextCookies();
+    const emailFromCookie = cookies.get("sbp_email")?.value || cookies.get("email")?.value;
 
-  if (!email) return null;
-  return getUserByEmail(email);
+    const email = (emailFromHeader || emailFromCookie || "").trim();
+    if (!email) return null;
+
+    return await getUserByEmail(email);
+  } catch {
+    return null;
+  }
 }
 
-/**
- * Simple helper: does the user have a permission?
- * Admins are treated as having all permissions.
- */
-export function hasPermission(
-  user: { role: Role; features?: Permission[] | null } | null,
-  perm: Permission
-): boolean {
-  if (!user) return false;
-  if (user.role === "ADMIN") return true;
-  return !!user.features?.includes(perm);
+/** Convenience guard */
+export function isAdmin(user: SafeUser | null | undefined): boolean {
+  return !!user && user.role === "ADMIN";
 }
