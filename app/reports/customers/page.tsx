@@ -7,7 +7,10 @@ export default function CustomerReportsPage() {
         <p className="small">Drill into customer activity, spend and gaps.</p>
       </section>
 
-      <section className="grid" style={{ gap: 12, gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+      <section
+        className="grid"
+        style={{ gap: 12, gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}
+      >
         <div className="card">
           <b>GAP Analysis</b>
           <p className="small">Spend by customer & vendor, filterable by Sales Rep.</p>
@@ -16,7 +19,13 @@ export default function CustomerReportsPage() {
           </a>
         </div>
 
-        {/* Add other customer reports tiles here later */}
+        <div className="card">
+          <b>Customer Drop-off</b>
+          <p className="small">Which accounts haven’t ordered in X days.</p>
+          <a className="primary" href="/reports/customers/drop-off" style={{ marginTop: 8 }}>
+            Open
+          </a>
+        </div>
       </section>
     </div>
   );
