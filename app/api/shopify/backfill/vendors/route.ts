@@ -4,24 +4,55 @@ import { shopifyRest } from "@/lib/shopify";
 
 export const dynamic = "force-dynamic";
 
-async function fetchProductVendor(productId: string): Promise<string | null> {
-  try {
-    const res = await shopifyRest(`/products/${productId}.json`, { method: "GET" });
-    if (!res.ok) return null;
-    const json = await res.json();
-    const v = (json?.product?.vendor || "").toString().trim() || null;
-    return v;
-  } catch { return null; }
-}
-
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
+// Cache to avoid re-fetching the same product many times
+const vendorCache = new Map<string, string | null>();
+
+async function fetchProductVendor(productId: string): Promise<string | null> {
+  if (!productId) return null;
+  if (vendorCache.has(productId)) return vendorCache.get(productId)!;
+  try {
+    const res = await shopifyRest(`/products/${productId}.json`, { method: "GET" });
+    if (!res.ok) { vendorCache.set(productId, null); return null; }
+    const json = await res.json();
+    const v = (json?.product?.vendor || "").toString().trim() || null;
+    vendorCache.set(productId, v);
+    return v;
+  } catch {
+    vendorCache.set(productId, null);
+    return null;
+  }
+}
+
+/**
+ * POST /api/shopify/backfill/vendors?rpm=120
+ * - Finds line items with missing vendor (NULL or empty string)
+ * - Groups by productId and looks up product.vendor from Shopify
+ * - Updates all line items of that productId
+ */
 export async function POST(req: Request) {
   const { searchParams } = new URL(req.url);
-  const perMinute = Math.max(1, Math.min(Number(searchParams.get("rpm") ?? 120), 240)); // gentle throttle
-  const delayMs = Math.round(60000 / perMinute);
+  const rpm = Math.max(30, Math.min(Number(searchParams.get("rpm") || 120), 240));
+  const delayMs = Math.ceil(60000 / rpm);
 
-  // distinct productIds where vendor missing
+  // Count how many are missing (null OR empty)
+  const missingCount = await prisma.orderLineItem.count({
+    where: {
+      productId: { not: null },
+      OR: [{ productVendor: null }, { productVendor: "" }],
+    },
+  });
+
+  // If nothing is missing, exit early
+  if (missingCount === 0) {
+    return NextResponse.json({
+      productIds: 0, lookedUp: 0, updated: 0, skipped: 0, missingCount: 0,
+      note: "No line items with NULL/empty productVendor found.",
+    });
+  }
+
+  // Distinct productIds that need a vendor
   const groups = await prisma.orderLineItem.groupBy({
     by: ["productId"],
     where: {
@@ -32,7 +63,6 @@ export async function POST(req: Request) {
   });
 
   let lookedUp = 0, updated = 0, skipped = 0;
-
   for (const g of groups) {
     const pid = g.productId as string | null;
     if (!pid) { skipped++; continue; }
@@ -42,18 +72,19 @@ export async function POST(req: Request) {
 
     if (vendor) {
       const res = await prisma.orderLineItem.updateMany({
-        where: { productId: pid },
-        data: { productVendor: vendor },
+        where: { productId: pid, OR: [{ productVendor: null }, { productVendor: "" }] },
+        data:  { productVendor: vendor },
       });
       updated += res.count;
+    } else {
+      skipped++;
     }
 
-    await sleep(delayMs); // rate limit
+    // Rate limit
+    await sleep(delayMs);
   }
 
-  return NextResponse.json({ productIds: groups.length, lookedUp, updated, skipped });
-}
-
-export async function GET() {
-  return NextResponse.json({ ok: true, hint: "POST this endpoint to backfill vendors." });
+  return NextResponse.json({
+    productIds: groups.length, lookedUp, updated, skipped, missingCount,
+  });
 }
