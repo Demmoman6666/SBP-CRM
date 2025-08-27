@@ -13,7 +13,7 @@ async function requireAdmin(): Promise<NextResponse | null> {
   if (!me || me.role !== "ADMIN") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  return null; // <- no `as const`
+  return null;
 }
 
 /** Coerce any input to a valid Role enum (or undefined) */
@@ -63,7 +63,8 @@ export async function POST(req: Request) {
   const email = (body?.email || "").trim().toLowerCase();
   const phone = (body?.phone || "").trim();
   const password = String(body?.password || "").trim();
-  const role = coerceRole(body?.role) ?? Role.USER;
+  // ⛳ FIX: default to a valid enum member (REP). Use Role.VIEWER if you prefer.
+  const role = coerceRole(body?.role) ?? Role.REP;
   const isActive = typeof body?.isActive === "boolean" ? body.isActive : true;
 
   if (!fullName || !email || !password) {
