@@ -20,7 +20,7 @@ model Customer {
   town                 String?
   county               String?
   postCode             String?
-  country              String?   // NEW: Country for Shopify addresses.country
+  country              String?   // Country for Shopify addresses.country
   daysOpen             String?
   brandsInterestedIn   String?
   notes                String?
@@ -35,7 +35,7 @@ model Customer {
   notesLog             Note[]
   callLogs             CallLog[]
 
-  // ── Shopify sync fields (Step 2)
+  // ── Shopify sync fields
   shopifyCustomerId    String?   @unique
   shopifyTags          String[]  @default([])
   shopifyLastSyncedAt  DateTime?
@@ -44,7 +44,7 @@ model Customer {
   orders               Order[]
 
   @@index([customerEmailAddress])
-  @@index([salesRep]) // optional: speeds up vendor report filtered by rep
+  @@index([salesRep]) // helps reports filtered by rep
 }
 
 model Visit {
@@ -143,6 +143,7 @@ model Order {
   shopifyOrderId     String?    @unique
   shopifyOrderNumber Int?
   shopifyName        String?    // e.g. "#1001"
+  shopifyCustomerId  String?    // NEW: who placed it (used for relinking)
 
   // Customer link
   customerId         String?
@@ -164,6 +165,7 @@ model Order {
   lineItems          OrderLineItem[]
 
   @@index([customerId, processedAt])
+  @@index([shopifyCustomerId]) // NEW: speeds up backfill relinking
 }
 
 model OrderLineItem {
@@ -179,7 +181,7 @@ model OrderLineItem {
   variantTitle      String?
   sku               String?
 
-  // NEW: vendor captured from Shopify line_items[].vendor
+  // vendor captured from Shopify line_items[].vendor
   productVendor     String?
 
   quantity          Int      @default(1)
