@@ -1,5 +1,6 @@
 // app/api/shopify/webhooks/route.ts
 import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 import {
   verifyShopifyHmac,
   upsertCustomerFromShopify,
@@ -14,6 +15,20 @@ const EXPECTED_SHOP = (process.env.SHOPIFY_SHOP_DOMAIN || "").toLowerCase();
 function ok(text = "ok", code = 200) { return new NextResponse(text, { status: code }); }
 function bad(msg: string, code = 400) { console.error(msg); return new NextResponse(msg, { status: code }); }
 
+// --- helper: extract vendor from product payload and upsert into StockedBrand
+async function upsertStockedBrandFromProductPayload(payload: any) {
+  const product = payload?.product ?? payload;
+  const vendor = (product?.vendor || "").toString().trim();
+  if (!vendor) return null;
+
+  await prisma.stockedBrand.upsert({
+    where: { name: vendor },
+    update: {},
+    create: { name: vendor },
+  });
+  return vendor;
+}
+
 export async function GET() { return ok(); }
 
 export async function POST(req: Request) {
@@ -21,8 +36,10 @@ export async function POST(req: Request) {
   const shop  = (req.headers.get("x-shopify-shop-domain") || "").toLowerCase();
   const hmac  = req.headers.get("x-shopify-hmac-sha256");
 
+  // 1) raw body
   const raw = await req.arrayBuffer();
 
+  // 2) HMAC verify
   const valid = verifyShopifyHmac(raw, hmac);
   if (!valid) {
     return bad(`Shopify webhook HMAC failed { topic: '${topic}', shopDomain: '${shop}' }`, 401);
@@ -32,6 +49,7 @@ export async function POST(req: Request) {
     return bad(`Unexpected shop domain '${shop}' (expected '${EXPECTED_SHOP}')`, 401);
   }
 
+  // 3) parse
   let body: any;
   try {
     body = JSON.parse(Buffer.from(raw).toString("utf8"));
@@ -40,6 +58,18 @@ export async function POST(req: Request) {
   }
 
   try {
+    // ───────── products → keep StockedBrand in sync (Option A) ─────────
+    if (topic === "products/create" || topic === "products/update") {
+      const vendor = await upsertStockedBrandFromProductPayload(body);
+      if (vendor) {
+        console.log(`[WEBHOOK] stocked brand upserted from ${topic}: "${vendor}"`);
+      } else {
+        console.log(`[WEBHOOK] ${topic} had no vendor, nothing to upsert`);
+      }
+      return ok();
+    }
+
+    // ───────── customers ─────────
     if (topic === "customers/create" || topic === "customers/update") {
       const customer = body?.customer ?? body;
       await upsertCustomerFromShopify(customer, shop);
@@ -47,6 +77,7 @@ export async function POST(req: Request) {
       return ok();
     }
 
+    // ───────── orders ─────────
     if (topic === "orders/create" || topic === "orders/updated") {
       const order = body?.order ?? body;
       await upsertOrderFromShopify(order, shop);
@@ -54,6 +85,7 @@ export async function POST(req: Request) {
       return ok();
     }
 
+    // Unknown/ignored topics still 200 so Shopify doesn't retry forever
     console.log(`[WEBHOOK] ignored topic '${topic}' from ${shop}`);
     return ok();
   } catch (err: any) {
@@ -61,4 +93,3 @@ export async function POST(req: Request) {
     return bad("Handler failed", 500);
   }
 }
-
