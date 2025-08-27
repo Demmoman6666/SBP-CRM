@@ -1,9 +1,10 @@
 // app/sales-hub/layout.tsx
-export const dynamic = "force-dynamic";
+import type { ReactNode } from "react";
 
-export default function SalesHubLayout({
-  children,
-}: { children: React.ReactNode }) {
-  // Segment layout, keeps things simple and guarantees a wrapper exists.
+export const dynamic = "force-dynamic";   // ensure the route always exists at runtime
+export const revalidate = 0;              // never cache the layout
+
+export default function SalesHubLayout({ children }: { children: ReactNode }) {
+  // minimal pass-through layout; MUST render {children}
   return <>{children}</>;
 }
