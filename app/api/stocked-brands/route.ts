@@ -5,31 +5,20 @@ import { shopifyRest } from "@/lib/shopify";
 
 export const dynamic = "force-dynamic";
 
+/* ---------- helpers ---------- */
+
 // Parse the Link header to get next page_info (Shopify REST pagination)
 function getNextPageInfo(linkHeader?: string | null): string | null {
   if (!linkHeader) return null;
-  // Example: <https://shop.myshopify.com/admin/api/2024-07/products.json?page_info=xxx&limit=250>; rel="next"
-  const parts = linkHeader.split(",");
-  for (const p of parts) {
-    const seg = p.trim();
-    if (seg.endsWith('rel="next"')) {
-      const m = seg.match(/<([^>]+)>/);
-      if (!m) continue;
-      try {
-        const url = new URL(m[1]);
-        const pi = url.searchParams.get("page_info");
-        if (pi) return pi;
-      } catch {}
-    }
-  }
-  return null;
+  // Example:
+  // <https://shop.myshopify.com/admin/api/2024-07/products.json?page_info=xxx&limit=250>; rel="next"
+  const m = linkHeader.match(/<[^>]*\bpage_info=([^&>]+)[^>]*>\s*;\s*rel="next"/i);
+  return m ? decodeURIComponent(m[1]) : null;
 }
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** GET: list stocked brands (for UI vendor filter) */
+/* ---------- GET: list stocked brands (for UI vendor filter) ---------- */
 export async function GET() {
   const brands = await prisma.stockedBrand.findMany({
     orderBy: { name: "asc" },
@@ -38,13 +27,23 @@ export async function GET() {
   return NextResponse.json({ vendors: brands.map((b) => b.name) });
 }
 
-/** POST: sync StockedBrand from Shopify products' vendor field */
+/* ---------- POST: sync StockedBrand from Shopify products' vendor field ---------- */
 export async function POST(req: Request) {
   const { searchParams } = new URL(req.url);
+
+  // rate control
   const rpm = Math.max(30, Math.min(Number(searchParams.get("rpm") || 120), 240)); // 30–240
   const delayMs = Math.ceil(60000 / rpm);
 
-  const vendors = new Set<string>();
+  // optional: clear and re-seed
+  const reset = (searchParams.get("reset") || "") === "1";
+  if (reset) {
+    await prisma.stockedBrand.deleteMany({});
+  }
+
+  // case-insensitive dedupe while preserving first-seen display case
+  const seenLowerToDisplay = new Map<string, string>();
+
   let pageInfo: string | null = null;
   let pages = 0;
   let productsSeen = 0;
@@ -53,8 +52,8 @@ export async function POST(req: Request) {
     pages++;
     const qp = new URLSearchParams();
     qp.set("limit", "250");
-    qp.set("fields", "id,vendor");
-    qp.set("status", "any"); // include active, draft, archived
+    qp.set("fields", "id,vendor");           // lean response
+    qp.set("published_status", "any");       // include published & unpublished
     if (pageInfo) qp.set("page_info", pageInfo);
 
     const res = await shopifyRest(`/products.json?${qp.toString()}`, { method: "GET" });
@@ -71,18 +70,23 @@ export async function POST(req: Request) {
     productsSeen += arr.length;
 
     for (const p of arr) {
-      const v = (p?.vendor || "").toString().trim();
-      if (v) vendors.add(v);
+      const raw = (p?.vendor ?? "").toString().trim();
+      if (!raw) continue;
+      const key = raw.toLowerCase();
+      if (!seenLowerToDisplay.has(key)) {
+        seenLowerToDisplay.set(key, raw); // preserve original case for display
+      }
     }
 
     const link = res.headers.get("Link");
     pageInfo = getNextPageInfo(link);
-    if (!pageInfo) break;
+    if (!pageInfo || arr.length === 0) break;
 
     await sleep(delayMs); // rate limit
   }
 
-  const names = Array.from(vendors).sort((a, b) => a.localeCompare(b));
+  const names = Array.from(seenLowerToDisplay.values()).sort((a, b) => a.localeCompare(b));
+
   if (names.length) {
     await prisma.stockedBrand.createMany({
       data: names.map((name) => ({ name })),
@@ -95,5 +99,6 @@ export async function POST(req: Request) {
     pages,
     productsSeen,
     vendorsFound: names.length,
+    resetApplied: reset,
   });
 }
