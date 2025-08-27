@@ -199,7 +199,6 @@ export async function upsertCustomerFromShopify(shop: any, _shopDomain: string) 
   const phone = shop.phone || addr.phone || null;
 
   const tags: string[] = parseShopifyTags(shop.tags);
-
   const mappedRep = await getSalesRepForTags(tags);
 
   // Safe fallbacks to satisfy non-null fields in your schema
@@ -314,6 +313,8 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
         variantId: li.variant_id ? String(li.variant_id) : null,
         variantTitle: li.variant_title ?? null,
         sku: li.sku ?? null,
+        // NEW: capture vendor for reporting
+        productVendor: li.vendor ?? null,
         quantity: qty,
         price: unit,
         total,
