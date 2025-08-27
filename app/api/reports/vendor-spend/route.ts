@@ -2,15 +2,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-/* ---------------- number/date helpers ---------------- */
-
+/* ---------- helpers ---------- */
 function toNum(v: any): number {
-  if (v == null) return 0;
-  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
-  try { return Number(v.toString()) || 0; } catch { return 0; }
+  const n = Number(v ?? 0);
+  return Number.isFinite(n) ? n : 0;
 }
 
-// accept dd/mm/yyyy or ISO-ish
+// parse "dd/mm/yyyy" or ISO-ish strings
 function parseDate(val?: string | null): Date | null {
   if (!val) return null;
   const s = String(val).trim();
@@ -25,169 +23,173 @@ function parseDate(val?: string | null): Date | null {
   const dt = new Date(s);
   return isNaN(dt.getTime()) ? null : dt;
 }
-const endOfDayUTC = (d: Date) =>
-  new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
 
-/* ---------------- vendor normalization ---------------- */
-
-function canon(s: string): string {
-  return s
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[’'`]/g, "'")
-    .replace(/&/g, "and")
-    .replace(/[^a-z0-9]+/g, "")
-    .trim();
+function endOfDayUTC(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
 }
 
-const CANON_TO_DISPLAY: Record<string, string> = (() => {
-  const map: Record<string, string> = {};
-  const add = (display: string, aliases: string[]) => {
-    for (const a of aliases) map[canon(a)] = display;
-  };
-
-  add("Goddess", ["Goddess"]);
-  add("MY.ORGANICS", ["MY.ORGANICS", "MY ORGANICS", "MyOrganics", "MY ORGANIC", "MYORGANICS"]);
-  add("Neal & Wolf", ["Neal & Wolf", "NEAL & WOLF", "Neal+Wolf", "Neal and Wolf", "NEAL AND WOLF"]);
-  add("Procare", ["Procare", "ProCare"]);
-  add("REF Stockholm", ["REF Stockholm", "REF", "REF. Stockholm", "REF. STOCKHOLM", "Ref Stockholm"]);
-
-  return map;
-})();
-
-function toDisplayVendor(raw?: string | null): string | null {
-  if (!raw) return null;
-  const c = canon(String(raw));
-  return CANON_TO_DISPLAY[c] ?? null;
+/** Normalize vendor for matching: trim → collapse spaces → uppercase. */
+function normVendor(s?: string | null): string {
+  if (!s) return "";
+  return s.trim().replace(/\s+/g, " ").toUpperCase();
 }
 
-/* ---------------- GET /api/reports/vendor-spend ---------------- */
+/** Pick the nicest display name for a normalized vendor. */
+function displayFor(norm: string, preferred: Record<string, string>, fallbackSeen?: Record<string, string>): string {
+  return preferred[norm] || fallbackSeen?.[norm] || norm;
+}
 
+/* ---------- GET /api/reports/vendor-spend ---------- */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  // support from/to or start/end
-  const from = parseDate(searchParams.get("from") || searchParams.get("start"));
-  const toRaw = parseDate(searchParams.get("to") || searchParams.get("end"));
-  const to = toRaw ? endOfDayUTC(toRaw) : null;
+  // filters
+  const start = parseDate(searchParams.get("start"));
+  const end   = parseDate(searchParams.get("end"));
 
-  // reps: support rep= & reps=a,b
-  const reps =
-    (searchParams.getAll("rep").length
-      ? searchParams.getAll("rep")
-      : (searchParams.get("reps") || "").split(","))
-      .map(s => s.trim())
-      .filter(Boolean);
+  // reps: either ?rep=a&rep=b ... or ?reps=a,b
+  const reps = (searchParams.getAll("rep").length
+    ? searchParams.getAll("rep")
+    : (searchParams.get("reps") || "").split(",")
+  ).map(s => s.trim()).filter(Boolean);
 
-  // vendors: support vendor= & vendors=a,b
-  const selectedVendors =
-    (searchParams.getAll("vendor").length
-      ? searchParams.getAll("vendor")
-      : (searchParams.get("vendors") || "").split(","))
-      .map(s => s.trim())
-      .filter(Boolean);
+  // vendors: either ?vendor=x&vendor=y ... or ?vendors=x,y  (these are DISPLAY names)
+  const selectedVendorNames = (searchParams.getAll("vendor").length
+    ? searchParams.getAll("vendor")
+    : (searchParams.get("vendors") || "").split(",")
+  ).map(s => s.trim()).filter(Boolean);
 
-  // build order where
-  const orderWhere: any = {};
-  if (from || to) {
-    orderWhere.processedAt = {};
-    if (from) orderWhere.processedAt.gte = from;
-    if (to)   orderWhere.processedAt.lte = to;
+  // Prisma where
+  const where: any = {};
+  if (start || end) {
+    where.processedAt = {};
+    if (start) (where.processedAt as any).gte = start;
+    if (end)   (where.processedAt as any).lte = endOfDayUTC(end);
   }
   if (reps.length) {
-    orderWhere.customer = { salesRep: { in: reps } };
+    where.customer = { salesRep: { in: reps } };
   }
 
-  // 1) Pull orders to get per-customer totals
+  // Load stocked brands to define our canonical vendor list (columns)
+  const stocked = await prisma.stockedBrand.findMany({
+    orderBy: { name: "asc" },
+    select: { name: true },
+  });
+
+  // Build maps for normalization => preferred display
+  const preferredDisplayByNorm: Record<string, string> = {};
+  for (const b of stocked) {
+    const n = normVendor(b.name);
+    if (n) preferredDisplayByNorm[n] = b.name; // keep original casing from StockedBrand
+  }
+
+  // Normalize the selected vendor filter to our codes
+  const selectedNorms = new Set(
+    selectedVendorNames.map(v => normVendor(v)).filter(Boolean)
+  );
+
+  // Pull orders + items
   const orders = await prisma.order.findMany({
-    where: orderWhere,
-    select: {
-      id: true,
-      customerId: true,
-      subtotal: true,
-      taxes: true,
-      total: true,
+    where,
+    orderBy: { processedAt: "asc" },
+    include: {
       customer: { select: { id: true, salonName: true, customerName: true, salesRep: true } },
+      lineItems: { select: {
+        productVendor: true,
+        quantity: true,
+        price: true,
+        total: true,
+      }},
     },
   });
 
+  // aggregate by customer
   type Row = {
     customerId: string;
     salonName: string;
     salesRep: string | null;
-    vendors: Record<string, number>;
+    perVendor: Record<string, number>; // keyed by NORMALIZED vendor
     subtotal: number;
     taxes: number;
     total: number;
   };
 
-  const perCustomer = new Map<string, Row>();
+  const rowsByCustomer = new Map<string, Row>();
+  const seenDisplayForNorm: Record<string, string> = {}; // if vendor not in StockedBrand, remember a nice fallback name
 
-  const ensureRow = (cid: string, salonName: string, salesRep: string | null) => {
-    if (!perCustomer.has(cid)) {
-      perCustomer.set(cid, {
+  for (const o of orders) {
+    if (!o.customer) continue;
+    const cid = o.customer.id;
+
+    // init row
+    let row = rowsByCustomer.get(cid);
+    if (!row) {
+      row = {
         customerId: cid,
-        salonName,
-        salesRep,
-        vendors: {},
+        salonName: o.customer.salonName || o.customer.customerName || "(Unnamed)",
+        salesRep: o.customer.salesRep || null,
+        perVendor: {},
         subtotal: 0,
         taxes: 0,
         total: 0,
-      });
+      };
+      rowsByCustomer.set(cid, row);
     }
-    return perCustomer.get(cid)!;
-  };
 
-  for (const o of orders) {
-    if (!o.customerId || !o.customer) continue;
-    const row = ensureRow(
-      o.customerId,
-      o.customer.salonName || o.customer.customerName || "(Unnamed)",
-      o.customer.salesRep || null
-    );
+    // money totals at order level
     row.subtotal += toNum(o.subtotal);
     row.taxes    += toNum(o.taxes);
     row.total    += toNum(o.total);
+
+    // vendor spend (line items)
+    for (const li of o.lineItems) {
+      const vRaw = (li.productVendor || "").trim();
+      if (!vRaw) continue;
+      const vNorm = normVendor(vRaw);
+
+      // respect vendor filter if provided (compare normalized)
+      if (selectedNorms.size && !selectedNorms.has(vNorm)) continue;
+
+      const lineTotal = toNum(li.total) || (toNum(li.price) * toNum(li.quantity || 1));
+      row.perVendor[vNorm] = (row.perVendor[vNorm] || 0) + lineTotal;
+
+      // remember a pretty display if this vendor isn't in StockedBrand
+      if (!preferredDisplayByNorm[vNorm]) {
+        // keep the first seen casing
+        if (!seenDisplayForNorm[vNorm]) seenDisplayForNorm[vNorm] = vRaw;
+      }
+    }
   }
 
-  // 2) Pull line items for vendor spend (normalized)
-  const liWhere: any = { order: orderWhere };
-  const lineItems = await prisma.orderLineItem.findMany({
-    where: liWhere,
-    select: {
-      total: true,
-      price: true,
-      quantity: true,
-      productVendor: true,
-      order: { select: { customerId: true, customer: { select: { salonName: true, salesRep: true } } } },
-    },
-  });
-
-  const selectedSet = new Set(
-    selectedVendors.length ? selectedVendors : ["Goddess", "MY.ORGANICS", "Neal & Wolf", "Procare", "REF Stockholm"]
-  );
-
-  for (const li of lineItems) {
-    const displayVendor = toDisplayVendor(li.productVendor as any);
-    if (!displayVendor) continue;
-    if (selectedVendors.length && !selectedSet.has(displayVendor)) continue;
-
-    const cid = li.order.customerId;
-    if (!cid || !li.order.customer) continue;
-
-    const row = ensureRow(cid, li.order.customer.salonName || "-", li.order.customer.salesRep || null);
-    const value = toNum(li.total) || (toNum(li.price) * (Number(li.quantity) || 0));
-    row.vendors[displayVendor] = (row.vendors[displayVendor] || 0) + value;
+  // Decide which vendor columns to return:
+  //  - If filter provided: exactly the filtered list (in the same order)
+  //  - Else: all Stocked Brands; and append any extra vendors present in orders but not in StockedBrand
+  let vendors: string[] = [];
+  if (selectedNorms.size) {
+    vendors = Array.from(selectedNorms).map(n => displayFor(n, preferredDisplayByNorm, seenDisplayForNorm));
+  } else {
+    const base = stocked.map(b => b.name);
+    const extras: string[] = [];
+    // discover any additional vendors present in data but not in StockedBrand
+    const presentNorms = new Set<string>();
+    for (const r of rowsByCustomer.values()) {
+      for (const vNorm of Object.keys(r.perVendor)) {
+        if (!preferredDisplayByNorm[vNorm]) presentNorms.add(vNorm);
+      }
+    }
+    for (const n of Array.from(presentNorms).sort()) {
+      extras.push(displayFor(n, preferredDisplayByNorm, seenDisplayForNorm));
+    }
+    vendors = [...base, ...extras];
   }
 
-  const VENDOR_COLUMNS = Array.from(selectedSet);
+  // final array (stable sort by salon name)
+  const rows = Array.from(rowsByCustomer.values())
+    .sort((a, b) => a.salonName.localeCompare(b.salonName));
 
-  const rows = Array.from(perCustomer.values()).sort((a, b) =>
-    (a.salonName || "").localeCompare(b.salonName || "", undefined, { sensitivity: "base" })
-  );
-
-  return NextResponse.json({
-    vendors: VENDOR_COLUMNS,
-    rows,
-  });
+  // Return vendors as DISPLAY names; rows.perVendor remains normalized keys.
+  // Your front-end should render with:
+  //   const colNorm = normVendor(displayVendorName);
+  //   value = row.perVendor[colNorm] ?? 0
+  return NextResponse.json({ vendors, rows });
 }
