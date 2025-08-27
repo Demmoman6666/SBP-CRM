@@ -1,124 +1,111 @@
 // app/api/users/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { cookies } from "next/headers";
-import { getUserByEmail, hashPassword } from "@/lib/auth";
-import type { Role, Permission } from "@prisma/client";
+import { getCurrentUser } from "@/lib/auth";
+import bcrypt from "bcryptjs";
+import type { Role } from "@prisma/client";
 
-export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function bad(error: string, status = 400) {
-  return NextResponse.json({ error }, { status });
+/** Simple role gates */
+function canViewUsers(role?: Role | null) {
+  return role === "ADMIN" || role === "MANAGER";
+}
+function canCreateUsers(role?: Role | null) {
+  return role === "ADMIN";
 }
 
-async function currentUser() {
-  const jar = cookies();
-  const email =
-    jar.get("sbp_email")?.value ??
-    jar.get("userEmail")?.value ??
-    "";
-  return email ? await getUserByEmail(email) : null;
-}
-
-function isManager(me: { role: Role; features?: Permission[] | null } | null) {
-  if (!me) return false;
-  if (me.role === "ADMIN") return true;
-  return !!me.features?.includes("MANAGE_USERS");
-}
-
-/**
- * POST /api/users
- * Body: { name, email, phone?, password, role? ("ADMIN"|"USER"), features?: Permission[] }
- */
-export async function POST(req: Request) {
-  const me = await currentUser();
-  if (!isManager(me)) return bad("Forbidden", 403);
-
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return bad("Invalid JSON");
-  }
-
-  const name = String(body.name || "").trim();
-  const email = String(body.email || "").trim().toLowerCase();
-  const phone = (String(body.phone || "").trim() || null) as string | null;
-  const password = String(body.password || "");
-  const role = (body.role as Role) || "USER";
-
-  // Accept a list of permissions; coerce to unique, valid strings
-  const rawFeatures = Array.isArray(body.features) ? body.features : [];
-  const features = Array.from(new Set(rawFeatures)).filter(Boolean) as Permission[];
-
-  if (!name) return bad("Name is required");
-  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return bad("Valid email is required");
-  if (password.length < 8) return bad("Password must be at least 8 characters");
-
-  const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) return bad("Email already in use", 409);
-
-  // Admins always get these capabilities
-  let finalFeatures = features;
-  if (role === "ADMIN") {
-    const set = new Set<Permission>([
-      ...features,
-      "VIEW_SETTINGS" as Permission,
-      "MANAGE_USERS" as Permission,
-    ]);
-    finalFeatures = Array.from(set);
-  }
-
-  const passwordHash = await hashPassword(password);
-
-  const user = await prisma.user.create({
-    data: {
-      name,
-      email,
-      phone,
-      role,
-      features: finalFeatures,
-      passwordHash,
-    },
-    select: { id: true, email: true, name: true, role: true, features: true, createdAt: true },
-  });
-
-  // Optional: audit trail (ignore failures)
-  try {
-    await prisma.auditLog.create({
-      data: {
-        userId: me!.id,
-        action: "CREATE_USER",
-        details: `Created user ${user.email} (${user.id})`,
-      },
-    });
-  } catch {}
-
-  return NextResponse.json({ ok: true, user });
-}
-
-/**
- * GET /api/users
- * List users (no password hashes). Restricted to managers.
+/** GET /api/users
+ *  List users (ADMIN & MANAGER)
  */
 export async function GET() {
-  const me = await currentUser();
-  if (!isManager(me)) return bad("Forbidden", 403);
+  const me = await getCurrentUser();
+  if (!me || !canViewUsers(me.role)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   const users = await prisma.user.findMany({
     orderBy: { createdAt: "desc" },
     select: {
       id: true,
-      name: true,
+      fullName: true,
       email: true,
       phone: true,
       role: true,
-      features: true,
+      isActive: true,
       createdAt: true,
       updatedAt: true,
     },
   });
 
-  return NextResponse.json({ users });
+  return NextResponse.json(users);
+}
+
+/** POST /api/users
+ *  Create a new user (ADMIN only)
+ *  Body: { fullName, email, phone?, password, role?, isActive? }
+ */
+export async function POST(req: Request) {
+  const me = await getCurrentUser();
+  if (!me || !canCreateUsers(me.role)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const fullName = String(body?.fullName ?? "").trim();
+  const email = String(body?.email ?? "").trim().toLowerCase();
+  const phone = (body?.phone ?? "").toString().trim() || null;
+  const password = String(body?.password ?? "").trim();
+  const role: Role = (["ADMIN", "MANAGER", "REP", "VIEWER"] as const).includes(
+    String(body?.role ?? "").toUpperCase() as Role
+  )
+    ? (String(body.role).toUpperCase() as Role)
+    : "VIEWER";
+  const isActive = typeof body?.isActive === "boolean" ? body.isActive : true;
+
+  if (!fullName || !email || !password) {
+    return NextResponse.json(
+      { error: "fullName, email and password are required" },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const created = await prisma.user.create({
+      data: {
+        fullName,
+        email,
+        phone,
+        passwordHash,
+        role,
+        isActive,
+      },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        phone: true,
+        role: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return NextResponse.json(created, { status: 201 });
+  } catch (e: any) {
+    // Unique email violation
+    if (e?.code === "P2002" && Array.isArray(e?.meta?.target) && e.meta.target.includes("email")) {
+      return NextResponse.json({ error: "Email is already in use" }, { status: 400 });
+    }
+    return NextResponse.json({ error: e?.message ?? "Create failed" }, { status: 400 });
+  }
 }
