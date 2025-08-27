@@ -1,266 +1,372 @@
-// app/reports/customers/drop-off/page.tsx
+// app/reports/customers/customer-dropoff/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-type Row = {
-  customerId: string;
-  salonName: string;
-  customerName: string | null;
-  salesRep: string | null;
-  lastOrderAt: string | null; // ISO
-  daysSince: number;          // Infinity if never
+/* ------------------------ tiny reusable multiselect ------------------------ */
+type MultiSelectProps = {
+  label: string;
+  options: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+  maxHeight?: number;
 };
 
-type ApiResponse = {
-  asOf: string;
-  days: number;
-  total: number;
-  rows: Row[];
-};
+function MultiSelect({
+  label,
+  options,
+  selected,
+  onChange,
+  placeholder = "Search…",
+  maxHeight = 260,
+}: MultiSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  // close on outside click
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!ref.current) return;
+      if (ref.current.contains(e.target as Node)) return;
+      setOpen(false);
+    }
+    if (open) document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    return s ? options.filter(o => o.toLowerCase().includes(s)) : options;
+  }, [options, q]);
+
+  const toggle = (opt: string) => {
+    const set = new Set(selected);
+    if (set.has(opt)) set.delete(opt); else set.add(opt);
+    onChange(Array.from(set));
+  };
+
+  return (
+    <div className="field" ref={ref}>
+      <label>{label}</label>
+      <div
+        className="row"
+        onClick={() => setOpen(v => !v)}
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+          padding: "6px 10px",
+          minHeight: 36,
+          cursor: "pointer",
+          flexWrap: "wrap",
+          gap: 6,
+          background: "var(--card)",
+        }}
+      >
+        {selected.length === 0 ? (
+          <span className="muted small">All reps</span>
+        ) : (
+          selected.map(s => (
+            <span
+              key={s}
+              className="tag"
+              onClick={(e) => { e.stopPropagation(); toggle(s); }}
+              style={{ userSelect: "none" }}
+            >
+              {s} ✕
+            </span>
+          ))
+        )}
+        <div style={{ marginLeft: "auto" }} className="small muted">▼</div>
+      </div>
+
+      {open && (
+        <div
+          className="card"
+          style={{
+            position: "absolute",
+            zIndex: 20,
+            marginTop: 4,
+            width: "100%",
+            border: "1px solid var(--border)",
+            borderRadius: 12,
+            padding: 8,
+            background: "var(--card)",
+          }}
+        >
+          <input
+            placeholder={placeholder}
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            className="small"
+            style={{
+              width: "100%",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              padding: "6px 8px",
+              marginBottom: 8,
+            }}
+          />
+          <div
+            style={{
+              maxHeight,
+              overflow: "auto",
+              display: "grid",
+              gap: 4,
+            }}
+          >
+            {filtered.length === 0 && (
+              <div className="small muted" style={{ padding: 6 }}>No matches</div>
+            )}
+            {filtered.map(opt => {
+              const checked = selected.includes(opt);
+              return (
+                <label
+                  key={opt}
+                  className="row"
+                  style={{ gap: 8, alignItems: "center", cursor: "pointer" }}
+                  onClick={() => toggle(opt)}
+                >
+                  <input type="checkbox" checked={checked} readOnly />
+                  <span>{opt}</span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
+            <button
+              type="button"
+              className="small"
+              onClick={() => onChange([])}
+              style={{ textDecoration: "underline" }}
+            >
+              Clear
+            </button>
+            <button type="button" className="primary small" onClick={() => setOpen(false)}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------- page / main component ---------------------------- */
 
 type Rep = { id: string; name: string };
 
-function fmtDate(iso?: string | null) {
-  if (!iso) return "— Never";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString();
-}
+type DropRow = {
+  customerId: string;
+  salonName: string;
+  salesRep: string | null;
+  lastOrderAt: string | null; // ISO
+  daysSince?: number;         // optional (compute if missing)
+};
 
-export default function CustomerDropOffPage() {
-  // Sales reps for filter
-  const [reps, setReps] = useState<Rep[]>([]);
+export default function CustomerDropOffReport() {
+  const [reps, setReps] = useState<string[]>([]);
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
+  const [thresholdDays, setThresholdDays] = useState<number>(7);
+  const [customDays, setCustomDays] = useState<string>("");
 
-  // Period controls
-  const [bucket, setBucket] = useState<"7" | "14" | "21" | "28" | "custom">("7");
-  const [customDays, setCustomDays] = useState<number>(30);
-
-  // Data
-  const [data, setData] = useState<ApiResponse | null>(null);
+  const [rows, setRows] = useState<DropRow[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Fetch reps on mount
+  // load reps
   useEffect(() => {
-    fetch("/api/sales-reps")
-      .then(r => r.json())
-      .then((arr: Rep[]) => setReps(arr))
-      .catch(() => setReps([]));
+    (async () => {
+      try {
+        const r = await fetch("/api/sales-reps").then(x => x.json());
+        const names: string[] = Array.isArray(r)
+          ? (r as Rep[]).map(s => s.name)
+          : (r?.map?.((s: Rep) => s.name) ?? []);
+        setReps(names.sort((a, b) => a.localeCompare(b)));
+      } catch {
+        setReps([]);
+      }
+    })();
   }, []);
 
-  const daysParam = useMemo(() => {
-    if (bucket === "custom") return Math.max(1, Math.floor(customDays || 1));
-    return Number(bucket);
-  }, [bucket, customDays]);
-
-  const queryAndLoad = async () => {
+  const fetchReport = async () => {
     setLoading(true);
     try {
       const qp = new URLSearchParams();
-      qp.set("bucket", bucket);
-      qp.set("days", String(daysParam));
-      if (selectedReps.length) qp.set("reps", selectedReps.join(","));
-      const res = await fetch(`/api/reports/customer-dropoff?${qp.toString()}`);
-      const json: ApiResponse = await res.json();
-      setData(json);
-    } catch {
-      setData({ asOf: new Date().toISOString(), days: daysParam, total: 0, rows: [] });
+      qp.set("thresholdDays", String(thresholdDays));
+      // send each rep as rep=, and also a comma-joined reps= for compatibility
+      if (selectedReps.length) {
+        selectedReps.forEach(r => qp.append("rep", r));
+        qp.set("reps", selectedReps.join(","));
+      }
+      const res = await fetch(`/api/reports/customer-dropoff?${qp.toString()}`, { cache: "no-store" });
+      const json = await res.json();
+      const data: DropRow[] = Array.isArray(json?.rows) ? json.rows : [];
+
+      // Ensure daysSince present
+      const withDays = data.map(d => {
+        if (typeof d.daysSince === "number") return d;
+        const last = d.lastOrderAt ? new Date(d.lastOrderAt) : null;
+        const days = last ? Math.floor((Date.now() - last.getTime()) / 86_400_000) : null;
+        return { ...d, daysSince: days ?? undefined };
+      });
+
+      // Stable sort by rep, then salon
+      withDays.sort((a, b) => {
+        const rA = (a.salesRep || "~").toLowerCase();
+        const rB = (b.salesRep || "~").toLowerCase();
+        if (rA !== rB) return rA.localeCompare(rB);
+        return (a.salonName || "").localeCompare(b.salonName || "");
+      });
+
+      setRows(withDays);
+    } catch (e) {
+      console.error("Drop-off fetch failed", e);
+      setRows([]);
     } finally {
       setLoading(false);
     }
   };
 
+  // initial load
   useEffect(() => {
-    queryAndLoad();
+    fetchReport();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // initial
+  }, []);
 
-  const onApply = (e: React.FormEvent) => {
-    e.preventDefault();
-    queryAndLoad();
+  // quick range handlers
+  const setQuick = (days: number) => {
+    setThresholdDays(days);
+    setCustomDays("");
   };
 
-  // Group rows by salesRep
+  const applyCustom = () => {
+    const n = Number(customDays);
+    if (Number.isFinite(n) && n > 0) {
+      setThresholdDays(Math.floor(n));
+    }
+  };
+
+  // refetch when filters change
+  useEffect(() => {
+    fetchReport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thresholdDays, JSON.stringify(selectedReps)]);
+
+  // Group by sales rep for display
   const groups = useMemo(() => {
-    const g = new Map<string, Row[]>();
-    if (!data) return g;
-    for (const r of data.rows) {
-      const key = r.salesRep || "Unassigned";
-      if (!g.has(key)) g.set(key, []);
-      g.get(key)!.push(r);
+    const m = new Map<string, DropRow[]>();
+    for (const r of rows) {
+      const key = r.salesRep || "(Unassigned)";
+      if (!m.has(key)) m.set(key, []);
+      m.get(key)!.push(r);
     }
-    // sort within groups by daysSince desc
-    for (const key of g.keys()) {
-      g.get(key)!.sort((a, b) => b.daysSince - a.daysSince);
-    }
-    return g;
-  }, [data]);
+    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [rows]);
+
+  const fmtDate = (iso?: string | null) => {
+    if (!iso) return "Never";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "Never";
+    return d.toLocaleDateString();
+  };
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
         <h1>Customer Drop-off</h1>
         <p className="small">
-          See which customers <b>haven't placed an order</b> within the selected window.
+          Customers who haven’t ordered in the selected period. Filter by Sales Rep.
         </p>
       </section>
 
       {/* Filters */}
-      <section className="card">
-        <form onSubmit={onApply} className="grid" style={{ gap: 12 }}>
-          <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
-            <div className="field">
-              <label>Period</label>
-              <div className="row" style={{ gap: 10 }}>
-                <label className="row" style={{ gap: 6 }}>
-                  <input
-                    type="radio"
-                    name="bucket"
-                    value="7"
-                    checked={bucket === "7"}
-                    onChange={() => setBucket("7")}
-                  />
-                  1 week
-                </label>
-                <label className="row" style={{ gap: 6 }}>
-                  <input
-                    type="radio"
-                    name="bucket"
-                    value="14"
-                    checked={bucket === "14"}
-                    onChange={() => setBucket("14")}
-                  />
-                  2 weeks
-                </label>
-                <label className="row" style={{ gap: 6 }}>
-                  <input
-                    type="radio"
-                    name="bucket"
-                    value="21"
-                    checked={bucket === "21"}
-                    onChange={() => setBucket("21")}
-                  />
-                  3 weeks
-                </label>
-                <label className="row" style={{ gap: 6 }}>
-                  <input
-                    type="radio"
-                    name="bucket"
-                    value="28"
-                    checked={bucket === "28"}
-                    onChange={() => setBucket("28")}
-                  />
-                  4 weeks
-                </label>
-                <label className="row" style={{ gap: 6 }}>
-                  <input
-                    type="radio"
-                    name="bucket"
-                    value="custom"
-                    checked={bucket === "custom"}
-                    onChange={() => setBucket("custom")}
-                  />
-                  Custom
-                </label>
-                {bucket === "custom" && (
-                  <input
-                    type="number"
-                    min={1}
-                    value={customDays}
-                    onChange={e => setCustomDays(Number(e.target.value))}
-                    style={{ width: 90 }}
-                    aria-label="Custom days"
-                  />
-                )}
-              </div>
-            </div>
+      <section className="card grid" style={{ gap: 12 }}>
+        <div className="grid grid-3" style={{ gap: 12 }}>
+          <MultiSelect
+            label="Sales Reps"
+            options={reps}
+            selected={selectedReps}
+            onChange={setSelectedReps}
+            placeholder="Filter reps…"
+          />
 
-            <div className="field" style={{ minWidth: 260 }}>
-              <label>Sales Reps</label>
-              <select
-                multiple
-                value={selectedReps}
-                onChange={e => {
-                  const opts = Array.from(e.target.selectedOptions).map(o => o.value);
-                  setSelectedReps(opts);
-                }}
-                size={Math.min(6, Math.max(3, reps.length))}
-              >
-                {reps.map(r => (
-                  <option key={r.id} value={r.name}>{r.name}</option>
-                ))}
-              </select>
-              <div className="form-hint">Hold Cmd/Ctrl to multi-select</div>
+          <div className="field">
+            <label>Quick Range</label>
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              <button type="button" className={thresholdDays === 7  ? "primary" : ""} onClick={() => setQuick(7)}>1 week</button>
+              <button type="button" className={thresholdDays === 14 ? "primary" : ""} onClick={() => setQuick(14)}>2 weeks</button>
+              <button type="button" className={thresholdDays === 21 ? "primary" : ""} onClick={() => setQuick(21)}>3 weeks</button>
+              <button type="button" className={thresholdDays === 28 ? "primary" : ""} onClick={() => setQuick(28)}>4 weeks</button>
             </div>
           </div>
 
-          <div className="right">
-            <button className="primary" type="submit" disabled={loading}>
-              {loading ? "Loading…" : "Apply Filters"}
-            </button>
+          <div className="field">
+            <label>Custom (days)</label>
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                value={customDays}
+                onChange={e => setCustomDays(e.target.value)}
+                placeholder="e.g. 45"
+                inputMode="numeric"
+                style={{ maxWidth: 120 }}
+              />
+              <button type="button" onClick={applyCustom}>Apply</button>
+            </div>
+            <div className="small muted" style={{ marginTop: 4 }}>
+              Current threshold: <b>{thresholdDays}</b> days
+            </div>
           </div>
-        </form>
+        </div>
+
+        <div className="right">
+          <button className="primary" type="button" onClick={fetchReport} disabled={loading}>
+            {loading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
       </section>
 
       {/* Results */}
       <section className="card">
-        <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
-          <div className="small">
-            Window: <b>{daysParam} days</b>
-            {data?.asOf && <> • As of {new Date(data.asOf).toLocaleString()}</>}
-          </div>
-          <div className="small">Total: <b>{data?.total ?? 0}</b></div>
-        </div>
+        {loading && <div className="small muted">Loading…</div>}
 
-        {!data || data.rows.length === 0 ? (
-          <p className="small">No customers match the selected criteria.</p>
-        ) : (
-          Array.from(groups.entries()).map(([rep, rows]) => (
-            <div key={rep} style={{ marginBottom: 16 }}>
-              <div className="row" style={{ justifyContent: "space-between", marginBottom: 6 }}>
-                <b>{rep}</b>
-                <span className="small">{rows.length} accounts</span>
-              </div>
+        {!loading && groups.length === 0 && (
+          <div className="small muted">No customers found for this filter.</div>
+        )}
 
-              <div
-                className="card"
-                style={{
-                  padding: 10,
-                  border: "1px solid var(--border)",
-                  display: "grid",
-                  rowGap: 8,
-                }}
-              >
-                {/* header */}
-                <div className="row small muted" style={{ fontWeight: 600 }}>
-                  <div style={{ flex: "0 0 280px" }}>Customer</div>
-                  <div style={{ flex: "0 0 150px" }}>Last order</div>
-                  <div style={{ flex: "0 0 110px" }}>Days since</div>
-                  <div style={{ flex: "1 1 auto" }}></div>
+        {!loading && groups.length > 0 && (
+          <div className="grid" style={{ gap: 16 }}>
+            {groups.map(([rep, list]) => (
+              <div key={rep} className="card" style={{ border: "1px solid var(--border)" }}>
+                <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+                  <h3>{rep}</h3>
+                  <div className="small muted">{list.length} customer{list.length === 1 ? "" : "s"}</div>
                 </div>
 
-                {rows.map(r => (
-                  <div key={r.customerId} className="row" style={{ alignItems: "center" }}>
-                    <div style={{ flex: "0 0 280px" }}>
-                      <Link href={`/customers/${r.customerId}`} className="link">
-                        {r.salonName}
-                      </Link>
-                      {r.customerName ? (
-                        <div className="small muted">{r.customerName}</div>
-                      ) : null}
+                <div style={{ borderTop: "1px solid var(--border)", marginTop: 8, paddingTop: 8 }}>
+                  {list.map((r) => (
+                    <div
+                      key={r.customerId}
+                      className="row"
+                      style={{
+                        justifyContent: "space-between",
+                        borderBottom: "1px solid var(--border)",
+                        padding: "8px 0",
+                      }}
+                    >
+                      <div style={{ minWidth: 240 }}>{r.salonName}</div>
+                      <div className="small muted" style={{ minWidth: 120, textAlign: "right" }}>
+                        Last order: {fmtDate(r.lastOrderAt)}
+                      </div>
+                      <div className="small" style={{ minWidth: 110, textAlign: "right" }}>
+                        {typeof r.daysSince === "number" ? `${r.daysSince} days` : "—"}
+                      </div>
                     </div>
-                    <div style={{ flex: "0 0 150px" }}>{fmtDate(r.lastOrderAt)}</div>
-                    <div style={{ flex: "0 0 110px" }}>
-                      {Number.isFinite(r.daysSince) ? r.daysSince : "∞"}
-                    </div>
-                    <div style={{ flex: "1 1 auto" }} />
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
       </section>
     </div>
