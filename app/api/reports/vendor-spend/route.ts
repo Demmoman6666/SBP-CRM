@@ -2,9 +2,19 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+
 /* ---------- helpers ---------- */
 function toNum(v: any): number {
-  const n = Number(v ?? 0);
+  // robust Number() for Prisma Decimal | string | null
+  if (v == null) return 0;
+  try {
+    // Prisma Decimal has toNumber()
+    if (typeof v === "object" && v !== null && "toNumber" in v && typeof (v as any).toNumber === "function") {
+      return Number((v as any).toNumber() ?? 0);
+    }
+  } catch {}
+  const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -14,12 +24,17 @@ function parseDate(val?: string | null): Date | null {
   const s = String(val).trim();
   if (!s) return null;
 
+  // dd/mm/yyyy
   const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (m) {
-    const d = Number(m[1]), mo = Number(m[2]) - 1, y = Number(m[3]);
+    const d = Number(m[1]),
+      mo = Number(m[2]) - 1,
+      y = Number(m[3]);
     const dt = new Date(Date.UTC(y, mo, d, 0, 0, 0));
     return isNaN(dt.getTime()) ? null : dt;
   }
+
+  // fallback to Date
   const dt = new Date(s);
   return isNaN(dt.getTime()) ? null : dt;
 }
@@ -28,15 +43,20 @@ function endOfDayUTC(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
 }
 
-/** Normalize vendor for matching: trim → collapse spaces → uppercase. */
-function normVendor(s?: string | null): string {
-  if (!s) return "";
-  return s.trim().replace(/\s+/g, " ").toUpperCase();
-}
-
-/** Pick the nicest display name for a normalized vendor. */
-function displayFor(norm: string, preferred: Record<string, string>, fallbackSeen?: Record<string, string>): string {
-  return preferred[norm] || fallbackSeen?.[norm] || norm;
+/** Normalize vendor names to a stable key:
+ *  - NFKC normalize
+ *  - lower-case
+ *  - collapse all non-alphanumerics to spaces
+ *  - collapse repeated spaces, trim
+ *  So: "MY.ORGANICS" -> "my organics", "REF  Stockholm" -> "ref stockholm"
+ */
+function normVendor(input: string): string {
+  return input
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /* ---------- GET /api/reports/vendor-spend ---------- */
@@ -45,61 +65,59 @@ export async function GET(req: Request) {
 
   // filters
   const start = parseDate(searchParams.get("start"));
-  const end   = parseDate(searchParams.get("end"));
+  const end = parseDate(searchParams.get("end"));
 
-  // reps: either ?rep=a&rep=b ... or ?reps=a,b
   const reps = (searchParams.getAll("rep").length
     ? searchParams.getAll("rep")
     : (searchParams.get("reps") || "").split(",")
-  ).map(s => s.trim()).filter(Boolean);
+  )
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  // vendors: either ?vendor=x&vendor=y ... or ?vendors=x,y  (these are DISPLAY names)
-  const selectedVendorNames = (searchParams.getAll("vendor").length
+  const selectedVendorsRaw = (searchParams.getAll("vendor").length
     ? searchParams.getAll("vendor")
     : (searchParams.get("vendors") || "").split(",")
-  ).map(s => s.trim()).filter(Boolean);
+  )
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  // Prisma where
+  // Load StockedBrand list to get canonical display names for vendors
+  const stocked = await prisma.stockedBrand.findMany({ select: { name: true } });
+  const canonicalByKey = new Map<string, string>(); // normKey -> Canonical Display
+  for (const b of stocked) {
+    const label = (b.name || "").trim();
+    if (!label) continue;
+    canonicalByKey.set(normVendor(label), label);
+  }
+
+  // Convert selected vendor labels -> normalized keys for server-side filtering
+  const selectedVendorKeys = new Set<string>(selectedVendorsRaw.map(normVendor));
+
+  // prisma where
   const where: any = {};
   if (start || end) {
     where.processedAt = {};
     if (start) (where.processedAt as any).gte = start;
-    if (end)   (where.processedAt as any).lte = endOfDayUTC(end);
+    if (end) (where.processedAt as any).lte = endOfDayUTC(end);
   }
   if (reps.length) {
     where.customer = { salesRep: { in: reps } };
   }
 
-  // Load stocked brands to define our canonical vendor list (columns)
-  const stocked = await prisma.stockedBrand.findMany({
-    orderBy: { name: "asc" },
-    select: { name: true },
-  });
-
-  // Build maps for normalization => preferred display
-  const preferredDisplayByNorm: Record<string, string> = {};
-  for (const b of stocked) {
-    const n = normVendor(b.name);
-    if (n) preferredDisplayByNorm[n] = b.name; // keep original casing from StockedBrand
-  }
-
-  // Normalize the selected vendor filter to our codes
-  const selectedNorms = new Set(
-    selectedVendorNames.map(v => normVendor(v)).filter(Boolean)
-  );
-
-  // Pull orders + items
+  // pull orders + items
   const orders = await prisma.order.findMany({
     where,
     orderBy: { processedAt: "asc" },
     include: {
       customer: { select: { id: true, salonName: true, customerName: true, salesRep: true } },
-      lineItems: { select: {
-        productVendor: true,
-        quantity: true,
-        price: true,
-        total: true,
-      }},
+      lineItems: {
+        select: {
+          productVendor: true,
+          quantity: true,
+          price: true,
+          total: true,
+        },
+      },
     },
   });
 
@@ -108,20 +126,19 @@ export async function GET(req: Request) {
     customerId: string;
     salonName: string;
     salesRep: string | null;
-    perVendor: Record<string, number>; // keyed by NORMALIZED vendor
+    perVendor: Record<string, number>; // keys are *display labels*
     subtotal: number;
     taxes: number;
     total: number;
   };
 
   const rowsByCustomer = new Map<string, Row>();
-  const seenDisplayForNorm: Record<string, string> = {}; // if vendor not in StockedBrand, remember a nice fallback name
+  const vendorUniverseLabels = new Set<string>(); // display labels we actually encountered
 
   for (const o of orders) {
     if (!o.customer) continue;
     const cid = o.customer.id;
 
-    // init row
     let row = rowsByCustomer.get(cid);
     if (!row) {
       row = {
@@ -136,60 +153,45 @@ export async function GET(req: Request) {
       rowsByCustomer.set(cid, row);
     }
 
-    // money totals at order level
+    // order-level money
     row.subtotal += toNum(o.subtotal);
-    row.taxes    += toNum(o.taxes);
-    row.total    += toNum(o.total);
+    row.taxes += toNum(o.taxes);
+    row.total += toNum(o.total);
 
-    // vendor spend (line items)
+    // vendor spend (normalize & align to canonical labels)
     for (const li of o.lineItems) {
-      const vRaw = (li.productVendor || "").trim();
-      if (!vRaw) continue;
-      const vNorm = normVendor(vRaw);
+      const raw = (li.productVendor || "").trim();
+      if (!raw) continue;
 
-      // respect vendor filter if provided (compare normalized)
-      if (selectedNorms.size && !selectedNorms.has(vNorm)) continue;
+      const key = normVendor(raw);
+      if (!key) continue;
 
-      const lineTotal = toNum(li.total) || (toNum(li.price) * toNum(li.quantity || 1));
-      row.perVendor[vNorm] = (row.perVendor[vNorm] || 0) + lineTotal;
+      // if the user selected vendors, only include matching keys
+      if (selectedVendorKeys.size && !selectedVendorKeys.has(key)) continue;
 
-      // remember a pretty display if this vendor isn't in StockedBrand
-      if (!preferredDisplayByNorm[vNorm]) {
-        // keep the first seen casing
-        if (!seenDisplayForNorm[vNorm]) seenDisplayForNorm[vNorm] = vRaw;
-      }
+      // choose display label: prefer StockedBrand canonical; otherwise use first-seen raw label
+      const label = canonicalByKey.get(key) || raw;
+
+      const lineTotal = toNum(li.total) || toNum(li.price) * toNum(li.quantity || 1);
+      row.perVendor[label] = (row.perVendor[label] || 0) + lineTotal;
+      vendorUniverseLabels.add(label);
     }
   }
 
-  // Decide which vendor columns to return:
-  //  - If filter provided: exactly the filtered list (in the same order)
-  //  - Else: all Stocked Brands; and append any extra vendors present in orders but not in StockedBrand
-  let vendors: string[] = [];
-  if (selectedNorms.size) {
-    vendors = Array.from(selectedNorms).map(n => displayFor(n, preferredDisplayByNorm, seenDisplayForNorm));
+  // Which vendor columns to show
+  // If user selected vendors: show them (using canonical labels where possible)
+  // Otherwise: show every label we discovered in this result set (sorted)
+  let vendors: string[];
+  if (selectedVendorsRaw.length) {
+    vendors = selectedVendorsRaw
+      .map((v) => canonicalByKey.get(normVendor(v)) || v)
+      .filter((v, i, a) => a.indexOf(v) === i);
   } else {
-    const base = stocked.map(b => b.name);
-    const extras: string[] = [];
-    // discover any additional vendors present in data but not in StockedBrand
-    const presentNorms = new Set<string>();
-    for (const r of rowsByCustomer.values()) {
-      for (const vNorm of Object.keys(r.perVendor)) {
-        if (!preferredDisplayByNorm[vNorm]) presentNorms.add(vNorm);
-      }
-    }
-    for (const n of Array.from(presentNorms).sort()) {
-      extras.push(displayFor(n, preferredDisplayByNorm, seenDisplayForNorm));
-    }
-    vendors = [...base, ...extras];
+    vendors = Array.from(vendorUniverseLabels).sort((a, b) => a.localeCompare(b));
   }
 
-  // final array (stable sort by salon name)
-  const rows = Array.from(rowsByCustomer.values())
-    .sort((a, b) => a.salonName.localeCompare(b.salonName));
+  // final rows sorted by salon name
+  const rows = Array.from(rowsByCustomer.values()).sort((a, b) => a.salonName.localeCompare(b.salonName));
 
-  // Return vendors as DISPLAY names; rows.perVendor remains normalized keys.
-  // Your front-end should render with:
-  //   const colNorm = normVendor(displayVendorName);
-  //   value = row.perVendor[colNorm] ?? 0
   return NextResponse.json({ vendors, rows });
 }
