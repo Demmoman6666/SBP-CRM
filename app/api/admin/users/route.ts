@@ -6,12 +6,12 @@ import { Permission, Role } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 
-async function requireAdmin() {
+async function requireAdmin(): Promise<NextResponse | null> {
   const me = await getCurrentUser();
   if (!me || me.role !== "ADMIN") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  return null as const;
+  return null;
 }
 
 function coerceRole(input: any): Role {
@@ -32,10 +32,8 @@ export async function GET() {
 
   const users = await prisma.user.findMany({
     orderBy: { createdAt: "desc" },
-    // Avoid `select` including 'features' to keep TS happy in case of schema drift.
   });
 
-  // Shape safe payload (no passwordHash)
   return NextResponse.json(
     users.map((u) => ({
       id: u.id,
@@ -86,7 +84,6 @@ export async function POST(req: Request) {
         features,
         passwordHash,
       },
-      // no `select`—we'll shape the response below
     });
 
     return NextResponse.json(
