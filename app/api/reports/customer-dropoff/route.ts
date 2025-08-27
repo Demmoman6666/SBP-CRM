@@ -4,11 +4,35 @@ import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
+/* ---------- small helpers ---------- */
 function parseIntStrict(v: any, dflt: number) {
   const n = Number(v);
   return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : dflt;
 }
 
+function csvEscape(s: any): string {
+  const raw = s == null ? "" : String(s);
+  return /[",\n]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
+}
+
+function wantsCSV(req: Request, sp: URLSearchParams) {
+  if ((sp.get("format") || "").toLowerCase() === "csv") return true;
+  if (sp.get("csv") === "1") return true;
+  const accept = (req.headers.get("accept") || "").toLowerCase();
+  return accept.includes("text/csv");
+}
+
+function ymd(d?: Date | string | null): string {
+  if (!d) return "";
+  const dt = typeof d === "string" ? new Date(d) : d;
+  if (isNaN(dt.getTime())) return "";
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const da = String(dt.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${da}`;
+}
+
+/* ---------- GET /api/reports/customer-dropoff ---------- */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
@@ -43,14 +67,27 @@ export async function GET(req: Request) {
       createdAt: true,
     },
   });
+
   const ids = customers.map(c => c.id);
   if (ids.length === 0) {
-    return NextResponse.json({
-      asOf: new Date().toISOString(),
-      days,
-      total: 0,
-      rows: [],
-    });
+    // no customers -> early return (CSV or JSON)
+    if (!wantsCSV(req, searchParams)) {
+      return NextResponse.json({
+        asOf: new Date().toISOString(),
+        days,
+        total: 0,
+        rows: [],
+      });
+    } else {
+      const header = ["Salon Name", "Customer Name", "Sales Rep", "Last Order", "Days Since"];
+      return new NextResponse(header.join("\n"), {
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": 'attachment; filename="customer-dropoff.csv"',
+          "Cache-Control": "no-store",
+        },
+      });
+    }
   }
 
   // Last order per customer (groupBy _max.processedAt)
@@ -84,7 +121,7 @@ export async function GET(req: Request) {
         daysSince,
       };
     })
-    .filter(r => r.daysSince >= days); // "hasn't ordered in the last X days"
+    .filter(r => r.daysSince >= days);
 
   // Stable sort: most overdue first, then salon
   rows.sort((a, b) => {
@@ -92,10 +129,38 @@ export async function GET(req: Request) {
     return b.daysSince - a.daysSince;
   });
 
-  return NextResponse.json({
-    asOf: new Date().toISOString(),
-    days,
-    total: rows.length,
-    rows,
+  // ---------- JSON (default) ----------
+  if (!wantsCSV(req, searchParams)) {
+    return NextResponse.json({
+      asOf: new Date().toISOString(),
+      days,
+      total: rows.length,
+      rows,
+    });
+  }
+
+  // ---------- CSV (when requested) ----------
+  const header = ["Salon Name", "Customer Name", "Sales Rep", "Last Order", "Days Since"];
+  const lines: string[] = [header.join(",")];
+
+  for (const r of rows) {
+    const lastOut = r.lastOrderAt ? ymd(r.lastOrderAt) : "Never";
+    // Avoid serializing Infinity in CSV (put blank or "N/A")
+    const daysOut = Number.isFinite(r.daysSince) ? String(r.daysSince) : "";
+    lines.push([
+      csvEscape(r.salonName),
+      csvEscape(r.customerName ?? ""),
+      csvEscape(r.salesRep ?? ""),
+      csvEscape(lastOut),
+      csvEscape(daysOut),
+    ].join(","));
+  }
+
+  return new NextResponse(lines.join("\n"), {
+    headers: {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": 'attachment; filename="customer-dropoff.csv"',
+      "Cache-Control": "no-store",
+    },
   });
 }
