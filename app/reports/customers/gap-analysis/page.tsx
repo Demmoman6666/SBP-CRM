@@ -46,7 +46,7 @@ function vendorSpendCsvHref({
   return `/api/reports/vendor-spend?${qs.toString()}`;
 }
 
-/** Lightweight multi-select dropdown with checkboxes + prominent “All (N)” bubble */
+/** Multi-select with a prominent “All N” pill summary */
 function MultiSelect({
   label,
   options,
@@ -79,28 +79,26 @@ function MultiSelect({
     return options.filter((o) => o.toLowerCase().includes(s));
   }, [options, q]);
 
-  // Summary with a **prominent** bubble when “all” are selected
+  // Summary: show a single white bordered pill like your date inputs
   let summary: React.ReactNode;
   if (value.length === 0) {
     summary = <span className="muted">{placeholder}</span>;
   } else if (value.length === options.length) {
     summary = (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontWeight: 600 }}>All</span>
-        <span
-          className="chip"
-          // make the count look like a bold chip; pointer events off so clicking anywhere opens the menu
-          style={{
-            padding: "2px 10px",
-            height: 24,
-            lineHeight: "20px",
-            fontWeight: 700,
-            pointerEvents: "none",
-          }}
-          aria-label={`Total ${options.length}`}
-        >
-          {options.length}
-        </span>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "2px 10px",
+          border: "1px solid var(--border)",
+          borderRadius: 999,
+          background: "#fff",
+          fontWeight: 700,
+          lineHeight: "20px",
+        }}
+      >
+        All <span>{options.length}</span>
       </span>
     );
   } else {
