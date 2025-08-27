@@ -274,6 +274,8 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
       shopifyOrderId: orderId,
       shopifyOrderNumber: order.order_number ?? null,
       shopifyName: order.name ?? null,
+      /** NEW: store who placed it */
+      shopifyCustomerId: custShopId ?? null,
       customerId: linkedCustomer ? linkedCustomer.id : null,
       processedAt: order.processed_at
         ? new Date(order.processed_at)
@@ -292,6 +294,8 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
     update: {
       shopifyOrderNumber: order.order_number ?? null,
       shopifyName: order.name ?? null,
+      /** NEW: keep in sync */
+      shopifyCustomerId: custShopId ?? null,
       customerId: linkedCustomer ? linkedCustomer.id : null,
       processedAt: order.processed_at
         ? new Date(order.processed_at)
