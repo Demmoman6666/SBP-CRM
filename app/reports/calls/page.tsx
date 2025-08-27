@@ -34,18 +34,20 @@ function lastMonthFirst(d: Date) { return new Date(d.getFullYear(), d.getMonth()
 function lastMonthLast(d: Date) { const firstThis = new Date(d.getFullYear(), d.getMonth(), 1); return addDaysLocal(firstThis, -1); }
 function ytdFirst(d: Date) { return new Date(d.getFullYear(), 0, 1); }
 
-// Small “chip” button (subtle, wraps well)
-function Chip(props: { onClick: () => void; children: React.ReactNode; title?: string }) {
+// Small “chip” button
+function Chip(props: { onClick: () => void; children: React.ReactNode; title?: string; disabled?: boolean }) {
   return (
     <button
       className="btn"
       onClick={props.onClick}
       title={props.title}
+      disabled={props.disabled}
       style={{
         padding: "6px 10px",
         borderRadius: 999,
         border: "1px solid var(--border)",
         background: "#fff",
+        opacity: props.disabled ? 0.6 : 1,
       }}
     >
       {props.children}
@@ -126,13 +128,32 @@ export default function CallReportPage() {
 
   const lastUpdated = data?.generatedAt ? new Date(data.generatedAt).toLocaleString() : "—";
 
-  // CSV export href
+  // CSV export URL + forced download helper
   const csvHref = useMemo(() => {
-    const qs = new URLSearchParams({ from, to });
+    const qs = new URLSearchParams({ from, to, format: "csv" });
     if (repFilter) qs.set("staff", repFilter);
-    qs.set("format", "csv");
     return `/api/reports/calls?${qs.toString()}`;
   }, [from, to, repFilter]);
+
+  async function downloadCsv() {
+    try {
+      const res = await fetch(csvHref, { cache: "no-store" });
+      const text = await res.text();
+      const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const repPart = repFilter ? `_${repFilter.replace(/\s+/g, "-")}` : "";
+      a.href = url;
+      a.download = `call-report_${from}_to_${to}${repPart}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      // fall back: just navigate to the CSV
+      window.open(csvHref, "_blank");
+    }
+  }
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -142,26 +163,12 @@ export default function CallReportPage() {
           <h1 style={{ margin: 0 }}>Call Report</h1>
           <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <div className="small muted">Last updated: <b>{lastUpdated}</b></div>
-            <Chip onClick={() => load()} title="Refresh now">
+            <Chip onClick={() => load()} title="Refresh now" disabled={loading}>
               {loading ? "Refreshing…" : "Refresh"}
             </Chip>
-            {/* Export CSV styled like a chip */}
-            <a
-              href={csvHref}
-              target="_blank"
-              rel="noopener"
-              className="btn"
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid var(--border)",
-                background: "#fff",
-                textDecoration: "none",
-              }}
-              title="Download CSV"
-            >
+            <Chip onClick={downloadCsv} title="Download CSV">
               Export CSV
-            </a>
+            </Chip>
           </div>
         </div>
 
