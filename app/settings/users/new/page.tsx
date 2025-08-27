@@ -12,8 +12,10 @@ const PERMISSIONS = [
 ] as const;
 type Permission = typeof PERMISSIONS[number];
 
-export const dynamic = "force-static";
-export const revalidate = 1;
+// 🔧 Page/segment config (fix build error + disable caching)
+export const dynamic = "force-dynamic";
+export const revalidate = false;
+export const fetchCache = "force-no-store";
 
 export default function NewUserPage() {
   const [name, setName] = useState("");
