@@ -1,11 +1,24 @@
 // components/ProfitCalculator.tsx
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-/** ------- Demo data (edit to suit your brands/products/prices) ------- */
-type Product = { id: string; name: string; cost: number; rrp: number };
-type Brand = { id: string; name: string; products: Product[] };
+/* ─────────────────────────────
+   Data (brands, products, prices)
+   ───────────────────────────── */
+
+type Product = {
+  id: string;
+  name: string;
+  cost: number; // salon cost (excl VAT)
+  rrp: number;  // retail price (incl VAT if you price it that way)
+};
+
+type Brand = {
+  id: string;
+  name: string;
+  products: Product[];
+};
 
 const CATALOGUE: Brand[] = [
   {
@@ -17,237 +30,294 @@ const CATALOGUE: Brand[] = [
     ],
   },
   {
-    id: "neal-wolf",
-    name: "Neal & Wolf",
+    id: "goddess",
+    name: "Goddess Maintenance Company",
     products: [
-      { id: "nw-gift",  name: "Neal & Wolf Gift Set", cost: 22.00, rrp: 44.00 },
-      { id: "nw-oil",   name: "Neal & Wolf Velvet Oil", cost: 10.00, rrp: 19.99 },
-    ],
-  },
-  {
-    id: "procare",
-    name: "Procare",
-    products: [
-      { id: "pc-foil", name: "Procare Foil 100m", cost: 5.40, rrp: 9.99 },
+      {
+        id: "goddess-mask-50",
+        name: "Goddess Leave in Restorative Hair Mask 50ml",
+        cost: 15.00,
+        rrp: 30.00,
+      },
     ],
   },
   {
     id: "my-organics",
     name: "MY.ORGANICS",
     products: [
-      { id: "myo-mask", name: "MY.O Mask 250ml", cost: 12.50, rrp: 24.00 },
-    ],
-  },
-  {
-    id: "goddess",
-    name: "Goddess Maintenance Company",
-    products: [
-      { id: "gmc-scrub", name: "Scalp Scrub 200ml", cost: 8.50, rrp: 16.00 },
+      { id: "myo-shampoo-250",     name: "MY.ORGANICS Shampoo 250ml",     cost: 10.45, rrp: 20.99 },
+      { id: "myo-conditioner-250", name: "MY.ORGANICS Conditioner 250ml", cost: 11.20, rrp: 21.99 },
     ],
   },
 ];
 
-/** ------- helpers ------- */
-const fmtMoney = (n: number) =>
-  new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(n);
+/* ─────────────────────────────
+   Helpers
+   ───────────────────────────── */
 
-const toNum = (v: any) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-};
+function fmtMoney(n: number): string {
+  if (!Number.isFinite(n)) return "£0.00";
+  return n < 0
+    ? `-£${Math.abs(n).toFixed(2)}`
+    : `£${n.toFixed(2)}`;
+}
+
+function clampNum(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+/* ─────────────────────────────
+   Component
+   ───────────────────────────── */
 
 export default function ProfitCalculator() {
-  const [brandId, setBrandId] = useState<string>(CATALOGUE[0]?.id ?? "");
-  const products = useMemo(() => CATALOGUE.find(b => b.id === brandId)?.products ?? [], [brandId]);
+  // selections
+  const [brandId, setBrandId] = useState<string>(CATALOGUE[0]?.id || "");
+  const selectedBrand = useMemo(
+    () => CATALOGUE.find((b) => b.id === brandId) || CATALOGUE[0],
+    [brandId]
+  );
 
-  const [productId, setProductId] = useState<string>(products[0]?.id ?? "");
-  // pricing (editable – auto-fills when product changes)
-  const [salonCost, setSalonCost] = useState<string>("");
-  const [salonRrp, setSalonRrp] = useState<string>("");
+  const [productId, setProductId] = useState<string>(
+    selectedBrand?.products[0]?.id || ""
+  );
+  const selectedProduct = useMemo(
+    () => selectedBrand?.products.find((p) => p.id === productId) || selectedBrand?.products[0],
+    [selectedBrand, productId]
+  );
+
+  // pricing (editable, autopopulates from selected product)
+  const [cost, setCost] = useState<number>(selectedProduct?.cost ?? 0);
+  const [rrp, setRrp] = useState<number>(selectedProduct?.rrp ?? 0);
 
   // salon inputs
-  const [days, setDays] = useState<string>("5");
-  const [stylists, setStylists] = useState<string>("1");
-  const [perStylistPerDay, setPerStylistPerDay] = useState<string>("1");
+  const [days, setDays] = useState<number>(5);
+  const [stylists, setStylists] = useState<number>(1);
+  const [unitsPerStylistPerDay, setUnitsPerStylistPerDay] = useState<number>(1);
 
-  // calculated
-  const [didCalc, setDidCalc] = useState(false);
-  const [units, setUnits] = useState(0);
-  const [revenue, setRevenue] = useState(0);
-  const [cost, setCost] = useState(0);
-  const [profit, setProfit] = useState(0);
+  // results
+  const [calculated, setCalculated] = useState<{
+    unitsPerDay: number;
+    totalUnits: number;
+    totalCost: number;
+    revenue: number;
+    profit: number;
+  } | null>(null);
 
-  // when brand changes, reset product to first of that brand
-  function onBrandChange(id: string) {
-    setBrandId(id);
-    const first = (CATALOGUE.find(b => b.id === id)?.products ?? [])[0];
-    if (first) {
-      setProductId(first.id);
-      setSalonCost(first.cost.toString());
-      setSalonRrp(first.rrp.toString());
-    } else {
-      setProductId("");
-      setSalonCost("");
-      setSalonRrp("");
-    }
-    setDidCalc(false);
-  }
+  // when brand changes, jump to first product
+  useEffect(() => {
+    const first = selectedBrand?.products[0];
+    if (!first) return;
+    setProductId(first.id);
+    setCost(first.cost);
+    setRrp(first.rrp);
+  }, [selectedBrand]);
 
-  // when product changes, auto-fill pricing
-  function onProductChange(id: string) {
-    setProductId(id);
-    const p = products.find(p => p.id === id);
-    if (p) {
-      setSalonCost(p.cost.toString());
-      setSalonRrp(p.rrp.toString());
-    }
-    setDidCalc(false);
-  }
+  // when product changes, auto-populate price fields
+  useEffect(() => {
+    if (!selectedProduct) return;
+    setCost(selectedProduct.cost);
+    setRrp(selectedProduct.rrp);
+  }, [selectedProduct]);
 
-  // initialise default pricing for first mount
-  useMemo(() => {
-    if (!salonCost && !salonRrp && products[0]) {
-      setProductId(products[0].id);
-      setSalonCost(products[0].cost.toString());
-      setSalonRrp(products[0].rrp.toString());
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const unitProfit = Math.max(0, (rrp ?? 0) - (cost ?? 0));
 
-  const perUnitProfit = Math.max(0, toNum(salonRrp) - toNum(salonCost));
+  function onCalculate() {
+    const d = clampNum(Math.floor(Number(days) || 0), 0, 365);
+    const s = clampNum(Math.floor(Number(stylists) || 0), 0, 500);
+    const u = clampNum(Number(unitsPerStylistPerDay) || 0, 0, 1_000);
 
-  function calculate() {
-    const d = Math.max(0, Math.floor(toNum(days)));
-    const s = Math.max(0, Math.floor(toNum(stylists)));
-    const u = Math.max(0, toNum(perStylistPerDay));
+    const unitsPerDay = s * u;
+    const totalUnits = unitsPerDay * d;
 
-    const totalUnits = d * s * u;
-    const totalRevenue = totalUnits * toNum(salonRrp);
-    const totalCost = totalUnits * toNum(salonCost);
-    const totalProfit = totalRevenue - totalCost;
+    const totalCost = totalUnits * (Number(cost) || 0);
+    const revenue = totalUnits * (Number(rrp) || 0);
+    const profit = revenue - totalCost;
 
-    setUnits(totalUnits);
-    setRevenue(totalRevenue);
-    setCost(totalCost);
-    setProfit(totalProfit);
-    setDidCalc(true);
+    setCalculated({ unitsPerDay, totalUnits, totalCost, revenue, profit });
   }
 
   return (
-    <div className="grid" style={{ gap: 12 }}>
-      {/* top grid */}
-      <div className="grid grid-2" style={{ gap: 12 }}>
+    <div className="grid" style={{ gap: 16 }}>
+      {/* Top two cards */}
+      <div
+        className="grid"
+        style={{
+          gap: 16,
+          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+          alignItems: "start",
+        }}
+      >
         {/* Product & Pricing */}
-        <div className="card">
-          <b>Product &amp; Pricing</b>
+        <section className="card">
+          <h3>Product &amp; Pricing</h3>
 
-          <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+          {/* Brand */}
+          <div style={{ marginTop: 12 }}>
             <label>Brand</label>
-            <select value={brandId} onChange={e => onBrandChange(e.target.value)}>
-              {CATALOGUE.map(b => (
-                <option key={b.id} value={b.id}>{b.name}</option>
+            <select
+              value={brandId}
+              onChange={(e) => setBrandId(e.target.value)}
+            >
+              {CATALOGUE.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
               ))}
             </select>
+          </div>
 
+          {/* Product */}
+          <div style={{ marginTop: 10 }}>
             <label>Product (by brand)</label>
-            <select value={productId} onChange={e => onProductChange(e.target.value)}>
-              {products.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
+            <select
+              value={productId}
+              onChange={(e) => setProductId(e.target.value)}
+            >
+              {selectedBrand?.products.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
               ))}
             </select>
+          </div>
 
-            <div className="row" style={{ gap: 8 }}>
-              <div style={{ flex: 1 }}>
-                <label>Salon Cost</label>
-                <input
-                  inputMode="decimal"
-                  value={salonCost}
-                  onChange={e => setSalonCost(e.target.value)}
-                  placeholder="e.g., 27.10"
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label>Salon RRP</label>
-                <input
-                  inputMode="decimal"
-                  value={salonRrp}
-                  onChange={e => setSalonRrp(e.target.value)}
-                  placeholder="e.g., 49.99"
-                />
-              </div>
+          {/* Prices */}
+          <div
+            className="row"
+            style={{ gap: 10, marginTop: 10, alignItems: "flex-end" }}
+          >
+            <div style={{ flex: 1 }}>
+              <label>Salon Cost</label>
+              <input
+                type="number"
+                step="0.01"
+                value={cost}
+                onChange={(e) => setCost(Number(e.target.value))}
+                placeholder="0.00"
+              />
             </div>
-
-            <div className="small muted">
-              Salon Profit (per unit): <b>{fmtMoney(perUnitProfit)}</b>
+            <div style={{ flex: 1 }}>
+              <label>Salon RRP</label>
+              <input
+                type="number"
+                step="0.01"
+                value={rrp}
+                onChange={(e) => setRrp(Number(e.target.value))}
+                placeholder="0.00"
+              />
             </div>
           </div>
-        </div>
 
-        {/* Salon Information */}
-        <div className="card">
-          <b>Salon Information</b>
+          <p className="small" style={{ marginTop: 8 }}>
+            Salon Profit (per unit): <b>{fmtMoney(unitProfit)}</b>
+          </p>
+        </section>
 
-          <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+        {/* Salon Info */}
+        <section className="card">
+          <h3>Salon Information</h3>
+
+          <div style={{ marginTop: 12 }}>
             <label>How many days are you running this promotion?</label>
-            <input inputMode="numeric" value={days} onChange={e => setDays(e.target.value)} />
+            <input
+              type="number"
+              min={0}
+              step="1"
+              value={days}
+              onChange={(e) => setDays(Number(e.target.value))}
+              placeholder="e.g., 5"
+            />
+          </div>
 
+          <div style={{ marginTop: 10 }}>
             <label>How many stylist do you have?</label>
-            <input inputMode="numeric" value={stylists} onChange={e => setStylists(e.target.value)} />
+            <input
+              type="number"
+              min={0}
+              step="1"
+              value={stylists}
+              onChange={(e) => setStylists(Number(e.target.value))}
+              placeholder="e.g., 1"
+            />
+          </div>
 
+          <div style={{ marginTop: 10 }}>
             <label>How many do you think each stylist can sell a day</label>
             <input
-              inputMode="decimal"
-              value={perStylistPerDay}
-              onChange={e => setPerStylistPerDay(e.target.value)}
+              type="number"
+              min={0}
+              step="1"
+              value={unitsPerStylistPerDay}
+              onChange={(e) => setUnitsPerStylistPerDay(Number(e.target.value))}
+              placeholder="e.g., 1"
             />
-
-            <button className="primary" onClick={calculate} style={{ marginTop: 6 }}>
-              Calculate
-            </button>
           </div>
-        </div>
+
+          <button
+            className="primary"
+            style={{ marginTop: 12, width: "100%" }}
+            onClick={onCalculate}
+          >
+            Calculate
+          </button>
+        </section>
       </div>
 
-      {/* results */}
-      {didCalc ? (
-        <div className="grid grid-2" style={{ gap: 12 }}>
-          <div className="card">
-            <b>Outcome</b>
-            <div className="grid" style={{ gap: 6, marginTop: 8 }}>
+      {/* Results */}
+      {calculated && (
+        <div
+          className="grid"
+          style={{
+            gap: 16,
+            gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+            alignItems: "stretch",
+          }}
+        >
+          {/* Outcome */}
+          <section className="card">
+            <h3>Outcome</h3>
+            <div className="small" style={{ marginTop: 10 }}>
               <div className="row" style={{ justifyContent: "space-between" }}>
-                <div className="small">Your stylist will sell (per day)</div>
-                <div className="small">{toNum(perStylistPerDay)}</div>
+                <div>your stylist will sell (per day)</div>
+                <div>{calculated.unitsPerDay}</div>
               </div>
               <div className="row" style={{ justifyContent: "space-between" }}>
-                <div className="small">Your stylist will sell (Time you are running the promotion)</div>
-                <div className="small">{units}</div>
+                <div>Your stylist will sell (Time you are running the promotion)</div>
+                <div>{calculated.totalUnits}</div>
               </div>
               <div className="row" style={{ justifyContent: "space-between" }}>
-                <div className="small">This will cost you –</div>
-                <div className="small">{fmtMoney(cost)}</div>
+                <div>This will cost you -</div>
+                <div>{fmtMoney(calculated.totalCost)}</div>
               </div>
             </div>
-          </div>
+            <p className="small muted" style={{ marginTop: 12 }}>
+              Tip: change brand/product to auto-populate pricing, then hit Calculate.
+            </p>
+          </section>
 
-          <div className="card" style={{ borderColor: "var(--success)", background: "rgba(16,185,129,0.08)" }}>
-            <b>PROFIT</b>
-            <div className="grid" style={{ gap: 8, marginTop: 8 }}>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div className="small">Revenue Generated</div>
-                <div className="small" style={{ fontWeight: 600 }}>{fmtMoney(revenue)}</div>
-              </div>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div className="small">PROFIT</div>
-                <div className="small" style={{ fontWeight: 700 }}>{fmtMoney(profit)}</div>
+          {/* Profit Summary */}
+          <section className="card" style={{ background: "var(--tint, #f3fff6)" }}>
+            <h3>PROFIT</h3>
+            <div className="row" style={{ justifyContent: "space-between", marginTop: 10 }}>
+              <div className="small muted">Revenue Generated</div>
+              <div className="small" style={{ fontWeight: 600 }}>
+                {fmtMoney(calculated.revenue)}
               </div>
             </div>
-          </div>
-        </div>
-      ) : (
-        <div className="card">
-          <div className="small muted">
-            Tip: change brand/product to auto-populate pricing, then hit Calculate.
-          </div>
+            <div
+              className="row"
+              style={{
+                justifyContent: "space-between",
+                marginTop: 12,
+                paddingTop: 8,
+                borderTop: "1px solid var(--border)",
+              }}
+            >
+              <div style={{ fontWeight: 700 }}>PROFIT</div>
+              <div style={{ fontWeight: 700 }}>{fmtMoney(calculated.profit)}</div>
+            </div>
+          </section>
         </div>
       )}
     </div>
