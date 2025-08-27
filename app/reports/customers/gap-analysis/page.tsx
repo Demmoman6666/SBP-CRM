@@ -1,7 +1,7 @@
 // app/reports/customers/gap-analysis/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Rep = { id: string; name: string };
 
@@ -9,49 +9,159 @@ type ApiRow = {
   customerId: string;
   salonName: string;
   salesRep: string | null;
-  // depending on your API version this might be perVendor or vendors – support both:
   perVendor?: Record<string, number>;
   vendors?: Record<string, number>;
   subtotal: number;
   taxes: number;
   total: number;
 };
-
-type ApiResp = {
-  vendors: string[];
-  rows: ApiRow[];
-};
+type ApiResp = { vendors: string[]; rows: ApiRow[] };
 
 const GBP = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
 const fmtMoney = (n?: number) => (n ? GBP.format(n) : "—");
 
-// date helpers
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const toDMY = (d: Date) => `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
-
-function startOfWeekMonday(d: Date) {
-  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const dow = x.getDay();
-  const diff = (dow + 6) % 7;
-  x.setDate(x.getDate() - diff);
-  return x;
-}
+function startOfWeekMonday(d: Date) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); const dow = x.getDay(); const diff = (dow + 6) % 7; x.setDate(x.getDate() - diff); return x; }
 function startOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function startOfYear(d: Date) { return new Date(d.getFullYear(), 0, 1); }
+
+/** Lightweight multi-select dropdown with checkboxes */
+function MultiSelect({
+  label,
+  options,
+  value,
+  onChange,
+  placeholder = "Select…",
+}: {
+  label: string;
+  options: string[];
+  value: string[];
+  onChange: (v: string[]) => void;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+
+  // close on outside click
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return options;
+    return options.filter(o => o.toLowerCase().includes(s));
+  }, [options, q]);
+
+  const summary = value.length === 0
+    ? placeholder
+    : value.length === options.length
+    ? `All (${options.length})`
+    : value.slice(0, 3).join(", ") + (value.length > 3 ? ` +${value.length - 3}` : "");
+
+  return (
+    <div ref={ref} className="field" style={{ position: "relative", minWidth: 280 }}>
+      <label>{label}</label>
+      <button
+        type="button"
+        className="input"
+        onClick={() => setOpen(v => !v)}
+        style={{ textAlign: "left", display: "flex", justifyContent: "space-between" }}
+      >
+        <span className={value.length ? "" : "muted"}>{summary}</span>
+        <span className="muted">▾</span>
+      </button>
+
+      {open && (
+        <div
+          className="card"
+          style={{
+            position: "absolute",
+            zIndex: 20,
+            top: "100%",
+            left: 0,
+            right: 0,
+            marginTop: 6,
+            padding: 8,
+            border: "1px solid var(--border)",
+            maxHeight: 320,
+            overflow: "auto",
+          }}
+        >
+          <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+            <input
+              className="input"
+              placeholder="Search…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button
+              type="button"
+              className="chip"
+              onClick={() => onChange(options)}
+              title="Select all"
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className="chip"
+              onClick={() => onChange([])}
+              title="Clear all"
+            >
+              None
+            </button>
+          </div>
+
+          {filtered.length === 0 ? (
+            <div className="small muted">No matches.</div>
+          ) : (
+            <div className="grid" style={{ gap: 6 }}>
+              {filtered.map((opt) => {
+                const checked = value.includes(opt);
+                return (
+                  <label key={opt} className="row small" style={{ gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) =>
+                        onChange(
+                          e.target.checked
+                            ? [...value, opt]
+                            : value.filter((v) => v !== opt)
+                        )
+                      }
+                    />
+                    {opt}
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function GapAnalysisPage() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
-  // reps
   const [reps, setReps] = useState<Rep[]>([]);
   const [repSel, setRepSel] = useState<string[]>([]);
 
-  // vendors (from StockedBrand)
   const [vendorOptions, setVendorOptions] = useState<string[]>([]);
   const [vendorSel, setVendorSel] = useState<string[]>([]);
 
-  // results
   const [data, setData] = useState<ApiResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [syncingVendors, setSyncingVendors] = useState(false);
@@ -62,19 +172,19 @@ export default function GapAnalysisPage() {
       .then((r) => r.json())
       .then((arr: Rep[]) => {
         setReps(arr || []);
-        setRepSel((arr || []).map((r) => r.name)); // default: all reps
+        setRepSel((arr || []).map((r) => r.name)); // default all
       })
       .catch(() => setReps([]));
   }, []);
 
-  // load vendors (StockedBrand list)
+  // load vendor options from StockedBrand
   async function loadVendors() {
     const res = await fetch("/api/stocked-brands");
     const json = await res.json();
     const list: string[] = (json?.vendors ?? []).filter(Boolean);
     list.sort((a, b) => a.localeCompare(b));
     setVendorOptions(list);
-    setVendorSel(list); // default: all selected
+    setVendorSel(list); // default all
   }
   useEffect(() => { loadVendors(); }, []);
 
@@ -82,7 +192,6 @@ export default function GapAnalysisPage() {
     setLoading(true);
     try {
       const qp = new URLSearchParams();
-      // IMPORTANT: the API expects start/end keys
       if (from) qp.set("start", from);
       if (to) qp.set("end", to);
       if (repSel.length) qp.set("reps", repSel.join(","));
@@ -95,7 +204,6 @@ export default function GapAnalysisPage() {
     }
   }
 
-  // quick ranges
   function applyRange(kind: "wtd" | "lw" | "mtd" | "ytd" | "clear") {
     const today = new Date();
     let a: Date, b: Date;
@@ -109,22 +217,23 @@ export default function GapAnalysisPage() {
     setTimeout(run, 0);
   }
 
-  const VENDORS = useMemo(() => data?.vendors ?? vendorOptions, [data, vendorOptions]);
+  const VENDORS = useMemo(() => data?.vendors ?? vendorOptions, [data?.vendors, vendorOptions]);
 
   async function refreshVendorsFromShopify() {
     setSyncingVendors(true);
     try {
-      await fetch("/api/stocked-brands", { method: "POST" }); // sync with Shopify
-      await loadVendors(); // reload the list
+      // crawl Shopify products -> StockedBrand
+      await fetch("/api/stocked-brands", { method: "POST" });
+      await loadVendors(); // reload
     } finally {
       setSyncingVendors(false);
     }
   }
 
-  // grid template for dynamic vendor columns
+  // dynamic columns
   const gridCols = useMemo(() => {
     const vendorCols = (data?.vendors ?? []).map(() => "140px").join(" ");
-    return `minmax(200px,1.2fr) 160px ${vendorCols} 120px 120px 120px`;
+    return `minmax(220px,1.3fr) 160px ${vendorCols} 120px 120px 120px`;
   }, [data?.vendors]);
 
   return (
@@ -134,7 +243,7 @@ export default function GapAnalysisPage() {
         <p className="small">See spend by vendor per customer. Filter by sales rep, vendor, and date range.</p>
       </section>
 
-      <section className="card grid" style={{ gap: 10 }}>
+      <section className="card grid" style={{ gap: 12 }}>
         <div className="grid grid-2" style={{ gap: 10 }}>
           <div className="field">
             <label>From</label>
@@ -155,7 +264,7 @@ export default function GapAnalysisPage() {
           <button type="button" className="chip" onClick={() => applyRange("clear")}>Clear</button>
         </div>
 
-        <div className="row" style={{ gap: 12, alignItems: "center" }}>
+        <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <button className="primary" onClick={run} disabled={loading}>
             {loading ? "Running…" : "Run"}
           </button>
@@ -164,57 +273,28 @@ export default function GapAnalysisPage() {
             className="chip"
             onClick={refreshVendorsFromShopify}
             disabled={syncingVendors}
-            title="Pull vendor list from Shopify products and update the filter list"
+            title="Pull vendors from Shopify products and update list"
           >
             {syncingVendors ? "Refreshing vendors…" : "Refresh vendors (Shopify)"}
           </button>
         </div>
 
-        <div className="row" style={{ gap: 24, flexWrap: "wrap" }}>
-          <div>
-            <div className="small" style={{ marginBottom: 6 }}>Sales Reps</div>
-            <div className="row small" style={{ gap: 12, flexWrap: "wrap" }}>
-              {reps.map((r) => {
-                const checked = repSel.includes(r.name);
-                return (
-                  <label key={r.id} className="row" style={{ gap: 6 }}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) =>
-                        setRepSel((prev) =>
-                          e.target.checked ? [...prev, r.name] : prev.filter((x) => x !== r.name)
-                        )
-                      }
-                    />
-                    {r.name}
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-
-          <div>
-            <div className="small" style={{ marginBottom: 6 }}>Vendors</div>
-            <div className="row small" style={{ gap: 12, flexWrap: "wrap" }}>
-              {vendorOptions.map((v) => {
-                const checked = vendorSel.includes(v);
-                return (
-                  <label key={v} className="row" style={{ gap: 6 }}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) =>
-                        setVendorSel((prev) => (e.target.checked ? [...prev, v] : prev.filter((x) => x !== v)))
-                      }
-                    />
-                    {v}
-                  </label>
-                );
-              })}
-              {vendorOptions.length === 0 && <span className="muted">No vendors yet.</span>}
-            </div>
-          </div>
+        {/* Multi-selects */}
+        <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
+          <MultiSelect
+            label="Sales Reps"
+            options={reps.map(r => r.name)}
+            value={repSel}
+            onChange={setRepSel}
+            placeholder="All reps"
+          />
+          <MultiSelect
+            label="Vendors"
+            options={vendorOptions}
+            value={vendorSel}
+            onChange={setVendorSel}
+            placeholder="All vendors"
+          />
         </div>
       </section>
 
@@ -238,7 +318,7 @@ export default function GapAnalysisPage() {
             >
               <div>Customer</div>
               <div>Sales Rep</div>
-              {(data.vendors ?? []).map((v) => <div key={v}>{v}</div>)}
+              {VENDORS.map((v) => <div key={v}>{v}</div>)}
               <div>Subtotal</div>
               <div>Taxes</div>
               <div>Total</div>
@@ -261,7 +341,7 @@ export default function GapAnalysisPage() {
                 >
                   <div>{r.salonName}</div>
                   <div>{r.salesRep || "—"}</div>
-                  {(data.vendors ?? []).map((v) => <div key={v}>{fmtMoney(per[v])}</div>)}
+                  {VENDORS.map((v) => <div key={v}>{fmtMoney(per[v])}</div>)}
                   <div>{fmtMoney(r.subtotal)}</div>
                   <div>{fmtMoney(r.taxes)}</div>
                   <div style={{ fontWeight: 600 }}>{fmtMoney(r.total)}</div>
