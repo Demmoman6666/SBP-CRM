@@ -3,367 +3,250 @@
 
 import { useMemo, useState } from "react";
 
-/* ---------- tiny helpers ---------- */
-function toNum(v: any, def = 0): number {
+/** ------- Demo data (edit to suit your brands/products/prices) ------- */
+type Product = { id: string; name: string; cost: number; rrp: number };
+type Brand = { id: string; name: string; products: Product[] };
+
+const CATALOGUE: Brand[] = [
+  {
+    id: "ref",
+    name: "REF Stockholm",
+    products: [
+      { id: "ref-gift-set", name: "REF Stockholm Gift Set", cost: 27.10, rrp: 49.99 },
+      { id: "ref-shampoo",  name: "REF Shampoo 285ml",       cost: 7.50,  rrp: 14.99 },
+    ],
+  },
+  {
+    id: "neal-wolf",
+    name: "Neal & Wolf",
+    products: [
+      { id: "nw-gift",  name: "Neal & Wolf Gift Set", cost: 22.00, rrp: 44.00 },
+      { id: "nw-oil",   name: "Neal & Wolf Velvet Oil", cost: 10.00, rrp: 19.99 },
+    ],
+  },
+  {
+    id: "procare",
+    name: "Procare",
+    products: [
+      { id: "pc-foil", name: "Procare Foil 100m", cost: 5.40, rrp: 9.99 },
+    ],
+  },
+  {
+    id: "my-organics",
+    name: "MY.ORGANICS",
+    products: [
+      { id: "myo-mask", name: "MY.O Mask 250ml", cost: 12.50, rrp: 24.00 },
+    ],
+  },
+  {
+    id: "goddess",
+    name: "Goddess Maintenance Company",
+    products: [
+      { id: "gmc-scrub", name: "Scalp Scrub 200ml", cost: 8.50, rrp: 16.00 },
+    ],
+  },
+];
+
+/** ------- helpers ------- */
+const fmtMoney = (n: number) =>
+  new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(n);
+
+const toNum = (v: any) => {
   const n = Number(v);
-  return Number.isFinite(n) ? n : def;
-}
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
-}
-function fmtMoney(n: number, currency = "GBP") {
-  try {
-    return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(n || 0);
-  } catch {
-    // fallback if currency code ever unknown
-    return `£${(n || 0).toFixed(2)}`;
-  }
-}
-function pct(n: number) {
-  if (!Number.isFinite(n)) return "—";
-  return `${(n * 100).toFixed(1)}%`;
-}
+  return Number.isFinite(n) ? n : 0;
+};
 
-/* ---------- small inputs ---------- */
-function NumberField({
-  label,
-  value,
-  onChange,
-  step = 1,
-  min,
-  max,
-  prefix,
-  suffix,
-  placeholder,
-}: {
-  label: string;
-  value: number;
-  onChange: (n: number) => void;
-  step?: number;
-  min?: number;
-  max?: number;
-  prefix?: string;
-  suffix?: string;
-  placeholder?: string;
-}) {
-  return (
-    <div>
-      <label>{label}</label>
-      <div className="row" style={{ gap: 6 }}>
-        {prefix ? <span className="small muted" style={{ alignSelf: "center" }}>{prefix}</span> : null}
-        <input
-          inputMode="decimal"
-          step={step}
-          min={min as any}
-          max={max as any}
-          placeholder={placeholder}
-          value={Number.isFinite(value) ? String(value) : ""}
-          onChange={(e) => onChange(toNum(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        {suffix ? <span className="small muted" style={{ alignSelf: "center" }}>{suffix}</span> : null}
-      </div>
-    </div>
-  );
-}
-
-function PercentField(p: Omit<Parameters<typeof NumberField>[0], "suffix" | "step">) {
-  return <NumberField {...p} step={0.1} suffix="%" />;
-}
-
-/* ============================================================
-   Profit Calculator
-   - Two modes: "Retail" (product sale) and "Service" (appointment)
-   ============================================================ */
 export default function ProfitCalculator() {
-  const [currency, setCurrency] = useState<"GBP" | "EUR" | "USD">("GBP");
-  const [mode, setMode] = useState<"retail" | "service">("retail");
+  const [brandId, setBrandId] = useState<string>(CATALOGUE[0]?.id ?? "");
+  const products = useMemo(() => CATALOGUE.find(b => b.id === brandId)?.products ?? [], [brandId]);
 
-  // VAT default 20% (UK)
-  const [vatPct, setVatPct] = useState(20);
+  const [productId, setProductId] = useState<string>(products[0]?.id ?? "");
+  // pricing (editable – auto-fills when product changes)
+  const [salonCost, setSalonCost] = useState<string>("");
+  const [salonRrp, setSalonRrp] = useState<string>("");
 
-  /* ---------- Retail inputs ---------- */
-  const [sellIncVat, setSellIncVat] = useState(19.99);
-  const [unitCostExVat, setUnitCostExVat] = useState(8.0);
-  const [discountPct, setDiscountPct] = useState(0);
-  const [qty, setQty] = useState(1);
-  const [targetMarginPct, setTargetMarginPct] = useState(60);
+  // salon inputs
+  const [days, setDays] = useState<string>("5");
+  const [stylists, setStylists] = useState<string>("1");
+  const [perStylistPerDay, setPerStylistPerDay] = useState<string>("1");
 
-  /* ---------- Service inputs ---------- */
-  const [servicePriceIncVat, setServicePriceIncVat] = useState(60);
-  const [durationMins, setDurationMins] = useState(60);
-  const [staffCostPerHour, setStaffCostPerHour] = useState(14); // wage + NI/pension etc
-  const [productCostPerService, setProductCostPerService] = useState(4);
-  const [overheadPerHour, setOverheadPerHour] = useState(6);    // rent, utilities, etc
-  const [svcDiscountPct, setSvcDiscountPct] = useState(0);
-  const [svcTargetMarginPct, setSvcTargetMarginPct] = useState(60);
+  // calculated
+  const [didCalc, setDidCalc] = useState(false);
+  const [units, setUnits] = useState(0);
+  const [revenue, setRevenue] = useState(0);
+  const [cost, setCost] = useState(0);
+  const [profit, setProfit] = useState(0);
 
-  /* ---------- Retail calculations ---------- */
-  const retail = useMemo(() => {
-    const vat = clamp(vatPct / 100, 0, 1);
-    const priceInc = Math.max(0, sellIncVat);
-    const priceEx = priceInc / (1 + vat);
+  // when brand changes, reset product to first of that brand
+  function onBrandChange(id: string) {
+    setBrandId(id);
+    const first = (CATALOGUE.find(b => b.id === id)?.products ?? [])[0];
+    if (first) {
+      setProductId(first.id);
+      setSalonCost(first.cost.toString());
+      setSalonRrp(first.rrp.toString());
+    } else {
+      setProductId("");
+      setSalonCost("");
+      setSalonRrp("");
+    }
+    setDidCalc(false);
+  }
 
-    const costEx = Math.max(0, unitCostExVat);
-    const discount = clamp(discountPct / 100, 0, 1);
+  // when product changes, auto-fill pricing
+  function onProductChange(id: string) {
+    setProductId(id);
+    const p = products.find(p => p.id === id);
+    if (p) {
+      setSalonCost(p.cost.toString());
+      setSalonRrp(p.rrp.toString());
+    }
+    setDidCalc(false);
+  }
 
-    const netPriceEx = priceEx * (1 - discount);
+  // initialise default pricing for first mount
+  useMemo(() => {
+    if (!salonCost && !salonRrp && products[0]) {
+      setProductId(products[0].id);
+      setSalonCost(products[0].cost.toString());
+      setSalonRrp(products[0].rrp.toString());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    const profitPerUnit = netPriceEx - costEx;                // ex VAT basis
-    const margin = netPriceEx > 0 ? profitPerUnit / netPriceEx : 0;
-    const markup = costEx > 0 ? profitPerUnit / costEx : 0;
+  const perUnitProfit = Math.max(0, toNum(salonRrp) - toNum(salonCost));
 
-    const totalRevenueEx = netPriceEx * qty;
-    const totalProfit = profitPerUnit * qty;
+  function calculate() {
+    const d = Math.max(0, Math.floor(toNum(days)));
+    const s = Math.max(0, Math.floor(toNum(stylists)));
+    const u = Math.max(0, toNum(perStylistPerDay));
 
-    // price needed (inc VAT) for target margin on ex-VAT price
-    const targetMargin = clamp(targetMarginPct / 100, 0, 0.99);
-    const neededEx = costEx / (1 - targetMargin);
-    const neededInc = neededEx * (1 + vat);
+    const totalUnits = d * s * u;
+    const totalRevenue = totalUnits * toNum(salonRrp);
+    const totalCost = totalUnits * toNum(salonCost);
+    const totalProfit = totalRevenue - totalCost;
 
-    return {
-      priceInc,
-      priceEx,
-      netPriceEx,
-      costEx,
-      profitPerUnit,
-      margin,
-      markup,
-      totalRevenueEx,
-      totalProfit,
-      neededIncForTargetMargin: neededInc,
-    };
-  }, [vatPct, sellIncVat, unitCostExVat, discountPct, qty, targetMarginPct]);
-
-  /* ---------- Service calculations ---------- */
-  const service = useMemo(() => {
-    const vat = clamp(vatPct / 100, 0, 1);
-    const priceInc = Math.max(0, servicePriceIncVat);
-    const priceEx = priceInc / (1 + vat);
-    const discount = clamp(svcDiscountPct / 100, 0, 1);
-    const netPriceEx = priceEx * (1 - discount);
-
-    const hours = Math.max(0, durationMins) / 60;
-    const labour = hours * Math.max(0, staffCostPerHour);
-    const overhead = hours * Math.max(0, overheadPerHour);
-    const product = Math.max(0, productCostPerService);
-
-    const totalCost = labour + overhead + product;
-    const profit = netPriceEx - totalCost;
-    const margin = netPriceEx > 0 ? profit / netPriceEx : 0;
-    const profitPerHour = hours > 0 ? profit / hours : 0;
-
-    const targetMargin = clamp(svcTargetMarginPct / 100, 0, 0.99);
-    const neededEx = totalCost / (1 - targetMargin);
-    const neededInc = neededEx * (1 + vat);
-
-    return {
-      priceInc,
-      priceEx,
-      netPriceEx,
-      labour,
-      overhead,
-      product,
-      totalCost,
-      profit,
-      margin,
-      profitPerHour,
-      neededIncForTargetMargin: neededInc,
-    };
-  }, [
-    vatPct,
-    servicePriceIncVat,
-    durationMins,
-    staffCostPerHour,
-    overheadPerHour,
-    productCostPerService,
-    svcDiscountPct,
-    svcTargetMarginPct,
-  ]);
+    setUnits(totalUnits);
+    setRevenue(totalRevenue);
+    setCost(totalCost);
+    setProfit(totalProfit);
+    setDidCalc(true);
+  }
 
   return (
     <div className="grid" style={{ gap: 12 }}>
-      {/* top controls */}
-      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-        <div className="segmented" role="tablist" aria-label="Mode">
-          <button
-            type="button"
-            aria-selected={mode === "retail"}
-            className={mode === "retail" ? "primary" : ""}
-            onClick={() => setMode("retail")}
-          >
-            Retail (Products)
-          </button>
-          <button
-            type="button"
-            aria-selected={mode === "service"}
-            className={mode === "service" ? "primary" : ""}
-            onClick={() => setMode("service")}
-          >
-            Services
-          </button>
-        </div>
+      {/* top grid */}
+      <div className="grid grid-2" style={{ gap: 12 }}>
+        {/* Product & Pricing */}
+        <div className="card">
+          <b>Product &amp; Pricing</b>
 
-        <div className="row" style={{ gap: 8, alignItems: "center" }}>
-          <label className="small">Currency</label>
-          <select value={currency} onChange={(e) => setCurrency(e.target.value as any)}>
-            <option value="GBP">GBP £</option>
-            <option value="EUR">EUR €</option>
-            <option value="USD">USD $</option>
-          </select>
-        </div>
+          <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+            <label>Brand</label>
+            <select value={brandId} onChange={e => onBrandChange(e.target.value)}>
+              {CATALOGUE.map(b => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
 
-        <div className="row" style={{ gap: 8, alignItems: "center" }}>
-          <label className="small">VAT</label>
-          <input
-            style={{ width: 80 }}
-            inputMode="decimal"
-            value={vatPct}
-            onChange={(e) => setVatPct(clamp(toNum(e.target.value, 20), 0, 50))}
-          />
-          <span className="small muted">%</span>
-        </div>
-      </div>
+            <label>Product (by brand)</label>
+            <select value={productId} onChange={e => onProductChange(e.target.value)}>
+              {products.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
 
-      {/* INPUTS */}
-      {mode === "retail" ? (
-        <div className="grid grid-2" style={{ gap: 12 }}>
-          <NumberField
-            label="Selling price (inc VAT)"
-            value={sellIncVat}
-            onChange={setSellIncVat}
-            prefix={currency === "USD" ? "$" : currency === "EUR" ? "€" : "£"}
-            step={0.01}
-          />
-          <NumberField
-            label="Unit cost (ex VAT)"
-            value={unitCostExVat}
-            onChange={setUnitCostExVat}
-            prefix={currency === "USD" ? "$" : currency === "EUR" ? "€" : "£"}
-            step={0.01}
-          />
-          <PercentField label="Discount" value={discountPct} onChange={setDiscountPct} />
-          <NumberField label="Quantity" value={qty} onChange={(n) => setQty(Math.max(1, Math.round(n)))} />
-          <PercentField
-            label="Target margin"
-            value={targetMarginPct}
-            onChange={(n) => setTargetMarginPct(clamp(n, 0, 95))}
-          />
-        </div>
-      ) : (
-        <div className="grid grid-2" style={{ gap: 12 }}>
-          <NumberField
-            label="Service price (inc VAT)"
-            value={servicePriceIncVat}
-            onChange={setServicePriceIncVat}
-            prefix={currency === "USD" ? "$" : currency === "EUR" ? "€" : "£"}
-            step={0.5}
-          />
-          <NumberField label="Duration" value={durationMins} onChange={(n) => setDurationMins(Math.max(0, n))} suffix="mins" />
-          <NumberField
-            label="Staff cost per hour"
-            value={staffCostPerHour}
-            onChange={setStaffCostPerHour}
-            prefix={currency === "USD" ? "$" : currency === "EUR" ? "€" : "£"}
-            step={0.5}
-          />
-          <NumberField
-            label="Overhead per hour"
-            value={overheadPerHour}
-            onChange={setOverheadPerHour}
-            prefix={currency === "USD" ? "$" : currency === "EUR" ? "€" : "£"}
-            step={0.5}
-          />
-          <NumberField
-            label="Product/consumables per service"
-            value={productCostPerService}
-            onChange={setProductCostPerService}
-            prefix={currency === "USD" ? "$" : currency === "EUR" ? "€" : "£"}
-            step={0.1}
-          />
-          <PercentField label="Discount" value={svcDiscountPct} onChange={setSvcDiscountPct} />
-          <PercentField
-            label="Target margin"
-            value={svcTargetMarginPct}
-            onChange={(n) => setSvcTargetMarginPct(clamp(n, 0, 95))}
-          />
-        </div>
-      )}
-
-      {/* RESULTS */}
-      <div className="grid" style={{ gap: 10 }}>
-        <b>Results</b>
-
-        {mode === "retail" ? (
-          <div className="grid grid-3" style={{ gap: 10 }}>
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Net price (ex VAT)</div>
-              <div style={{ fontWeight: 700 }}>{fmtMoney(retail.netPriceEx, currency)}</div>
-            </div>
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Gross profit / unit</div>
-              <div style={{ fontWeight: 700 }}>{fmtMoney(retail.profitPerUnit, currency)} ({pct(retail.margin)})</div>
-            </div>
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Markup</div>
-              <div style={{ fontWeight: 700 }}>{pct(retail.markup)}</div>
-            </div>
-
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Total revenue (ex VAT)</div>
-              <div style={{ fontWeight: 700 }}>{fmtMoney(retail.totalRevenueEx, currency)}</div>
-            </div>
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Total profit</div>
-              <div style={{ fontWeight: 700 }}>{fmtMoney(retail.totalProfit, currency)}</div>
-            </div>
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Price needed for target margin</div>
-              <div style={{ fontWeight: 700 }}>{fmtMoney(retail.neededIncForTargetMargin, currency)} (inc VAT)</div>
-            </div>
-          </div>
-        ) : (
-          <div className="grid grid-3" style={{ gap: 10 }}>
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Revenue (ex VAT)</div>
-              <div style={{ fontWeight: 700 }}>{fmtMoney(service.netPriceEx, currency)}</div>
-            </div>
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Total cost</div>
-              <div style={{ fontWeight: 700 }}>{fmtMoney(service.totalCost, currency)}</div>
-              <div className="small muted" style={{ marginTop: 6 }}>
-                Labour {fmtMoney(service.labour, currency)} · Overhead {fmtMoney(service.overhead, currency)} · Products {fmtMoney(service.product, currency)}
+            <div className="row" style={{ gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <label>Salon Cost</label>
+                <input
+                  inputMode="decimal"
+                  value={salonCost}
+                  onChange={e => setSalonCost(e.target.value)}
+                  placeholder="e.g., 27.10"
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label>Salon RRP</label>
+                <input
+                  inputMode="decimal"
+                  value={salonRrp}
+                  onChange={e => setSalonRrp(e.target.value)}
+                  placeholder="e.g., 49.99"
+                />
               </div>
             </div>
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Profit</div>
-              <div style={{ fontWeight: 700 }}>{fmtMoney(service.profit, currency)} ({pct(service.margin)})</div>
-              <div className="small muted" style={{ marginTop: 6 }}>Per hour {fmtMoney(service.profitPerHour, currency)}</div>
-            </div>
 
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Break-even (ex VAT)</div>
-              <div style={{ fontWeight: 700 }}>{fmtMoney(service.totalCost, currency)}</div>
-            </div>
-            <div className="card" style={{ padding: 10 }}>
-              <div className="small muted">Price needed for target margin</div>
-              <div style={{ fontWeight: 700 }}>{fmtMoney(service.neededIncForTargetMargin, currency)} (inc VAT)</div>
+            <div className="small muted">
+              Salon Profit (per unit): <b>{fmtMoney(perUnitProfit)}</b>
             </div>
           </div>
-        )}
+        </div>
+
+        {/* Salon Information */}
+        <div className="card">
+          <b>Salon Information</b>
+
+          <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+            <label>How many days are you running this promotion?</label>
+            <input inputMode="numeric" value={days} onChange={e => setDays(e.target.value)} />
+
+            <label>How many stylist do you have?</label>
+            <input inputMode="numeric" value={stylists} onChange={e => setStylists(e.target.value)} />
+
+            <label>How many do you think each stylist can sell a day</label>
+            <input
+              inputMode="decimal"
+              value={perStylistPerDay}
+              onChange={e => setPerStylistPerDay(e.target.value)}
+            />
+
+            <button className="primary" onClick={calculate} style={{ marginTop: 6 }}>
+              Calculate
+            </button>
+          </div>
+        </div>
       </div>
 
-      {/* quick scenarios (retail only) */}
-      {mode === "retail" && (
-        <div>
-          <div className="small muted" style={{ marginBottom: 6 }}>Quick scenarios</div>
-          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-            <button className="primary" onClick={() => setSellIncVat(+((sellIncVat * 1.05).toFixed(2)))}>+5% price</button>
-            <button className="primary" onClick={() => setSellIncVat(+((sellIncVat * 1.10).toFixed(2)))}>+10% price</button>
-            <button onClick={() => setDiscountPct(0)}>Clear discount</button>
-            <button onClick={() => setQty(1)}>Qty 1</button>
-            <button onClick={() => setQty(6)}>Qty 6</button>
-            <button onClick={() => setQty(12)}>Qty 12</button>
+      {/* results */}
+      {didCalc ? (
+        <div className="grid grid-2" style={{ gap: 12 }}>
+          <div className="card">
+            <b>Outcome</b>
+            <div className="grid" style={{ gap: 6, marginTop: 8 }}>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <div className="small">Your stylist will sell (per day)</div>
+                <div className="small">{toNum(perStylistPerDay)}</div>
+              </div>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <div className="small">Your stylist will sell (Time you are running the promotion)</div>
+                <div className="small">{units}</div>
+              </div>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <div className="small">This will cost you –</div>
+                <div className="small">{fmtMoney(cost)}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card" style={{ borderColor: "var(--success)", background: "rgba(16,185,129,0.08)" }}>
+            <b>PROFIT</b>
+            <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <div className="small">Revenue Generated</div>
+                <div className="small" style={{ fontWeight: 600 }}>{fmtMoney(revenue)}</div>
+              </div>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <div className="small">PROFIT</div>
+                <div className="small" style={{ fontWeight: 700 }}>{fmtMoney(profit)}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="card">
+          <div className="small muted">
+            Tip: change brand/product to auto-populate pricing, then hit Calculate.
           </div>
         </div>
       )}
