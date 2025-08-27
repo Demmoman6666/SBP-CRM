@@ -1,6 +1,7 @@
+// app/reports/customers/drop-off/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 type Rep = { id: string; name: string };
 type Row = {
@@ -40,6 +41,17 @@ function fmtDate(iso?: string | null) {
   const d = new Date(iso);
   return isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-GB");
 }
+
+/** Uniform pill size for controls so Run/Export align perfectly */
+const CONTROL_PILL: CSSProperties = {
+  height: 36,
+  padding: "0 14px",
+  borderRadius: 999,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 6,
+};
 
 export default function CustomerDropOffPage() {
   /* filters */
@@ -85,6 +97,15 @@ export default function CustomerDropOffPage() {
     [bucket, days, selectedReps]
   );
 
+  // Nice summary for the Sales Reps pill
+  const repSummary = useMemo(() => {
+    if (!reps.length) return "No reps";
+    if (selectedReps.length === 0) return "Select reps…";
+    if (selectedReps.length === reps.length) return `All (${reps.length})`;
+    if (selectedReps.length <= 3) return selectedReps.join(", ");
+    return `${selectedReps.slice(0, 3).join(", ")} +${selectedReps.length - 3}`;
+  }, [reps, selectedReps]);
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
@@ -94,7 +115,7 @@ export default function CustomerDropOffPage() {
             <p className="small">Customers who haven’t ordered in the selected time window.</p>
           </div>
 
-          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             {/* Bucket */}
             <div className="field">
               <label>Window</label>
@@ -129,13 +150,19 @@ export default function CustomerDropOffPage() {
               <label>Sales Reps</label>
               <button
                 type="button"
-                className="secondary"
+                className="input"
                 onClick={() => setRepOpen((v) => !v)}
-                style={{ minWidth: 220, textAlign: "left" }}
+                style={{
+                  ...CONTROL_PILL,
+                  minWidth: 220,
+                  textAlign: "left",
+                  justifyContent: "space-between",
+                  background: "#fff",
+                  border: "1px solid var(--border)",
+                }}
               >
-                {selectedReps.length
-                  ? `${selectedReps.length} selected`
-                  : "Select reps…"}
+                <span className={selectedReps.length ? "" : "muted"}>{repSummary}</span>
+                <span className="muted">▾</span>
               </button>
 
               {repOpen && (
@@ -207,11 +234,27 @@ export default function CustomerDropOffPage() {
               )}
             </div>
 
-            <div className="row" style={{ alignItems: "flex-end", gap: 8 }}>
-              <button className="primary" onClick={run} disabled={loading}>
+            {/* Actions: perfectly aligned pills */}
+            <div className="row" style={{ alignItems: "center", gap: 8 }}>
+              <button
+                className="primary"
+                style={CONTROL_PILL}
+                onClick={run}
+                disabled={loading}
+                title="Run report"
+              >
                 {loading ? "Loading…" : "Run"}
               </button>
-              <a href={csvHref} className="primary" target="_blank" rel="noopener">
+
+              <a
+                href={csvHref}
+                className="primary"
+                style={CONTROL_PILL}
+                target="_blank"
+                rel="noopener"
+                download="customer-dropoff.csv"
+                title="Download CSV"
+              >
                 Export CSV
               </a>
             </div>
