@@ -9,20 +9,17 @@ export default function ProfitCalculatorPage() {
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <h1>Salon Retail Profit Calculator</h1>
-            <p className="small">Estimate units, revenue &amp; profit for your retail promotion.</p>
-          </div>
-          <Link href="/saleshub" className="small" style={{ textDecoration: "underline" }}>
-            &larr; Back to Sales Hub
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+          <h1>Salon Retail Profit Calculator</h1>
+          <Link href="/saleshub" className="small">
+            ← Back to Sales Hub
           </Link>
         </div>
+        <p className="small">Estimate units, revenue & profit for your retail promotion.</p>
       </section>
 
-      <section className="card">
-        <ProfitCalculator />
-      </section>
+      {/* Calculator (renders its own cards/layout) */}
+      <ProfitCalculator />
     </div>
   );
 }
