@@ -10,7 +10,7 @@ export default function Home() {
       </section>
 
       <section className="home-actions">
-        <Link href="/sales-hub" className="action-tile">
+        <Link href="/saleshub" className="action-tile">
           <div className="action-title">Sales Hub</div>
           <div className="action-sub">Customers &amp; Calls</div>
         </Link>
