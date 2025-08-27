@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 
+export const dynamic = "force-dynamic"; // required because we read request.url (search params)
+
 /* Parse yyyy-mm-dd safely (UTC) */
 function parseDay(s: string | null): Date | null {
   if (!s) return null;
@@ -23,6 +25,7 @@ export async function GET(req: Request) {
     const fromStr = searchParams.get("from");
     const toStr = searchParams.get("to");
     const staff = (searchParams.get("staff") || "").trim(); // optional filter
+    const format = (searchParams.get("format") || "").toLowerCase(); // "csv" to export
 
     const from = parseDay(fromStr);
     const to = parseDay(toStr);
@@ -80,32 +83,98 @@ export async function GET(req: Request) {
       .map(([s, count]) => ({ staff: s, count }))
       .sort((a, b) => b.count - a.count);
 
-    // Ratios
-    const callToBookingPct = totalCalls > 0 ? (bookings / totalCalls) * 100 : 0;
-    const apptToSalePct = bookings > 0 ? (sales / bookings) * 100 : 0;
-    const callToSalePct = totalCalls > 0 ? (sales / totalCalls) * 100 : 0;
-    const bookedCallToSalePct =
-      bookedCalls > 0 ? (bookedCallSales / bookedCalls) * 100 : 0;
-
-    return NextResponse.json({
+    // JSON payload (default)
+    const payload = {
       generatedAt: new Date().toISOString(),
-      range: { from: fromStr, to: toStr },
+      range: { from: fromStr!, to: toStr! },
       filter: { staff: staff || null },
       totals: {
         totalCalls,
         bookings,
         sales,
-        callToBookingPct,
-        apptToSalePct,
-        callToSalePct,
+        callToBookingPct: totalCalls > 0 ? (bookings / totalCalls) * 100 : 0,
+        apptToSalePct: bookings > 0 ? (sales / bookings) * 100 : 0,
+        callToSalePct: totalCalls > 0 ? (sales / totalCalls) * 100 : 0,
         bookedCalls,
         bookedCallSales,
-        bookedCallToSalePct,
+        bookedCallToSalePct:
+          bookedCalls > 0 ? (bookedCallSales / bookedCalls) * 100 : 0,
         totalDurationMinutes,
         avgDurationMinutes,
       },
       byRep,
-    });
+    };
+
+    if (format !== "csv") {
+      return NextResponse.json(payload);
+    }
+
+    // ---------- CSV export ----------
+    const rows: string[] = [];
+    const esc = (v: any) => {
+      const s = v == null ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    // Overview header
+    rows.push(
+      [
+        "From",
+        "To",
+        "Staff Filter",
+        "Total Calls",
+        "Bookings",
+        "Sales",
+        "Call→Booking %",
+        "Booking→Sale %",
+        "Call→Sale %",
+        "Booked Calls",
+        "Booked Calls → Sales",
+        "Booked Calls → Sale %",
+        "Total Duration (mins)",
+        "Average Duration (mins)",
+      ].map(esc).join(",")
+    );
+
+    // Overview data
+    rows.push(
+      [
+        payload.range.from,
+        payload.range.to,
+        staff || "All",
+        payload.totals.totalCalls,
+        payload.totals.bookings,
+        payload.totals.sales,
+        payload.totals.callToBookingPct.toFixed(1),
+        payload.totals.apptToSalePct.toFixed(1),
+        payload.totals.callToSalePct.toFixed(1),
+        payload.totals.bookedCalls,
+        payload.totals.bookedCallSales,
+        payload.totals.bookedCallToSalePct.toFixed(1),
+        Math.round(payload.totals.totalDurationMinutes),
+        payload.totals.avgDurationMinutes.toFixed(1),
+      ].map(esc).join(",")
+    );
+
+    // Blank line
+    rows.push("");
+
+    // Per-rep table
+    rows.push(["Sales Rep", "Calls"].map(esc).join(","));
+    for (const r of payload.byRep) {
+      rows.push([r.staff, r.count].map(esc).join(","));
+    }
+
+    const csv = rows.join("\n");
+
+    const headers = new Headers();
+    headers.set("Content-Type", "text/csv; charset=utf-8");
+    headers.set(
+      "Content-Disposition",
+      `attachment; filename="call-report_${payload.range.from}_to_${payload.range.to}.csv"`
+    );
+
+    return new NextResponse(csv, { status: 200, headers });
   } catch (err: any) {
     console.error("Call report error:", err);
     return NextResponse.json(
