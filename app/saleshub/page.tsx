@@ -32,6 +32,12 @@ export default function SalesHubPage() {
           <div className="action-title">View Call Log</div>
           <div className="action-sub">Live calls with powerful filters</div>
         </Link>
+
+        {/* NEW: Profit Calculator */}
+        <Link href="/tools/profit-calculator" className="action-tile">
+          <div className="action-title">Profit Calculator</div>
+          <div className="action-sub">Model margins &amp; profit</div>
+        </Link>
       </section>
     </div>
   );
