@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 /* ---------------- helpers ---------------- */
 function getNextPageInfo(linkHeader?: string | null): string | null {
   if (!linkHeader) return null;
+  // Example: <https://shop.myshopify.com/admin/api/2024-07/products.json?page_info=xxx&limit=250>; rel="next"
   const m = linkHeader.match(/<[^>]*\bpage_info=([^&>]+)[^>]*>\s*;\s*rel="next"/i);
   return m ? decodeURIComponent(m[1]) : null;
 }
@@ -15,10 +16,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /* ---------------------------------------------------------
    GET  /api/stocked-brands
-   Returns the union of:
-     - StockedBrand table (manually/previously synced)
-     - DISTINCT productVendor values already in OrderLineItem
-   This guarantees the Vendor filter shows EVERYTHING you sell.
+   Returns union of:
+     - StockedBrand table
+     - DISTINCT productVendor values already present on orders
 ---------------------------------------------------------- */
 export async function GET() {
   const [brands, orderVendors] = await Promise.all([
@@ -30,14 +30,22 @@ export async function GET() {
     }),
   ]);
 
-  const names = new Set<string>();
-  for (const b of brands) if (b.name?.trim()) names.add(b.name.trim());
-  for (const v of orderVendors) {
-    const s = (v.productVendor || "").trim();
-    if (s) names.add(s);
+  // Case-insensitive de-dupe (preserve first-seen casing)
+  const names = new Map<string, string>();
+  for (const b of brands) {
+    const v = (b.name || "").trim();
+    if (!v) continue;
+    const key = v.toLowerCase();
+    if (!names.has(key)) names.set(key, v);
+  }
+  for (const r of orderVendors) {
+    const v = (r.productVendor || "").trim();
+    if (!v) continue;
+    const key = v.toLowerCase();
+    if (!names.has(key)) names.set(key, v);
   }
 
-  return NextResponse.json({ vendors: Array.from(names).sort((a, b) => a.localeCompare(b)) });
+  return NextResponse.json({ vendors: Array.from(names.values()).sort((a, b) => a.localeCompare(b)) });
 }
 
 /* ---------------------------------------------------------
@@ -56,14 +64,12 @@ export async function POST(req: Request) {
   const reset = (searchParams.get("reset") || "") === "1";
   const delayMs = Math.ceil(60000 / rpm);
 
-  if (reset) {
-    await prisma.stockedBrand.deleteMany({});
-  }
+  if (reset) await prisma.stockedBrand.deleteMany({});
 
-  // Case-insensitive map (preserve first-seen display casing)
+  // Case-insensitive collector (preserve display casing)
   const seen = new Map<string, string>();
 
-  // A) Always include vendors already present in orders (so UI never misses them)
+  // A) Always include vendors already present on orders
   if (mode === "orders" || mode === "all") {
     const rows = await prisma.orderLineItem.findMany({
       where: { productVendor: { not: null } },
@@ -77,28 +83,41 @@ export async function POST(req: Request) {
     }
   }
 
-  // B) Pull vendors from *all* Shopify products (active/archived/draft)
+  // B) Shopify Products (active + archived + draft)
   let pages = 0;
   let productsSeen = 0;
-  let statusesChecked: string[] = [];
+  const statusesChecked: string[] = [];
+
   if (mode === "products" || mode === "all") {
     const statuses = ["active", "archived", "draft"] as const;
-    statusesChecked = [...statuses];
 
     for (const status of statuses) {
+      statusesChecked.push(status);
       let pageInfo: string | null = null;
 
       // eslint-disable-next-line no-constant-condition
       while (true) {
         pages++;
-        const qp = new URLSearchParams();
-        qp.set("limit", "250");
-        qp.set("fields", "id,vendor");
-        qp.set("status", status);
-        qp.set("published_status", "any");
-        if (pageInfo) qp.set("page_info", pageInfo);
 
-        const res = await shopifyRest(`/products.json?${qp.toString()}`, { method: "GET" });
+        let path: string;
+        if (!pageInfo) {
+          // First page for this status: include status/published_status
+          const qp = new URLSearchParams();
+          qp.set("limit", "250");
+          qp.set("fields", "id,vendor");
+          qp.set("status", status);
+          qp.set("published_status", "any");
+          path = `/products.json?${qp.toString()}`;
+        } else {
+          // Next pages: page_info ONLY (Shopify requirement)
+          const qp = new URLSearchParams();
+          qp.set("limit", "250");
+          qp.set("fields", "id,vendor");
+          qp.set("page_info", pageInfo);
+          path = `/products.json?${qp.toString()}`;
+        }
+
+        const res = await shopifyRest(path, { method: "GET" });
         if (!res.ok) {
           const text = await res.text().catch(() => "");
           return NextResponse.json(
@@ -121,6 +140,7 @@ export async function POST(req: Request) {
         const link = res.headers.get("Link");
         pageInfo = getNextPageInfo(link);
         if (!pageInfo || arr.length === 0) break;
+
         await sleep(delayMs);
       }
     }
