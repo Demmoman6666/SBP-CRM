@@ -2,18 +2,22 @@
 import Link from "next/link";
 import ProfitCalculator from "@/components/ProfitCalculator";
 
-export const dynamic = "force-static";
+export const dynamic = "force-static"; // simple static shell
 export const revalidate = 1;
 
 export default function ProfitCalculatorPage() {
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
-          <h1>Salon Profit Calculator</h1>
-          <Link href="/saleshub" className="small">← Back to Sales Hub</Link>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <h1>Salon Retail Profit Calculator</h1>
+            <p className="small">Estimate units, revenue &amp; profit for your retail promotion.</p>
+          </div>
+          <Link href="/saleshub" className="small" style={{ textDecoration: "underline" }}>
+            &larr; Back to Sales Hub
+          </Link>
         </div>
-        <p className="small">Quickly model costs, margins, and profit for retail products or services.</p>
       </section>
 
       <section className="card">
