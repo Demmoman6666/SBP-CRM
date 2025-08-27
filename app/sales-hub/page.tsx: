@@ -1,7 +1,7 @@
 // app/sales-hub/page.tsx
 import Link from "next/link";
 
-export const dynamic = "force-dynamic"; // safe on Vercel
+export const dynamic = "force-dynamic";
 
 export default function SalesHub() {
   return (
