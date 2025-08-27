@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 
 type PanelKey = "rep" | "brand" | "stocked" | null;
 
@@ -9,6 +10,7 @@ export default function SettingsMenu() {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<PanelKey>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -23,13 +25,20 @@ export default function SettingsMenu() {
     return () => document.removeEventListener("click", onDocClick);
   }, []);
 
+  // Check current user role to show admin links
+  useEffect(() => {
+    fetch("/api/me", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => setIsAdmin(j?.role === "ADMIN"))
+      .catch(() => setIsAdmin(false));
+  }, []);
+
   async function handleAddRep(formData: FormData) {
     setMsg(null);
     const name = String(formData.get("name") || "").trim();
-    const email = String(formData.get("email") || "").trim() || null;
+    const email = (String(formData.get("email") || "").trim() || null) as string | null;
     if (!name) return setMsg("Sales rep name is required.");
 
-    // NOTE: preserves your existing endpoint path
     const res = await fetch("/api/salesreps", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -49,7 +58,6 @@ export default function SettingsMenu() {
     const name = String(formData.get("name") || "").trim();
     if (!name) return setMsg("Brand name is required.");
 
-    // Competitor brands -> /api/brands (unchanged)
     const res = await fetch("/api/brands", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -69,7 +77,6 @@ export default function SettingsMenu() {
     const name = String(formData.get("name") || "").trim();
     if (!name) return setMsg("Stocked brand name is required.");
 
-    // Stocked brands -> dedicated route/table
     const res = await fetch("/api/stocked-brands", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -83,6 +90,19 @@ export default function SettingsMenu() {
       setMsg(j.error || "Failed to add stocked brand.");
     }
   }
+
+  // Simple menu item styling
+  const itemStyle: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "1px solid #e5e7eb",
+    background: "#fff",
+    textDecoration: "none",
+    color: "inherit",
+  };
 
   return (
     <div ref={panelRef} style={{ position: "relative" }}>
@@ -115,16 +135,45 @@ export default function SettingsMenu() {
             position: "absolute",
             right: 0,
             marginTop: 8,
-            width: 320,
+            width: 340,
             background: "#fff",
             border: "1px solid #e5e7eb",
             borderRadius: 12,
             boxShadow: "var(--shadow)",
             padding: 12,
+            zIndex: 50,
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="grid" style={{ gap: 8 }}>
+          <div className="grid" style={{ gap: 10 }}>
+            {/* ---- Navigation shortcuts ---- */}
+            <div className="small muted" style={{ padding: "2px 2px 0" }}>Navigation</div>
+            <Link href="/settings" style={itemStyle} onClick={() => setOpen(false)}>
+              <span>⚙️</span>
+              <span>Settings Home</span>
+            </Link>
+            <Link href="/settings/account" style={itemStyle} onClick={() => setOpen(false)}>
+              <span>👤</span>
+              <span>Account Settings</span>
+            </Link>
+            {isAdmin && (
+              <>
+                <Link href="/settings/users" style={itemStyle} onClick={() => setOpen(false)}>
+                  <span>👥</span>
+                  <span>User Management</span>
+                </Link>
+                <Link href="/settings/users/new" style={itemStyle} onClick={() => setOpen(false)}>
+                  <span>➕</span>
+                  <span>Add New User</span>
+                </Link>
+              </>
+            )}
+
+            <div style={{ height: 1, background: "#e5e7eb", margin: "6px 0" }} />
+
+            {/* ---- Inline quick-add tools (existing) ---- */}
+            <div className="small muted" style={{ padding: "2px 2px 0" }}>Quick Add</div>
+
             {/* Add Sales Rep */}
             <button
               className="primary"
@@ -139,11 +188,11 @@ export default function SettingsMenu() {
                 style={{ gap: 8 }}
                 onSubmit={(e) => { e.preventDefault(); handleAddRep(new FormData(e.currentTarget)); }}
               >
-                <div>
+                <div className="field">
                   <label>Name*</label>
                   <input name="name" required />
                 </div>
-                <div>
+                <div className="field">
                   <label>Email</label>
                   <input type="email" name="email" />
                 </div>
@@ -153,7 +202,7 @@ export default function SettingsMenu() {
               </form>
             )}
 
-            {/* Add Competitor Brand (existing /api/brands) */}
+            {/* Add Competitor Brand */}
             <button
               className="primary"
               onClick={() => { setActive(active === "brand" ? null : "brand"); setMsg(null); }}
@@ -167,7 +216,7 @@ export default function SettingsMenu() {
                 style={{ gap: 8 }}
                 onSubmit={(e) => { e.preventDefault(); handleAddCompetitorBrand(new FormData(e.currentTarget)); }}
               >
-                <div>
+                <div className="field">
                   <label>Brand Name*</label>
                   <input name="name" required />
                 </div>
@@ -177,7 +226,7 @@ export default function SettingsMenu() {
               </form>
             )}
 
-            {/* Add Stocked Brand (new /api/stocked-brands) */}
+            {/* Add Stocked Brand */}
             <button
               className="primary"
               onClick={() => { setActive(active === "stocked" ? null : "stocked"); setMsg(null); }}
@@ -191,7 +240,7 @@ export default function SettingsMenu() {
                 style={{ gap: 8 }}
                 onSubmit={(e) => { e.preventDefault(); handleAddStockedBrand(new FormData(e.currentTarget)); }}
               >
-                <div>
+                <div className="field">
                   <label>Stocked Brand Name*</label>
                   <input name="name" required />
                 </div>
