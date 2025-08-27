@@ -46,7 +46,7 @@ function vendorSpendCsvHref({
   return `/api/reports/vendor-spend?${qs.toString()}`;
 }
 
-/** Lightweight multi-select dropdown with checkboxes (same style as before) */
+/** Lightweight multi-select dropdown with checkboxes + “All (N)” bubble */
 function MultiSelect({
   label,
   options,
@@ -79,12 +79,36 @@ function MultiSelect({
     return options.filter((o) => o.toLowerCase().includes(s));
   }, [options, q]);
 
-  const summary =
-    value.length === 0
-      ? placeholder
-      : value.length === options.length
-      ? `All (${options.length})`
-      : value.slice(0, 3).join(", ") + (value.length > 3 ? ` +${value.length - 3}` : "");
+  // Summary with bubble when “all” are selected
+  let summary: React.ReactNode;
+  if (value.length === 0) {
+    summary = <span className="muted">{placeholder}</span>;
+  } else if (value.length === options.length) {
+    summary = (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <span>All</span>
+        <span
+          aria-label="count"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            height: 20,
+            padding: "0 8px",
+            borderRadius: 999,
+            border: "1px solid var(--border)",
+            background: "#f6f7fb",
+            fontSize: 12,
+            lineHeight: "18px",
+          }}
+        >
+          {options.length}
+        </span>
+      </span>
+    );
+  } else {
+    const more = value.length > 3 ? ` +${value.length - 3}` : "";
+    summary = value.slice(0, 3).join(", ") + more;
+  }
 
   return (
     <div ref={ref} className="field" style={{ position: "relative", minWidth: 280 }}>
@@ -97,10 +121,11 @@ function MultiSelect({
           textAlign: "left",
           display: "flex",
           justifyContent: "space-between",
+          alignItems: "center",
           background: "#fff",
         }}
       >
-        <span className={value.length ? "" : "muted"}>{summary}</span>
+        <span>{summary}</span>
         <span className="muted">▾</span>
       </button>
 
@@ -293,11 +318,11 @@ export default function GapAnalysisPage() {
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
         <h1>GAP Analysis</h1>
-        <p className="small">Spend by customer & vendor, filterable by Sales Rep.</p>
+        <p className="small">Spend by customer &amp; vendor, filterable by Sales Rep.</p>
       </section>
 
       {/* Filters */}
-      <section className="card grid" style={{ gap: 12 }}>
+      <section className="card grid" style={{ gap: 12, overflow: "visible" }}>
         {/* Row: Date range + quick picks */}
         <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
           <div className="field">
@@ -415,7 +440,7 @@ export default function GapAnalysisPage() {
                 ))}
                 <div>{fmtMoney(r.subtotal)}</div>
                 <div>{fmtMoney(r.taxes)}</div>
-                <div style={{ fontWeight: 600 }}>{fmtMoney(r.total)}</div>
+                <div style={{ fontWeight: 700 }}>{fmtMoney(r.total)}</div>
               </div>
             ))}
 
