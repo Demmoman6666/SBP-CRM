@@ -17,7 +17,6 @@ type Report = {
     bookedCalls: number;
     bookedCallSales: number;
     bookedCallToSalePct: number;
-    /** ✅ NEW */
     totalDurationMinutes: number;
     avgDurationMinutes: number;
   };
@@ -127,10 +126,18 @@ export default function CallReportPage() {
 
   const lastUpdated = data?.generatedAt ? new Date(data.generatedAt).toLocaleString() : "—";
 
+  // CSV export href
+  const csvHref = useMemo(() => {
+    const qs = new URLSearchParams({ from, to });
+    if (repFilter) qs.set("staff", repFilter);
+    qs.set("format", "csv");
+    return `/api/reports/calls?${qs.toString()}`;
+  }, [from, to, repFilter]);
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {/* Row 1: Title + Last updated + Refresh */}
+        {/* Row 1: Title + Last updated + Refresh + Export */}
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <h1 style={{ margin: 0 }}>Call Report</h1>
           <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -138,6 +145,23 @@ export default function CallReportPage() {
             <Chip onClick={() => load()} title="Refresh now">
               {loading ? "Refreshing…" : "Refresh"}
             </Chip>
+            {/* Export CSV styled like a chip */}
+            <a
+              href={csvHref}
+              target="_blank"
+              rel="noopener"
+              className="btn"
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid var(--border)",
+                background: "#fff",
+                textDecoration: "none",
+              }}
+              title="Download CSV"
+            >
+              Export CSV
+            </a>
           </div>
         </div>
 
@@ -207,7 +231,7 @@ export default function CallReportPage() {
           </div>
         </div>
 
-        {/* ✅ NEW: Duration cards */}
+        {/* Duration cards */}
         <div className="grid grid-2">
           <div className="card">
             <div className="small muted">Total Duration (mins)</div>
