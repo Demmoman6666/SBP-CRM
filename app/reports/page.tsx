@@ -16,8 +16,8 @@ export default function ReportsHub() {
         </Link>
 
         <Link href="/reports/customers" className="action-tile">
-          <div className="action-title">Customer Report</div>
-          <div className="action-sub">(Coming soon)</div>
+          <div className="action-title">Customer Reports</div>
+          <div className="action-sub">Spend, GAP analysis &amp; more</div>
         </Link>
       </section>
     </div>
