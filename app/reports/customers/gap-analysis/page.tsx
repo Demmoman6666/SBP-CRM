@@ -46,7 +46,7 @@ function vendorSpendCsvHref({
   return `/api/reports/vendor-spend?${qs.toString()}`;
 }
 
-/** Lightweight multi-select dropdown with checkboxes + “All (N)” bubble */
+/** Lightweight multi-select dropdown with checkboxes + prominent “All (N)” bubble */
 function MultiSelect({
   label,
   options,
@@ -79,27 +79,25 @@ function MultiSelect({
     return options.filter((o) => o.toLowerCase().includes(s));
   }, [options, q]);
 
-  // Summary with bubble when “all” are selected
+  // Summary with a **prominent** bubble when “all” are selected
   let summary: React.ReactNode;
   if (value.length === 0) {
     summary = <span className="muted">{placeholder}</span>;
   } else if (value.length === options.length) {
     summary = (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-        <span>All</span>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontWeight: 600 }}>All</span>
         <span
-          aria-label="count"
+          className="chip"
+          // make the count look like a bold chip; pointer events off so clicking anywhere opens the menu
           style={{
-            display: "inline-flex",
-            alignItems: "center",
-            height: 20,
-            padding: "0 8px",
-            borderRadius: 999,
-            border: "1px solid var(--border)",
-            background: "#f6f7fb",
-            fontSize: 12,
-            lineHeight: "18px",
+            padding: "2px 10px",
+            height: 24,
+            lineHeight: "20px",
+            fontWeight: 700,
+            pointerEvents: "none",
           }}
+          aria-label={`Total ${options.length}`}
         >
           {options.length}
         </span>
@@ -123,6 +121,7 @@ function MultiSelect({
           justifyContent: "space-between",
           alignItems: "center",
           background: "#fff",
+          gap: 8,
         }}
       >
         <span>{summary}</span>
