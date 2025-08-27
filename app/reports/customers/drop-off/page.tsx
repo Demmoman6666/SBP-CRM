@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-/* ------------------------ tiny reusable multiselect ------------------------ */
+/* ───────────────────────── tiny reusable multiselect ───────────────────────── */
 type MultiSelectProps = {
   label: string;
   options: string[];
@@ -18,18 +18,18 @@ function MultiSelect({
   options,
   selected,
   onChange,
-  placeholder = "Search…",
+  placeholder = "Filter…",
   maxHeight = 260,
 }: MultiSelectProps) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
-  const ref = useRef<HTMLDivElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
 
   // close on outside click
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
-      if (!ref.current) return;
-      if (ref.current.contains(e.target as Node)) return;
+      if (!wrapRef.current) return;
+      if (wrapRef.current.contains(e.target as Node)) return;
       setOpen(false);
     }
     if (open) document.addEventListener("mousedown", onDocClick);
@@ -48,7 +48,7 @@ function MultiSelect({
   };
 
   return (
-    <div className="field" ref={ref}>
+    <div className="field" ref={wrapRef} style={{ position: "relative" }}>
       <label>{label}</label>
       <div
         className="row"
@@ -65,7 +65,7 @@ function MultiSelect({
         }}
       >
         {selected.length === 0 ? (
-          <span className="muted small">All reps</span>
+          <span className="muted small">All</span>
         ) : (
           selected.map(s => (
             <span
@@ -86,9 +86,10 @@ function MultiSelect({
           className="card"
           style={{
             position: "absolute",
-            zIndex: 20,
+            zIndex: 1000,
+            left: 0,
+            right: 0,
             marginTop: 4,
-            width: "100%",
             border: "1px solid var(--border)",
             borderRadius: 12,
             padding: 8,
@@ -153,23 +154,26 @@ function MultiSelect({
   );
 }
 
-/* ---------------------------- page / main component ---------------------------- */
+/* ───────────────────────────── page component ───────────────────────────── */
 
 type Rep = { id: string; name: string };
-
 type DropRow = {
   customerId: string;
   salonName: string;
   salesRep: string | null;
   lastOrderAt: string | null; // ISO
-  daysSince?: number;         // optional (compute if missing)
+  daysSince?: number;
 };
+
+type SortKey = "name" | "days";
 
 export default function CustomerDropOffReport() {
   const [reps, setReps] = useState<string[]>([]);
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [thresholdDays, setThresholdDays] = useState<number>(7);
   const [customDays, setCustomDays] = useState<string>("");
+
+  const [sortKey, setSortKey] = useState<SortKey>("name");
 
   const [rows, setRows] = useState<DropRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -194,7 +198,6 @@ export default function CustomerDropOffReport() {
     try {
       const qp = new URLSearchParams();
       qp.set("thresholdDays", String(thresholdDays));
-      // send each rep as rep=, and also a comma-joined reps= for compatibility
       if (selectedReps.length) {
         selectedReps.forEach(r => qp.append("rep", r));
         qp.set("reps", selectedReps.join(","));
@@ -203,7 +206,6 @@ export default function CustomerDropOffReport() {
       const json = await res.json();
       const data: DropRow[] = Array.isArray(json?.rows) ? json.rows : [];
 
-      // Ensure daysSince present
       const withDays = data.map(d => {
         if (typeof d.daysSince === "number") return d;
         const last = d.lastOrderAt ? new Date(d.lastOrderAt) : null;
@@ -211,15 +213,31 @@ export default function CustomerDropOffReport() {
         return { ...d, daysSince: days ?? undefined };
       });
 
-      // Stable sort by rep, then salon
-      withDays.sort((a, b) => {
-        const rA = (a.salesRep || "~").toLowerCase();
-        const rB = (b.salesRep || "~").toLowerCase();
-        if (rA !== rB) return rA.localeCompare(rB);
-        return (a.salonName || "").localeCompare(b.salonName || "");
+      // Group by rep
+      const grouped = new Map<string, DropRow[]>();
+      for (const r of withDays) {
+        const key = r.salesRep || "(Unassigned)";
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key)!.push(r);
+      }
+
+      // sort inside each group based on sortKey
+      for (const [key, list] of grouped.entries()) {
+        if (sortKey === "name") {
+          list.sort((a, b) => (a.salonName || "").localeCompare(b.salonName || ""));
+        } else {
+          list.sort((a, b) => (b.daysSince ?? -1) - (a.daysSince ?? -1)); // desc: longest inactive first
+        }
+        grouped.set(key, list);
+      }
+
+      // flatten with group order stable A–Z
+      const flat: DropRow[] = [];
+      Array.from(grouped.keys()).sort((a, b) => a.localeCompare(b)).forEach(k => {
+        flat.push(...(grouped.get(k) || []));
       });
 
-      setRows(withDays);
+      setRows(flat);
     } catch (e) {
       console.error("Drop-off fetch failed", e);
       setRows([]);
@@ -228,13 +246,10 @@ export default function CustomerDropOffReport() {
     }
   };
 
-  // initial load
-  useEffect(() => {
-    fetchReport();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // first load + refetch on filter/sort changes
+  useEffect(() => { fetchReport(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { fetchReport(); /* eslint-disable-next-line */ }, [thresholdDays, JSON.stringify(selectedReps), sortKey]);
 
-  // quick range handlers
   const setQuick = (days: number) => {
     setThresholdDays(days);
     setCustomDays("");
@@ -242,27 +257,8 @@ export default function CustomerDropOffReport() {
 
   const applyCustom = () => {
     const n = Number(customDays);
-    if (Number.isFinite(n) && n > 0) {
-      setThresholdDays(Math.floor(n));
-    }
+    if (Number.isFinite(n) && n > 0) setThresholdDays(Math.floor(n));
   };
-
-  // refetch when filters change
-  useEffect(() => {
-    fetchReport();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [thresholdDays, JSON.stringify(selectedReps)]);
-
-  // Group by sales rep for display
-  const groups = useMemo(() => {
-    const m = new Map<string, DropRow[]>();
-    for (const r of rows) {
-      const key = r.salesRep || "(Unassigned)";
-      if (!m.has(key)) m.set(key, []);
-      m.get(key)!.push(r);
-    }
-    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [rows]);
 
   const fmtDate = (iso?: string | null) => {
     if (!iso) return "Never";
@@ -271,18 +267,27 @@ export default function CustomerDropOffReport() {
     return d.toLocaleDateString();
   };
 
+  // Build grouped view for render (rep → rows)
+  const groups = useMemo(() => {
+    const m = new Map<string, DropRow[]>();
+    for (const r of rows) {
+      const k = r.salesRep || "(Unassigned)";
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(r);
+    }
+    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [rows]);
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
         <h1>Customer Drop-off</h1>
-        <p className="small">
-          Customers who haven’t ordered in the selected period. Filter by Sales Rep.
-        </p>
+        <p className="small">Customers who haven’t ordered in the selected period. Filter by Sales Rep.</p>
       </section>
 
       {/* Filters */}
-      <section className="card grid" style={{ gap: 12 }}>
-        <div className="grid grid-3" style={{ gap: 12 }}>
+      <section className="card grid" style={{ gap: 12, overflow: "visible" }}>
+        <div className="grid grid-4" style={{ gap: 12 }}>
           <MultiSelect
             label="Sales Reps"
             options={reps}
@@ -292,7 +297,7 @@ export default function CustomerDropOffReport() {
           />
 
           <div className="field">
-            <label>Quick Range</label>
+            <label>Quick range</label>
             <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
               <button type="button" className={thresholdDays === 7  ? "primary" : ""} onClick={() => setQuick(7)}>1 week</button>
               <button type="button" className={thresholdDays === 14 ? "primary" : ""} onClick={() => setQuick(14)}>2 weeks</button>
@@ -317,6 +322,14 @@ export default function CustomerDropOffReport() {
               Current threshold: <b>{thresholdDays}</b> days
             </div>
           </div>
+
+          <div className="field">
+            <label>Sort by</label>
+            <select value={sortKey} onChange={e => setSortKey(e.target.value as SortKey)}>
+              <option value="name">Name (A–Z)</option>
+              <option value="days">Last order days (desc)</option>
+            </select>
+          </div>
         </div>
 
         <div className="right">
@@ -329,7 +342,6 @@ export default function CustomerDropOffReport() {
       {/* Results */}
       <section className="card">
         {loading && <div className="small muted">Loading…</div>}
-
         {!loading && groups.length === 0 && (
           <div className="small muted">No customers found for this filter.</div>
         )}
@@ -358,7 +370,7 @@ export default function CustomerDropOffReport() {
                       <div className="small muted" style={{ minWidth: 120, textAlign: "right" }}>
                         Last order: {fmtDate(r.lastOrderAt)}
                       </div>
-                      <div className="small" style={{ minWidth: 110, textAlign: "right" }}>
+                      <div className="small" style={{ minWidth: 130, textAlign: "right" }}>
                         {typeof r.daysSince === "number" ? `${r.daysSince} days` : "—"}
                       </div>
                     </div>
