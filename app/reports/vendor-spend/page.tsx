@@ -3,155 +3,180 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type Rep = { id: string; name: string };
-
-type ReportRow = {
+type Row = {
   customerId: string;
   salonName: string;
-  customerName: string | null;
+  customerName: string;
   salesRep: string | null;
+  vendor: string | null;
+  total: number;
   currency: string | null;
-  byVendor: Record<string, number>;
-  grandTotal: number;
 };
 
-type ReportData = {
-  vendors: string[];
-  customers: ReportRow[];
+type ApiResponse = {
+  params: { reps: string[]; vendors: string[]; from: string | null; to: string | null };
+  count: number;
+  rows: Row[];
+  totalsByCustomer: Record<string, number>;
 };
 
-function fmtMoney(n: number | null | undefined, ccy?: string | null) {
-  const v = typeof n === "number" ? n : 0;
-  try { return new Intl.NumberFormat(undefined, { style: "currency", currency: ccy || "GBP" }).format(v); }
-  catch { return (ccy || "£") + v.toFixed(2); }
+type Rep = { id: string; name: string };
+
+function fmtMoney(n: number, c?: string | null) {
+  if (!Number.isFinite(n)) n = 0;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: c || "GBP",
+      maximumFractionDigits: 2,
+    }).format(n);
+  } catch {
+    return (c ? `${c} ` : "") + n.toFixed(2);
+  }
 }
 
-export default function VendorSpendReport() {
-  const [reps, setReps] = useState<Rep[]>([]);
-  const [allVendors, setAllVendors] = useState<string[]>([]);
-  const [selectedRep, setSelectedRep] = useState<string>("");
-  const [selectedVendors, setSelectedVendors] = useState<string[]>([]);
-  const [report, setReport] = useState<ReportData | null>(null);
+export default function VendorSpendReportPage() {
   const [loading, setLoading] = useState(false);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [reps, setReps] = useState<Rep[]>([]);
+  const [vendors, setVendors] = useState<string[]>([]);
 
-  // Load reps
+  // filters
+  const [repSel, setRepSel] = useState<string[]>([]);
+  const [vendorSel, setVendorSel] = useState<string[]>([]);
+  const [from, setFrom] = useState<string>("");
+  const [to, setTo] = useState<string>("");
+
   useEffect(() => {
     fetch("/api/sales-reps").then(r => r.json()).then(setReps).catch(() => setReps([]));
+    fetch("/api/vendors").then(r => r.json()).then(setVendors).catch(() => setVendors([]));
   }, []);
-
-  // Load a distinct vendor list (from order line items). We reuse the same report API with no filters to get vendor universe.
-  useEffect(() => {
-    fetch("/api/reports/vendor-spend")
-      .then(r => r.json())
-      .then((j: ReportData) => setAllVendors(j.vendors || []))
-      .catch(() => setAllVendors([]));
-  }, []);
-
-  function toggleVendor(v: string) {
-    setSelectedVendors(prev =>
-      prev.includes(v) ? prev.filter(x => x !== v) : [...prev, v]
-    );
-  }
 
   async function run() {
+    const sp = new URLSearchParams();
+    if (repSel.length) sp.set("reps", repSel.join(","));
+    if (vendorSel.length) sp.set("vendors", vendorSel.join(","));
+    if (from) sp.set("from", from);
+    if (to) sp.set("to", to);
+
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (selectedRep) params.set("rep", selectedRep);
-      if (selectedVendors.length) params.set("vendors", selectedVendors.join(","));
-      // you can also add from/to here, e.g. params.set("from","2025-01-01")
-
-      const res = await fetch(`/api/reports/vendor-spend?${params.toString()}`, { cache: "no-store" });
-      const j: ReportData = await res.json();
-      setReport(j);
-    } catch (e) {
-      console.error(e);
-      setReport(null);
+      const res = await fetch(`/api/reports/vendor-spend?${sp.toString()}`, { cache: "no-store" });
+      const json: ApiResponse = await res.json();
+      setRows(json.rows || []);
     } finally {
       setLoading(false);
     }
   }
 
-  const vendorsToShow = useMemo(
-    () => (selectedVendors.length ? selectedVendors : report?.vendors || []),
-    [selectedVendors, report]
+  const grandTotal = useMemo(
+    () => rows.reduce((acc, r) => acc + (Number.isFinite(r.total) ? r.total : 0), 0),
+    [rows]
   );
+  const currency = rows[0]?.currency || "GBP";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <h1>Vendor Spend Report</h1>
-        <p className="small">Filter customers by Sales Rep and see spend per vendor.</p>
+        <h1>Vendor Spend</h1>
+        <p className="small">Filter customers by Sales Rep and Vendor, then view spend totals.</p>
       </section>
 
       <section className="card grid" style={{ gap: 12 }}>
         <div className="grid grid-3">
           <div className="field">
-            <label>Sales Rep</label>
-            <select value={selectedRep} onChange={e => setSelectedRep(e.target.value)}>
-              <option value="">— All reps —</option>
-              {reps.map(r => (
-                <option key={r.id} value={r.name}>{r.name}</option>
+            <label>Sales Reps</label>
+            <select
+              multiple
+              value={repSel}
+              onChange={(e) =>
+                setRepSel(Array.from(e.target.selectedOptions).map((o) => o.value))
+              }
+            >
+              {reps.map((r) => (
+                <option key={r.id} value={r.name}>
+                  {r.name}
+                </option>
               ))}
             </select>
+            <div className="form-hint">Hold Ctrl/Cmd to select multiple.</div>
           </div>
 
           <div className="field">
-            <label>Vendors (multi-select)</label>
-            <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
-              {allVendors.map(v => (
-                <label key={v} className="small row" style={{ gap: 6 }}>
-                  <input
-                    type="checkbox"
-                    checked={selectedVendors.includes(v)}
-                    onChange={() => toggleVendor(v)}
-                  />
+            <label>Vendors</label>
+            <select
+              multiple
+              value={vendorSel}
+              onChange={(e) =>
+                setVendorSel(Array.from(e.target.selectedOptions).map((o) => o.value))
+              }
+            >
+              {vendors.map((v) => (
+                <option key={v} value={v}>
                   {v}
-                </label>
+                </option>
               ))}
-            </div>
-            <div className="form-hint">Leave empty for all vendors.</div>
+            </select>
+            <div className="form-hint">Hold Ctrl/Cmd to select multiple.</div>
           </div>
 
-          <div className="field">
-            <label>&nbsp;</label>
-            <button className="primary" type="button" onClick={run} disabled={loading}>
-              {loading ? "Running…" : "Run Report"}
-            </button>
+          <div className="grid" style={{ gap: 8 }}>
+            <div className="field">
+              <label>From</label>
+              <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>To</label>
+              <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            </div>
           </div>
+        </div>
+
+        <div className="right">
+          <button className="primary" onClick={run} disabled={loading}>
+            {loading ? "Loading…" : "Run Report"}
+          </button>
         </div>
       </section>
 
       <section className="card">
-        {!report ? (
-          <p className="small">Run the report to see results.</p>
-        ) : report.customers.length === 0 ? (
-          <p className="small">No results.</p>
+        <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+          <b>Results ({rows.length})</b>
+          <b>Total: {fmtMoney(grandTotal, currency)}</b>
+        </div>
+
+        {rows.length === 0 ? (
+          <p className="small">No data. Choose filters and click “Run Report”.</p>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <div className="row" style={{ fontWeight: 600, borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
-              <div style={{ flex: "0 0 260px" }}>Customer</div>
-              <div style={{ flex: "0 0 160px" }}>Sales Rep</div>
-              {vendorsToShow.map(v => (
-                <div key={v} style={{ flex: "0 0 140px" }}>{v}</div>
-              ))}
-              <div style={{ flex: "0 0 140px" }}>Total</div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1.4fr 1.1fr 1fr 1fr",
+              columnGap: 10,
+              rowGap: 8,
+              fontSize: 14,
+            }}
+          >
+            {/* header */}
+            <div className="muted small">Customer</div>
+            <div className="muted small">Vendor</div>
+            <div className="muted small">Sales Rep</div>
+            <div className="muted small" style={{ textAlign: "right" }}>
+              Spend
             </div>
 
-            {report.customers.map((c) => (
-              <div key={c.customerId} className="row" style={{ borderBottom: "1px solid var(--border)", padding: "8px 0" }}>
-                <div style={{ flex: "0 0 260px" }}>
-                  <div>{c.salonName}</div>
-                  <div className="small muted">{c.customerName || "—"}</div>
+            {/* rows */}
+            {rows.map((r) => (
+              <div key={`${r.customerId}-${r.vendor}`} style={{ display: "contents" }}>
+                <div>
+                  <a href={`/customers/${r.customerId}`} className="link">
+                    {r.salonName || r.customerName || r.customerId}
+                  </a>
                 </div>
-                <div style={{ flex: "0 0 160px" }}>{c.salesRep || "—"}</div>
-                {vendorsToShow.map(v => (
-                  <div key={v} style={{ flex: "0 0 140px" }}>
-                    {fmtMoney(c.byVendor[v] || 0, c.currency)}
-                  </div>
-                ))}
-                <div style={{ flex: "0 0 140px", fontWeight: 600 }}>
-                  {fmtMoney(c.grandTotal, c.currency)}
+                <div>{r.vendor || "—"}</div>
+                <div>{r.salesRep || "—"}</div>
+                <div style={{ textAlign: "right", fontWeight: 600 }}>
+                  {fmtMoney(r.total, r.currency)}
                 </div>
               </div>
             ))}
