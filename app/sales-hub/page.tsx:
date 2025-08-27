@@ -1,8 +1,8 @@
 // app/sales-hub/page.tsx
 import Link from "next/link";
 
-export const dynamic = "force-static";
-export const revalidate = 1; // busts any stale cache quickly
+export const dynamic = "force-dynamic";   // ensure the page is always available
+export const revalidate = 0;
 
 export default function SalesHub() {
   return (
