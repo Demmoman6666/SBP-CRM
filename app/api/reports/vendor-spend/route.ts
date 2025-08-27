@@ -1,135 +1,137 @@
-// app/api/reports/vendor-spend/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+/* ---------- helpers ---------- */
 function toNum(v: any): number {
-  if (v == null) return 0;
-  try {
-    if (typeof v === "number") return v;
-    if (typeof v === "string") return Number(v) || 0;
-    if (typeof v === "object" && "toNumber" in v) {
-      return (v as any).toNumber?.() ?? 0; // Prisma Decimal
-    }
-  } catch {}
-  return Number(v) || 0;
+  const n = Number(v ?? 0);
+  return Number.isFinite(n) ? n : 0;
 }
 
-function liTotal(li: any): number {
-  const t = toNum(li.total);
-  if (t) return t;
-  return toNum(li.price) * Number(li.quantity ?? 0);
+// parse "dd/mm/yyyy" or ISO-ish strings
+function parseDate(val?: string | null): Date | null {
+  if (!val) return null;
+  const s = String(val).trim();
+  if (!s) return null;
+
+  // dd/mm/yyyy
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const d = Number(m[1]), mo = Number(m[2]) - 1, y = Number(m[3]);
+    const dt = new Date(Date.UTC(y, mo, d, 0, 0, 0));
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
+  // fallback to Date
+  const dt = new Date(s);
+  return isNaN(dt.getTime()) ? null : dt;
 }
 
+function endOfDayUTC(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
+}
+
+/* ---------- GET /api/reports/vendor-spend ---------- */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  // reps filter: ?rep=Alex&rep=Laura OR ?reps=Alex,Laura
-  const repsParam = searchParams.getAll("rep").concat(searchParams.getAll("reps"));
-  const repsFromCsv = (searchParams.get("reps") || "")
-    .split(",")
-    .map(s => s.trim())
-    .filter(Boolean);
-  const reps = Array.from(new Set([...repsParam, ...repsFromCsv].map(s => s.trim()).filter(Boolean)));
+  // filters
+  const start = parseDate(searchParams.get("start"));
+  const end   = parseDate(searchParams.get("end"));
+  const reps  = (searchParams.getAll("rep").length
+    ? searchParams.getAll("rep")
+    : (searchParams.get("reps") || "").split(",")
+  ).map(s => s.trim()).filter(Boolean);
 
-  // vendors filter: ?vendors=Wella,Matrix (case-sensitive like Shopify)
-  const vendors = Array.from(
-    new Set(
-      (searchParams.get("vendors") || "")
-        .split(",")
-        .map(s => s.trim())
-        .filter(Boolean),
-    ),
-  );
+  const selectedVendors = (searchParams.getAll("vendor").length
+    ? searchParams.getAll("vendor")
+    : (searchParams.get("vendors") || "").split(",")
+  ).map(s => s.trim()).filter(Boolean);
 
-  const from = searchParams.get("from") || searchParams.get("date_from");
-  const to   = searchParams.get("to")   || searchParams.get("date_to");
-
+  // prisma where
   const where: any = {};
-  if (vendors.length) where.productVendor = { in: vendors };
-  where.order = {};
-  if (reps.length) where.order.customer = { salesRep: { in: reps } };
-  if (from || to) {
-    where.order.processedAt = {};
-    if (from) (where.order.processedAt as any).gte = new Date(from);
-    if (to)   (where.order.processedAt as any).lte = new Date(to);
+  if (start || end) {
+    where.processedAt = {};
+    if (start) (where.processedAt as any).gte = start;
+    if (end)   (where.processedAt as any).lte = endOfDayUTC(end);
+  }
+  if (reps.length) {
+    where.customer = { salesRep: { in: reps } };
   }
 
-  // Pull matching line items with minimal order+customer context
-  const lines = await prisma.orderLineItem.findMany({
+  // pull orders + items
+  const orders = await prisma.order.findMany({
     where,
-    select: {
-      productVendor: true,
-      total: true,
-      price: true,
-      quantity: true,
-      order: {
-        select: {
-          id: true,
-          currency: true,
-          processedAt: true,
-          customerId: true,
-          customer: {
-            select: {
-              id: true,
-              salonName: true,
-              customerName: true,
-              salesRep: true,
-            },
-          },
-        },
-      },
+    orderBy: { processedAt: "asc" },
+    include: {
+      customer: { select: { id: true, salonName: true, customerName: true, salesRep: true } },
+      lineItems: { select: {
+        productVendor: true,
+        quantity: true,
+        price: true,
+        total: true,
+      }},
     },
   });
 
+  // aggregate by customer
   type Row = {
     customerId: string;
     salonName: string;
-    customerName: string;
     salesRep: string | null;
-    vendor: string | null;
+    perVendor: Record<string, number>;
+    subtotal: number;
+    taxes: number;
     total: number;
-    currency: string | null;
   };
 
-  // Group by customer × vendor
-  const map = new Map<string, Row>();
-  for (const li of lines) {
-    const cust = li.order.customer;
-    if (!cust) continue;
-    const key = `${cust.id}||${li.productVendor ?? ""}`;
-    const amt = liTotal(li);
-    const existing = map.get(key);
-    if (existing) {
-      existing.total += amt;
-    } else {
-      map.set(key, {
-        customerId: cust.id,
-        salonName: cust.salonName ?? "",
-        customerName: cust.customerName ?? "",
-        salesRep: cust.salesRep ?? null,
-        vendor: li.productVendor ?? null,
-        total: amt,
-        currency: li.order.currency ?? null,
-      });
+  const rowsByCustomer = new Map<string, Row>();
+  const vendorUniverse = new Set<string>();
+
+  for (const o of orders) {
+    if (!o.customer) continue;
+    const cid = o.customer.id;
+
+    // init row
+    let row = rowsByCustomer.get(cid);
+    if (!row) {
+      row = {
+        customerId: cid,
+        salonName: o.customer.salonName || o.customer.customerName || "(Unnamed)",
+        salesRep: o.customer.salesRep || null,
+        perVendor: {},
+        subtotal: 0,
+        taxes: 0,
+        total: 0,
+      };
+      rowsByCustomer.set(cid, row);
+    }
+
+    // money totals at order level
+    row.subtotal += toNum(o.subtotal);
+    row.taxes    += toNum(o.taxes);
+    row.total    += toNum(o.total);
+
+    // vendor spend (line items)
+    for (const li of o.lineItems) {
+      const v = (li.productVendor || "").trim();
+      if (!v) continue;
+      // respect vendor filter if provided
+      if (selectedVendors.length && !selectedVendors.includes(v)) continue;
+
+      const lineTotal = toNum(li.total) || (toNum(li.price) * toNum(li.quantity || 1));
+      row.perVendor[v] = (row.perVendor[v] || 0) + lineTotal;
+      vendorUniverse.add(v);
     }
   }
 
-  const rows = Array.from(map.values()).sort(
-    (a, b) =>
-      (a.salonName || "").localeCompare(b.salonName || "") ||
-      (a.vendor || "").localeCompare(b.vendor || ""),
-  );
+  // decide which vendor columns to return (filter order or discovered universe)
+  const vendors = selectedVendors.length
+    ? selectedVendors
+    : Array.from(vendorUniverse).sort((a, b) => a.localeCompare(b));
 
-  // Optional totals by customer (handy for the UI)
-  const totalsByCustomer: Record<string, number> = {};
-  for (const r of rows) {
-    totalsByCustomer[r.customerId] = (totalsByCustomer[r.customerId] || 0) + r.total;
-  }
+  // final array (stable sort by salon name)
+  const rows = Array.from(rowsByCustomer.values())
+    .sort((a, b) => a.salonName.localeCompare(b.salonName));
 
-  return NextResponse.json({
-    params: { reps, vendors, from: from || null, to: to || null },
-    count: rows.length,
-    rows,
-    totalsByCustomer,
-  });
+  return NextResponse.json({ vendors, rows });
 }
