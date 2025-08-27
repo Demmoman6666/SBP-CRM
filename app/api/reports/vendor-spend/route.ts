@@ -9,7 +9,6 @@ function toNum(v: any): number {
   // robust Number() for Prisma Decimal | string | null
   if (v == null) return 0;
   try {
-    // Prisma Decimal has toNumber()
     if (typeof v === "object" && v !== null && "toNumber" in v && typeof (v as any).toNumber === "function") {
       return Number((v as any).toNumber() ?? 0);
     }
@@ -27,9 +26,7 @@ function parseDate(val?: string | null): Date | null {
   // dd/mm/yyyy
   const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (m) {
-    const d = Number(m[1]),
-      mo = Number(m[2]) - 1,
-      y = Number(m[3]);
+    const d = Number(m[1]), mo = Number(m[2]) - 1, y = Number(m[3]);
     const dt = new Date(Date.UTC(y, mo, d, 0, 0, 0));
     return isNaN(dt.getTime()) ? null : dt;
   }
@@ -59,27 +56,36 @@ function normVendor(input: string): string {
     .trim();
 }
 
+/* CSV helpers */
+function csvEscape(s: any): string {
+  const raw = s == null ? "" : String(s);
+  return /[",\n]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
+}
+function wantsCSV(req: Request, sp: URLSearchParams) {
+  if ((sp.get("format") || "").toLowerCase() === "csv") return true;
+  if (sp.get("csv") === "1") return true;
+  const accept = (req.headers.get("accept") || "").toLowerCase();
+  return accept.includes("text/csv");
+}
+
 /* ---------- GET /api/reports/vendor-spend ---------- */
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+  const url = new URL(req.url);
+  const { searchParams } = url;
 
   // filters
   const start = parseDate(searchParams.get("start"));
-  const end = parseDate(searchParams.get("end"));
+  const end   = parseDate(searchParams.get("end"));
 
   const reps = (searchParams.getAll("rep").length
     ? searchParams.getAll("rep")
     : (searchParams.get("reps") || "").split(",")
-  )
-    .map((s) => s.trim())
-    .filter(Boolean);
+  ).map(s => s.trim()).filter(Boolean);
 
   const selectedVendorsRaw = (searchParams.getAll("vendor").length
     ? searchParams.getAll("vendor")
     : (searchParams.get("vendors") || "").split(",")
-  )
-    .map((s) => s.trim())
-    .filter(Boolean);
+  ).map(s => s.trim()).filter(Boolean);
 
   // Load StockedBrand list to get canonical display names for vendors
   const stocked = await prisma.stockedBrand.findMany({ select: { name: true } });
@@ -98,7 +104,7 @@ export async function GET(req: Request) {
   if (start || end) {
     where.processedAt = {};
     if (start) (where.processedAt as any).gte = start;
-    if (end) (where.processedAt as any).lte = endOfDayUTC(end);
+    if (end)   (where.processedAt as any).lte = endOfDayUTC(end);
   }
   if (reps.length) {
     where.customer = { salesRep: { in: reps } };
@@ -155,8 +161,8 @@ export async function GET(req: Request) {
 
     // order-level money
     row.subtotal += toNum(o.subtotal);
-    row.taxes += toNum(o.taxes);
-    row.total += toNum(o.total);
+    row.taxes    += toNum(o.taxes);
+    row.total    += toNum(o.total);
 
     // vendor spend (normalize & align to canonical labels)
     for (const li of o.lineItems) {
@@ -193,5 +199,32 @@ export async function GET(req: Request) {
   // final rows sorted by salon name
   const rows = Array.from(rowsByCustomer.values()).sort((a, b) => a.salonName.localeCompare(b.salonName));
 
-  return NextResponse.json({ vendors, rows });
+  // -------- JSON (default) --------
+  if (!wantsCSV(req, searchParams)) {
+    return NextResponse.json({ vendors, rows });
+  }
+
+  // -------- CSV (when requested) --------
+  const header = ["Salon Name", "Sales Rep", "Subtotal", "Taxes", "Total", ...vendors.map(v => `Vendor: ${v}`)];
+  const lines: string[] = [header.map(csvEscape).join(",")];
+
+  for (const r of rows) {
+    const vendorCols = vendors.map(v => (r.perVendor[v] ?? 0).toFixed(2));
+    lines.push([
+      csvEscape(r.salonName),
+      csvEscape(r.salesRep ?? ""),
+      r.subtotal.toFixed(2),
+      r.taxes.toFixed(2),
+      r.total.toFixed(2),
+      ...vendorCols,
+    ].join(","));
+  }
+
+  return new NextResponse(lines.join("\n"), {
+    headers: {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": 'attachment; filename="vendor-spend.csv"',
+      "Cache-Control": "no-store",
+    },
+  });
 }
