@@ -4,12 +4,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
+type Role = "ADMIN" | "MANAGER" | "REP" | "VIEWER";
+
 type UserRow = {
   id: string;
   fullName: string;
   email: string;
   phone?: string | null;
-  role: "ADMIN" | "MANAGER" | "REP" | "VIEWER";
+  role: Role;
   isActive: boolean;
   createdAt: string; // ISO
 };
@@ -17,9 +19,8 @@ type UserRow = {
 export const dynamic = "force-dynamic";
 
 async function safeJson(res: Response) {
-  // Handles 204/empty body without throwing
   const txt = await res.text();
-  if (!txt) return null;
+  if (!txt) return null; // handles 204/empty body
   try {
     return JSON.parse(txt);
   } catch {
@@ -31,43 +32,57 @@ export default function UsersPage() {
   const [rows, setRows] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
+  const [who, setWho] = useState<any>(null);
 
   async function load() {
     setLoading(true);
     setMsg(null);
-    try {
-      const res = await fetch("/api/users", {
-        credentials: "include",
-        cache: "no-store",
-      });
-      const body = await safeJson(res);
+    setRows([]);
 
+    try {
+      // 1) Check who I am (and force cookie to be sent)
+      const meRes = await fetch("/api/me", { credentials: "include", cache: "no-store" });
+      const me = meRes.ok ? await safeJson(meRes) : null;
+      setWho(me);
+
+      if (!meRes.ok || !me || me.role !== "ADMIN") {
+        setMsg("Unauthorized — admin access required. If you just changed domains/preview URLs, sign in again.");
+        return;
+      }
+
+      // 2) Fetch users list (cookie included)
+      const res = await fetch("/api/users", { credentials: "include", cache: "no-store" });
+      if (res.status === 401 || res.status === 403) {
+        setMsg("Unauthorized");
+        return;
+      }
+
+      const body = await safeJson(res);
       if (!res.ok) {
         const err = (body as any)?.error || `HTTP ${res.status}`;
         throw new Error(err);
       }
 
-      // Accept { users: [...] } or raw [...]
+      // Accept either { users: [...] } or raw [...]
       const list: any[] = Array.isArray((body as any)?.users)
         ? (body as any).users
         : Array.isArray(body)
         ? (body as any)
         : [];
 
-      setRows(
-        list.map((u: any) => ({
-          id: String(u.id),
-          fullName: String(u.fullName ?? ""),
-          email: String(u.email ?? ""),
-          phone: u.phone ?? null,
-          role: u.role,
-          isActive: Boolean(u.isActive),
-          createdAt: (u.createdAt && new Date(u.createdAt).toISOString()) || new Date().toISOString(),
-        }))
-      );
+      const mapped: UserRow[] = list.map((u: any) => ({
+        id: String(u.id),
+        fullName: String(u.fullName ?? ""),
+        email: String(u.email ?? ""),
+        phone: u.phone ?? null,
+        role: String(u.role) as Role,
+        isActive: Boolean(u.isActive),
+        createdAt: (u.createdAt && new Date(u.createdAt).toISOString()) || new Date().toISOString(),
+      }));
+
+      setRows(mapped);
     } catch (e: any) {
       setMsg(e?.message || "Failed to load users");
-      setRows([]);
     } finally {
       setLoading(false);
     }
@@ -96,6 +111,12 @@ export default function UsersPage() {
             {msg && (
               <div className="form-error" style={{ marginBottom: 10 }}>
                 {msg}
+                {" "}
+                {msg.toLowerCase().includes("unauthorized") && (
+                  <a href="/login" className="small" style={{ textDecoration: "underline" }}>
+                    Sign in
+                  </a>
+                )}
               </div>
             )}
 
@@ -132,6 +153,12 @@ export default function UsersPage() {
                   </div>
                 ))}
               </div>
+            )}
+
+            {who && (
+              <p className="small muted" style={{ marginTop: 8 }}>
+                Signed in as: {who.fullName || who.email} ({who.role})
+              </p>
             )}
           </>
         )}
