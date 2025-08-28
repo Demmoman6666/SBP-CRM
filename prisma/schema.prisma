@@ -150,9 +150,16 @@ model SalesRep {
 }
 
 model Brand {
-  id        String   @id @default(cuid())
-  name      String   @unique
-  createdAt DateTime @default(now())
+  id               String   @id @default(cuid())
+  name             String   @unique
+  createdAt        DateTime @default(now())
+
+  // Toggle visibility on the "Log Call" form (competitors)
+  visibleInCallLog Boolean  @default(false) // NEW
+  // Back-link to calls
+  callLogLinks     CallLogCompetitorBrand[] // NEW
+
+  @@index([visibleInCallLog]) // NEW
 }
 
 model CallLog {
@@ -183,15 +190,26 @@ model CallLog {
   durationMinutes    Int?
   appointmentBooked  Boolean?  @default(false)
 
+  // Selected brands during the call
+  competitorBrandLinks CallLogCompetitorBrand[] // NEW
+  stockedBrandLinks    CallLogStockedBrand[]    // NEW
+
   @@index([createdAt])
   @@index([isExistingCustomer, customerId])
 }
 
 model StockedBrand {
-  id        String   @id @default(cuid())
-  name      String   @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String   @id @default(cuid())
+  name             String   @unique
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Toggle visibility on the "Log Call" form (your vendors)
+  visibleInCallLog Boolean  @default(false) // NEW
+  // Back-link to calls
+  callLogLinks     CallLogStockedBrand[]     // NEW
+
+  @@index([visibleInCallLog]) // NEW
 }
 
 model Order {
@@ -278,4 +296,32 @@ model WebhookLog {
   createdAt DateTime @default(now())
 
   @@index([topic, createdAt])
+}
+
+/* ---------------- Many-to-many join tables for CallLog x Brands (NEW) ---------------- */
+
+model CallLogCompetitorBrand {
+  callLogId String
+  callLog   CallLog @relation(fields: [callLogId], references: [id], onDelete: Cascade)
+
+  brandId   String
+  brand     Brand   @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([callLogId, brandId])
+  @@index([brandId])
+}
+
+model CallLogStockedBrand {
+  callLogId      String
+  callLog        CallLog     @relation(fields: [callLogId], references: [id], onDelete: Cascade)
+
+  stockedBrandId String
+  stockedBrand   StockedBrand @relation(fields: [stockedBrandId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([callLogId, stockedBrandId])
+  @@index([stockedBrandId])
 }
