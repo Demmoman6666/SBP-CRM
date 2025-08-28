@@ -1,39 +1,34 @@
 // app/api/login/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { createHmac } from "crypto";
 
-export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// helper: base64url
-function b64url(input: Buffer | string) {
-  const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+const COOKIE_NAME = "sbp_session";
+
+// --- helpers for signing the session token (same format your middleware verifies) ---
+function b64urlFromBytes(bytes: Uint8Array) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+async function signToken(payload: string, secret: string) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(payload));
+  return b64urlFromBytes(new Uint8Array(sig));
 }
 
-// mint sbp_session token compatible with middleware.ts (payload.signature)
-function createSessionToken(userId: string, days = 30) {
-  const exp = Math.floor(Date.now() / 1000) + days * 24 * 60 * 60;
-  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-  const payload = { userId, exp };
-  const p = b64url(JSON.stringify(payload));
-  const sig = b64url(createHmac("sha256", secret).update(p).digest());
-  return { token: `${p}.${sig}`, exp };
-}
-
-type Row = {
-  id: string;
-  fullName: string;
-  email: string;
-  phone: string | null;
-  role: "ADMIN" | "MANAGER" | "REP" | "VIEWER";
-  isActive: boolean;
-};
-
+// Ping / quick health check so you can verify middleware isn’t blocking
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  if (url.searchParams.get("ping") === "1") {
+  const { searchParams } = new URL(req.url);
+  if (searchParams.get("ping")) {
     return NextResponse.json({ ok: true, method: "GET" });
   }
   return NextResponse.json({ ok: true });
@@ -41,64 +36,98 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const { email, password } = await req.json().catch(() => ({} as any));
-    const e = String(email || "").trim();
-    const p = String(password || "");
-    if (!e || !p) {
+    // Accept BOTH JSON and form posts
+    const ct = req.headers.get("content-type") || "";
+    let email = "";
+    let password = "";
+
+    if (ct.includes("application/json")) {
+      const body = await req.json().catch(() => ({} as any));
+      email = String(body.email ?? "").trim();
+      password = String(body.password ?? "");
+    } else {
+      // handles application/x-www-form-urlencoded and multipart/form-data
+      const fd = await req.formData();
+      email = String(fd.get("email") ?? "").trim();
+      password = String(fd.get("password") ?? "");
+    }
+
+    if (!email || !password) {
       return NextResponse.json({ error: "Missing credentials" }, { status: 400 });
     }
 
-    // Verify with pgcrypto (bcrypt) in SQL so it matches your Neon hash
-    const rows = await prisma.$queryRaw<Row[]>`
-      SELECT id, "fullName", email, phone, role, "isActive"
+    // Look up the user and verify the bcrypt hash IN Postgres (pgcrypto)
+    // ok will be true when crypt(plain, passwordHash) == passwordHash
+    const rows = await prisma.$queryRaw<{
+      id: string;
+      fullName: string;
+      email: string;
+      phone: string | null;
+      role: string;
+      isActive: boolean;
+      ok: boolean;
+    }[]>`
+      SELECT
+        id,
+        "fullName",
+        "email",
+        "phone",
+        "role",
+        "isActive",
+        ("passwordHash" = crypt(${password}, "passwordHash")) AS ok
       FROM "User"
-      WHERE lower(email) = lower(${e})
+      WHERE lower("email") = lower(${email})
         AND "isActive" = true
-        AND "passwordHash" = crypt(${p}, "passwordHash")
       LIMIT 1
     `;
-    if (!rows.length) {
+
+    if (!rows.length || !rows[0].ok) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const user = rows[0];
-    const lowerEmail = user.email.toLowerCase();
+    const row = rows[0];
 
-    // mint session token for middleware
-    const { token } = createSessionToken(user.id);
+    // Build and sign a short token { userId, exp } that middleware validates
+    const exp = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30; // 30 days
+    const payload = JSON.stringify({ userId: row.id, exp });
+    const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
+    const payloadB64 = b64urlFromBytes(new TextEncoder().encode(payload));
+    const sig = await signToken(payload, secret);
+    const token = `${payloadB64}.${sig}`;
 
     const res = NextResponse.json({
       ok: true,
-      user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role },
+      user: {
+        id: row.id,
+        email: row.email,
+        fullName: row.fullName,
+        role: row.role,
+      },
     });
 
-    // primary cookie for middleware
-    res.cookies.set("sbp_session", token, {
+    // Primary cookie used by middleware
+    res.cookies.set(COOKIE_NAME, token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
       path: "/",
       maxAge: 60 * 60 * 24 * 30, // 30 days
     });
 
-    // backward-compat for server helpers that read email
-    res.cookies.set("sbp_email", lowerEmail, {
+    // Legacy convenience cookie used by lib/auth.getCurrentUser()
+    res.cookies.set("sbp_email", row.email.toLowerCase(), {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30,
-    });
-    res.cookies.set("email", lowerEmail, {
-      httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
       path: "/",
       maxAge: 60 * 60 * 24 * 30,
     });
 
     return res;
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Server error" }, { status: 500 });
+    return NextResponse.json(
+      { error: e?.message || "Server error" },
+      { status: 500 }
+    );
   }
 }
