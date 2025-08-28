@@ -1,28 +1,21 @@
 // app/api/auth/login/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
-import { signToken, COOKIE_NAME } from "@/lib/session";
+import * as session from "@/lib/session"; // we’ll try legacy if exported
 
 export const dynamic = "force-dynamic";
 
-/* ---- helpers ---- */
-function asBool(v: unknown): boolean {
-  if (typeof v === "boolean") return v;
-  if (typeof v === "string") {
-    const s = v.trim().toLowerCase();
-    return s === "1" || s === "true" || s === "on" || s === "yes";
-  }
-  return false;
-}
-
-async function readBody(req: NextRequest) {
+async function readBody(req: Request) {
   const ct = req.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return await req.json();
-  if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
+  if (ct.includes("application/json")) return await req.json().catch(() => ({}));
+  if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
     const fd = await req.formData();
-    return Object.fromEntries(fd.entries());
+    const obj: Record<string, any> = {};
+    fd.forEach((v, k) => (obj[k] = typeof v === "string" ? v : v.name));
+    return obj;
   }
+  // best-effort
   try {
     return await req.json();
   } catch {
@@ -30,60 +23,94 @@ async function readBody(req: NextRequest) {
   }
 }
 
-/* ---- POST /api/auth/login ---- */
-export async function POST(req: NextRequest) {
-  const body: any = await readBody(req);
+export async function POST(req: Request) {
+  try {
+    const url = new URL(req.url);
+    const qNext = url.searchParams.get("next") || undefined;
+    const body: any = await readBody(req);
 
-  const email = String(body.email || "").trim().toLowerCase();
-  const password = String(body.password || "");
-  const remember = asBool(body.remember);
+    const emailRaw = (body.email ?? "").toString().trim();
+    const password = (body.password ?? "").toString();
+    if (!emailRaw || !password) {
+      return NextResponse.json({ error: "Email and password required" }, { status: 400 });
+    }
 
-  if (!email || !password) {
-    return NextResponse.json({ error: "Email and password required" }, { status: 400 });
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: emailRaw, mode: "insensitive" } },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        passwordHash: true,
+        isActive: true,
+      },
+    });
+
+    if (!user || !user.isActive) {
+      return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
+    }
+
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) {
+      return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
+    }
+
+    // remember can be true/"on"/"1"
+    const rememberFlag =
+      body.remember === true ||
+      String(body.remember || "").toLowerCase() === "on" ||
+      String(body.remember || "") === "1";
+
+    const maxAge = rememberFlag ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7; // 30d or 7d
+
+    // Prefer legacy 2-part token if the helper exists, else fall back to the new one.
+    let token: string;
+    if ((session as any).createLegacyToken) {
+      token = (session as any).createLegacyToken(user.id, maxAge);
+    } else if ((session as any).createSessionToken) {
+      token = (session as any).createSessionToken(user.id, maxAge);
+    } else {
+      return NextResponse.json({ error: "Auth helpers missing" }, { status: 500 });
+    }
+
+    // Prepare response (we'll decide JSON vs redirect below)
+    const resJson = NextResponse.json({
+      ok: true,
+      user: { id: user.id, email: user.email, fullName: user.fullName },
+      next: body.next || qNext || "/",
+    });
+
+    // Set cookie (host-only cookie on current domain)
+    resJson.cookies.set("sbp_session", token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge,
+    });
+
+    // If form submit or caller wants redirect, do a server-side redirect after setting cookie.
+    const wantsRedirect =
+      qNext ||
+      body.next ||
+      (req.headers.get("accept") || "").includes("text/html") ||
+      String(body.redirect || "") === "1";
+
+    if (wantsRedirect) {
+      const dest = (body.next || qNext || "/") as string;
+      const redirect = NextResponse.redirect(new URL(dest, req.url), 303);
+      redirect.cookies.set("sbp_session", token, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        path: "/",
+        maxAge,
+      });
+      return redirect;
+    }
+
+    return resJson;
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "Login failed" }, { status: 400 });
   }
-
-  // case-insensitive lookup (email is unique in your schema)
-  const user = await prisma.user.findFirst({
-    where: { email: { equals: email, mode: "insensitive" } },
-    select: {
-      id: true,
-      email: true,
-      fullName: true,
-      passwordHash: true,
-      isActive: true,
-    },
-  });
-
-  if (!user || !user.isActive) {
-    return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
-  }
-
-  const ok = await bcrypt.compare(password, user.passwordHash);
-  if (!ok) {
-    return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
-  }
-
-  // 30 days if "remember", otherwise 7 days
-  const maxAge = remember ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7;
-  const exp = Math.floor(Date.now() / 1000) + maxAge;
-
-  // Sign using the same secret/format as all verifiers
-  const token = signToken({ userId: user.id, exp });
-
-  const res = NextResponse.json({
-    ok: true,
-    user: { id: user.id, email: user.email, fullName: user.fullName },
-    remember,
-  });
-
-  // Host-only cookie (no domain), httpOnly, lax, secure on prod
-  res.cookies.set(COOKIE_NAME, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge, // seconds
-  });
-
-  return res;
 }
