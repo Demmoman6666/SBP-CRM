@@ -1,3 +1,4 @@
+// app/settings/global/competitor-brands/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -15,17 +16,21 @@ export default function CompetitorBrandVisibility() {
     setLoading(true);
     setMsg(null);
     try {
-      // sanity: prove cookies/session are present
+      // (optional) show who is signed in
       const me = await fetch("/api/me", { credentials: "include", cache: "no-store" });
       setWho(me.ok ? await me.json().catch(() => null) : null);
 
-      const res = await fetch("/api/brands", { credentials: "include", cache: "no-store" });
+      const res = await fetch(
+        "/api/settings/brand-visibility?type=competitor",
+        { credentials: "include", cache: "no-store" }
+      );
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || "Failed to load brands");
-      if (!Array.isArray(j)) throw new Error("Unexpected response");
-      setRows(j);
+      if (!Array.isArray(j?.rows)) throw new Error("Unexpected response");
+      setRows(j.rows);
     } catch (e: any) {
       setMsg(e?.message || "Failed to load brands");
+      setRows([]);
     } finally {
       setLoading(false);
     }
@@ -39,14 +44,19 @@ export default function CompetitorBrandVisibility() {
     setSaving(id);
     setMsg(null);
     try {
-      const res = await fetch("/api/brands", {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, visible: next }),
-      });
+      const res = await fetch(
+        "/api/settings/brand-visibility?type=competitor",
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, visible: next }),
+        }
+      );
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || "Update failed");
+
+      // Optimistic update
       setRows((r) => r.map((x) => (x.id === id ? { ...x, visibleInCallLog: next } : x)));
     } catch (e: any) {
       setMsg(e?.message || "Update failed");
@@ -59,7 +69,10 @@ export default function CompetitorBrandVisibility() {
     <div className="grid" style={{ gap: 16 }}>
       <div className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <h1>Toggle Competitor Brands</h1>
-        <a href="/settings" className="btn">Back to Settings</a>
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn" onClick={load} disabled={loading}>Refresh</button>
+          <a href="/settings" className="btn">Back to Settings</a>
+        </div>
       </div>
 
       <div className="card">
@@ -88,7 +101,6 @@ export default function CompetitorBrandVisibility() {
           Checked brands will appear as checkboxes on the “Log Call” page under “Competitor Brands”.
         </p>
 
-        {/* optional tiny debug */}
         {who && (
           <p className="small muted" style={{ marginTop: 8 }}>
             Signed in as: {who?.fullName ?? who?.email ?? "(unknown)"} ({who?.role})
