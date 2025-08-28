@@ -11,6 +11,7 @@ export default function SettingsMenu() {
   const [active, setActive] = useState<PanelKey>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -88,6 +89,19 @@ export default function SettingsMenu() {
     } else {
       const j = await res.json().catch(() => ({}));
       setMsg(j.error || "Failed to add stocked brand.");
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      setLoggingOut(true);
+      setMsg(null);
+      await fetch("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    } catch {
+      setMsg("Failed to sign out. Try again.");
+    } finally {
+      setLoggingOut(false);
     }
   }
 
@@ -249,6 +263,27 @@ export default function SettingsMenu() {
                 </div>
               </form>
             )}
+
+            <div style={{ height: 1, background: "#e5e7eb", margin: "6px 0" }} />
+
+            {/* ---- Sign out ---- */}
+            <button
+              onClick={handleLogout}
+              disabled={loggingOut}
+              style={{
+                width: "100%",
+                borderRadius: 8,
+                padding: "8px 10px",
+                border: "1px solid #fecaca",
+                background: loggingOut ? "#fef2f2" : "#fee2e2",
+                color: "#991b1b",
+                fontWeight: 600,
+              }}
+              aria-label="Sign out"
+              title="Sign out"
+            >
+              {loggingOut ? "Signing out…" : "Sign out"}
+            </button>
 
             {msg && <div className="small" style={{ marginTop: 6 }}>{msg}</div>}
             <div className="small muted">
