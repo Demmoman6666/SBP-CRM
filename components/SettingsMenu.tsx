@@ -105,7 +105,6 @@ export default function SettingsMenu() {
     }
   }
 
-  // Simple menu item styling
   const itemStyle: React.CSSProperties = {
     display: "flex",
     alignItems: "center",
@@ -149,7 +148,7 @@ export default function SettingsMenu() {
             position: "absolute",
             right: 0,
             marginTop: 8,
-            width: 340,
+            width: 360,
             background: "#fff",
             border: "1px solid #e5e7eb",
             borderRadius: 12,
@@ -160,7 +159,7 @@ export default function SettingsMenu() {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="grid" style={{ gap: 10 }}>
-            {/* ---- Navigation shortcuts ---- */}
+            {/* ---- Navigation ---- */}
             <div className="small muted" style={{ padding: "2px 2px 0" }}>Navigation</div>
             <Link href="/settings" style={itemStyle} onClick={() => setOpen(false)}>
               <span>⚙️</span>
@@ -170,7 +169,12 @@ export default function SettingsMenu() {
               <span>👤</span>
               <span>Account Settings</span>
             </Link>
-            {isAdmin && (
+
+            <div style={{ height: 1, background: "#e5e7eb", margin: "6px 0" }} />
+
+            {/* ---- Global Settings (admin) ---- */}
+            <div className="small muted" style={{ padding: "2px 2px 0" }}>Global Settings</div>
+            {isAdmin ? (
               <>
                 <Link href="/settings/users" style={itemStyle} onClick={() => setOpen(false)}>
                   <span>👥</span>
@@ -180,88 +184,85 @@ export default function SettingsMenu() {
                   <span>➕</span>
                   <span>Add New User</span>
                 </Link>
+
+                {/* Quick Add lives under Global Settings now */}
+                <button
+                  className="primary"
+                  onClick={() => { setActive(active === "rep" ? null : "rep"); setMsg(null); }}
+                >
+                  Add a Sales Rep
+                </button>
+                {active === "rep" && (
+                  <form
+                    id="rep-form"
+                    className="grid"
+                    style={{ gap: 8 }}
+                    onSubmit={(e) => { e.preventDefault(); handleAddRep(new FormData(e.currentTarget)); }}
+                  >
+                    <div className="field">
+                      <label>Name*</label>
+                      <input name="name" required />
+                    </div>
+                    <div className="field">
+                      <label>Email</label>
+                      <input type="email" name="email" />
+                    </div>
+                    <div className="right">
+                      <button type="submit" className="primary">Save Rep</button>
+                    </div>
+                  </form>
+                )}
+
+                <button
+                  className="primary"
+                  onClick={() => { setActive(active === "brand" ? null : "brand"); setMsg(null); }}
+                >
+                  Add a Competitor Brand
+                </button>
+                {active === "brand" && (
+                  <form
+                    id="brand-form"
+                    className="grid"
+                    style={{ gap: 8 }}
+                    onSubmit={(e) => { e.preventDefault(); handleAddCompetitorBrand(new FormData(e.currentTarget)); }}
+                  >
+                    <div className="field">
+                      <label>Brand Name*</label>
+                      <input name="name" required />
+                    </div>
+                    <div className="right">
+                      <button type="submit" className="primary">Save Competitor Brand</button>
+                    </div>
+                  </form>
+                )}
+
+                <button
+                  className="primary"
+                  onClick={() => { setActive(active === "stocked" ? null : "stocked"); setMsg(null); }}
+                >
+                  Add a Stocked Brand
+                </button>
+                {active === "stocked" && (
+                  <form
+                    id="stocked-brand-form"
+                    className="grid"
+                    style={{ gap: 8 }}
+                    onSubmit={(e) => { e.preventDefault(); handleAddStockedBrand(new FormData(e.currentTarget)); }}
+                  >
+                    <div className="field">
+                      <label>Stocked Brand Name*</label>
+                      <input name="name" required />
+                    </div>
+                    <div className="right">
+                      <button type="submit" className="primary">Save Stocked Brand</button>
+                    </div>
+                  </form>
+                )}
               </>
-            )}
-
-            <div style={{ height: 1, background: "#e5e7eb", margin: "6px 0" }} />
-
-            {/* ---- Inline quick-add tools (existing) ---- */}
-            <div className="small muted" style={{ padding: "2px 2px 0" }}>Quick Add</div>
-
-            {/* Add Sales Rep */}
-            <button
-              className="primary"
-              onClick={() => { setActive(active === "rep" ? null : "rep"); setMsg(null); }}
-            >
-              Add a Sales Rep
-            </button>
-            {active === "rep" && (
-              <form
-                id="rep-form"
-                className="grid"
-                style={{ gap: 8 }}
-                onSubmit={(e) => { e.preventDefault(); handleAddRep(new FormData(e.currentTarget)); }}
-              >
-                <div className="field">
-                  <label>Name*</label>
-                  <input name="name" required />
-                </div>
-                <div className="field">
-                  <label>Email</label>
-                  <input type="email" name="email" />
-                </div>
-                <div className="right">
-                  <button type="submit" className="primary">Save Rep</button>
-                </div>
-              </form>
-            )}
-
-            {/* Add Competitor Brand */}
-            <button
-              className="primary"
-              onClick={() => { setActive(active === "brand" ? null : "brand"); setMsg(null); }}
-            >
-              Add a Competitor Brand
-            </button>
-            {active === "brand" && (
-              <form
-                id="brand-form"
-                className="grid"
-                style={{ gap: 8 }}
-                onSubmit={(e) => { e.preventDefault(); handleAddCompetitorBrand(new FormData(e.currentTarget)); }}
-              >
-                <div className="field">
-                  <label>Brand Name*</label>
-                  <input name="name" required />
-                </div>
-                <div className="right">
-                  <button type="submit" className="primary">Save Competitor Brand</button>
-                </div>
-              </form>
-            )}
-
-            {/* Add Stocked Brand */}
-            <button
-              className="primary"
-              onClick={() => { setActive(active === "stocked" ? null : "stocked"); setMsg(null); }}
-            >
-              Add a Stocked Brand
-            </button>
-            {active === "stocked" && (
-              <form
-                id="stocked-brand-form"
-                className="grid"
-                style={{ gap: 8 }}
-                onSubmit={(e) => { e.preventDefault(); handleAddStockedBrand(new FormData(e.currentTarget)); }}
-              >
-                <div className="field">
-                  <label>Stocked Brand Name*</label>
-                  <input name="name" required />
-                </div>
-                <div className="right">
-                  <button type="submit" className="primary">Save Stocked Brand</button>
-                </div>
-              </form>
+            ) : (
+              <div className="small" style={{ padding: "6px 2px" }}>
+                You need admin access to edit global settings.
+              </div>
             )}
 
             <div style={{ height: 1, background: "#e5e7eb", margin: "6px 0" }} />
@@ -286,9 +287,6 @@ export default function SettingsMenu() {
             </button>
 
             {msg && <div className="small" style={{ marginTop: 6 }}>{msg}</div>}
-            <div className="small muted">
-              New Sales Reps, Competitor Brands and Stocked Brands will be available in forms automatically.
-            </div>
           </div>
         </div>
       )}
