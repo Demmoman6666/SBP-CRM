@@ -4,24 +4,32 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
+export const dynamic = "force-dynamic";
+
+// Must match prisma Permission enum
 const PERMISSIONS = [
   "VIEW_SALES_HUB",
   "VIEW_REPORTS",
+  "VIEW_CUSTOMERS",
+  "EDIT_CUSTOMERS",
+  "VIEW_CALLS",
+  "EDIT_CALLS",
+  "VIEW_PROFIT_CALC",
   "VIEW_SETTINGS",
-  "MANAGE_USERS",
 ] as const;
-type Permission = typeof PERMISSIONS[number];
+type Permission = (typeof PERMISSIONS)[number];
 
-export const dynamic = "force-dynamic";
+// Must match prisma Role enum
+type Role = "ADMIN" | "MANAGER" | "REP" | "VIEWER";
 
 export default function NewUserPage() {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [role, setRole] = useState<"ADMIN" | "USER">("USER");
+  const [role, setRole] = useState<Role>("REP"); // default to REP (valid enum)
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [features, setFeatures] = useState<Permission[]>([]);
+  const [overrides, setOverrides] = useState<Permission[]>([]);
 
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -32,24 +40,18 @@ export default function NewUserPage() {
   const passwordsMatch = password.length >= 8 && confirm.length > 0 && password === confirm;
   const canSubmit = !!fullName && !!email && password.length >= 8 && password === confirm;
 
-  // Ensure admin perms
+  // If Admin is selected, ensure VIEW_SETTINGS is included in overrides (harmless if API ignores for admins)
   useEffect(() => {
     if (role === "ADMIN") {
-      setFeatures((prev) => {
-        const need: Permission[] = ["VIEW_SETTINGS", "MANAGE_USERS"];
-        const next = new Set(prev);
-        need.forEach((p) => next.add(p));
-        return Array.from(next);
-      });
+      setOverrides((prev) => (prev.includes("VIEW_SETTINGS") ? prev : [...prev, "VIEW_SETTINGS"]));
     } else {
-      setFeatures((prev) => prev.filter((p) => p !== "VIEW_SETTINGS" && p !== "MANAGE_USERS"));
+      // user changed away from ADMIN: allow overrides to drop VIEW_SETTINGS if they uncheck it
+      // (no automatic removal so they can still grant VIEW_SETTINGS to managers if desired)
     }
   }, [role]);
 
-  function toggleFeature(p: Permission) {
-    setFeatures((prev) =>
-      prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]
-    );
+  function toggleOverride(p: Permission) {
+    setOverrides((prev) => (prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]));
   }
 
   async function submit(e: React.FormEvent) {
@@ -57,7 +59,6 @@ export default function NewUserPage() {
     setErr(null);
     setOk(null);
 
-    // Guard on the client too
     if (password.length < 8) {
       setErr("Password must be at least 8 characters.");
       return;
@@ -71,28 +72,31 @@ export default function NewUserPage() {
     try {
       const res = await fetch("/api/users", {
         method: "POST",
+        credentials: "include", // ensure sbp_session cookie is sent
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          fullName,
-          email,
-          phone,
+          fullName: fullName.trim(),
+          email: email.trim(),
+          phone: phone.trim() || null,
+          role,                // one of ADMIN | MANAGER | REP | VIEWER
           password,
-          role,
-          features,
-          permissions: features, // in case the API expects this key
+          confirm,             // if your API checks this, it’s here
+          overrides,           // fine-grained Permission[] (optional on server)
+          permissions: overrides, // keep compatibility if API expects "permissions"
         }),
       });
+
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json?.error || "Failed to create user");
 
-      setOk(`User ${json.user?.email || email} created`);
+      setOk(`User ${json?.user?.email ?? email} created`);
       setFullName("");
       setEmail("");
       setPhone("");
       setPassword("");
       setConfirm("");
-      setRole("USER");
-      setFeatures([]);
+      setRole("REP");
+      setOverrides([]);
     } catch (e: any) {
       setErr(e?.message || "Failed");
     } finally {
@@ -109,11 +113,12 @@ export default function NewUserPage() {
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <h1>New User</h1>
-            <p className="small">Admins can invite or add users and assign permissions.</p>
+            <p className="small">Admins can add users and set roles/permissions.</p>
           </div>
-          <Link href="/settings" className="small" style={{ textDecoration: "underline" }}>
-            &larr; Back to Settings
-          </Link>
+          <div className="row" style={{ gap: 8 }}>
+            <Link href="/settings/users" className="btn">Back to Users</Link>
+            <Link href="/settings" className="btn">Back to Settings</Link>
+          </div>
         </div>
       </section>
 
@@ -154,6 +159,23 @@ export default function NewUserPage() {
               />
             </div>
             <div className="field">
+              <label>Role</label>
+              <select
+                className="input"
+                value={role}
+                onChange={(e) => setRole(e.target.value as Role)}
+              >
+                <option value="ADMIN">Admin</option>
+                <option value="MANAGER">Manager</option>
+                <option value="REP">Rep</option>
+                <option value="VIEWER">Viewer</option>
+              </select>
+              <div className="form-hint">Admins implicitly have full access; overrides are optional.</div>
+            </div>
+          </div>
+
+          <div className="grid grid-2" style={{ gap: 12 }}>
+            <div className="field">
               <label>Password</label>
               <input
                 type="password"
@@ -165,6 +187,7 @@ export default function NewUserPage() {
                 required
                 style={passTooShort ? errorBorder : undefined}
                 aria-invalid={passTooShort ? true : undefined}
+                autoComplete="new-password"
               />
               {passTooShort && (
                 <div className="small" style={{ color: "#b91c1c", marginTop: 4 }}>
@@ -172,9 +195,6 @@ export default function NewUserPage() {
                 </div>
               )}
             </div>
-          </div>
-
-          <div className="grid grid-2" style={{ gap: 12 }}>
             <div className="field">
               <label>Confirm Password</label>
               <input
@@ -187,6 +207,7 @@ export default function NewUserPage() {
                 required
                 style={confirm && password !== confirm ? errorBorder : undefined}
                 aria-invalid={confirm && password !== confirm ? true : undefined}
+                autoComplete="new-password"
               />
               {confirm && password !== confirm && (
                 <div className="small" style={{ color: "#b91c1c", marginTop: 4 }}>
@@ -194,34 +215,24 @@ export default function NewUserPage() {
                 </div>
               )}
             </div>
-
-            <div className="field">
-              <label>Role</label>
-              <select
-                className="input"
-                value={role}
-                onChange={(e) => setRole(e.target.value as "ADMIN" | "USER")}
-              >
-                <option value="USER">User</option>
-                <option value="ADMIN">Admin</option>
-              </select>
-              <div className="form-hint">Admins automatically get “Settings” and “Manage Users”.</div>
-            </div>
           </div>
 
           <div className="field">
-            <label>Permissions</label>
+            <label>Permission overrides (optional)</label>
             <div className="grid" style={{ gap: 6 }}>
               {PERMISSIONS.map((p) => (
                 <label key={p} className="row small" style={{ gap: 8 }}>
                   <input
                     type="checkbox"
-                    checked={features.includes(p)}
-                    onChange={() => toggleFeature(p)}
+                    checked={overrides.includes(p)}
+                    onChange={() => toggleOverride(p)}
                   />
                   {p}
                 </label>
               ))}
+            </div>
+            <div className="form-hint">
+              If left blank, the user’s access is determined by their role. Check items to grant extra access.
             </div>
           </div>
 
