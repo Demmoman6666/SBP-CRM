@@ -1,108 +1,87 @@
 // app/api/login/route.ts
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-export const dynamic = "force-dynamic";
-
+// --- small helpers for the signed cookie your middleware verifies ---
 const COOKIE_NAME = "sbp_session";
 
-// --- helpers for signing the session token (same format your middleware verifies) ---
-function b64urlFromBytes(bytes: Uint8Array) {
+function b64url(bytes: Uint8Array) {
   let bin = "";
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return Buffer.from(bin, "binary").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-async function signToken(payload: string, secret: string) {
-  const enc = new TextEncoder();
+
+async function sign(payloadJson: string) {
   const key = await crypto.subtle.importKey(
     "raw",
-    enc.encode(secret),
+    new TextEncoder().encode(process.env.AUTH_SECRET || "dev-insecure-secret-change-me"),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(payload));
-  return b64urlFromBytes(new Uint8Array(sig));
+  const payloadBytes = new TextEncoder().encode(payloadJson);
+  const sig = await crypto.subtle.sign("HMAC", key, payloadBytes);
+  return `${b64url(payloadBytes)}.${b64url(new Uint8Array(sig))}`;
 }
 
-// Ping / quick health check so you can verify middleware isn’t blocking
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  if (searchParams.get("ping")) {
-    return NextResponse.json({ ok: true, method: "GET" });
-  }
+// GET /api/login?ping=1 — simple health check
+export async function GET(req: NextRequest) {
+  const ping = req.nextUrl.searchParams.get("ping");
+  if (ping) return NextResponse.json({ ok: true, method: "GET" });
   return NextResponse.json({ ok: true });
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    // Accept BOTH JSON and form posts
-    const ct = req.headers.get("content-type") || "";
+    // Accept JSON or form posts
     let email = "";
     let password = "";
 
+    const ct = req.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
-      const body = await req.json().catch(() => ({} as any));
-      email = String(body.email ?? "").trim();
-      password = String(body.password ?? "");
+      const j = await req.json().catch(() => ({}));
+      email = String(j?.email ?? "");
+      password = String(j?.password ?? "");
     } else {
-      // handles application/x-www-form-urlencoded and multipart/form-data
       const fd = await req.formData();
-      email = String(fd.get("email") ?? "").trim();
+      email = String(fd.get("email") ?? "");
       password = String(fd.get("password") ?? "");
     }
+
+    email = email.trim().toLowerCase();
+    password = password ?? "";
 
     if (!email || !password) {
       return NextResponse.json({ error: "Missing credentials" }, { status: 400 });
     }
 
-    // Look up the user and verify the bcrypt hash IN Postgres (pgcrypto)
-    // ok will be true when crypt(plain, passwordHash) == passwordHash
-    const rows = await prisma.$queryRaw<{
-      id: string;
-      fullName: string;
-      email: string;
-      phone: string | null;
-      role: string;
-      isActive: boolean;
-      ok: boolean;
-    }[]>`
-      SELECT
-        id,
-        "fullName",
-        "email",
-        "phone",
-        "role",
-        "isActive",
-        ("passwordHash" = crypt(${password}, "passwordHash")) AS ok
+    // Verify user in Postgres using pgcrypto's `crypt`
+    // (requires CREATE EXTENSION IF NOT EXISTS pgcrypto;)
+    const rows = await prisma.$queryRaw<
+      { id: string; fullName: string; email: string; role: string; isActive: boolean }[]
+    >`
+      SELECT "id","fullName","email","role","isActive"
       FROM "User"
-      WHERE lower("email") = lower(${email})
+      WHERE lower(trim("email")) = ${email}
         AND "isActive" = true
-      LIMIT 1
+        AND "passwordHash" = crypt(${password}, "passwordHash")
+      LIMIT 1;
     `;
 
-    if (!rows.length || !rows[0].ok) {
+    if (!rows.length) {
+      // either no such email (after trim/lower) or password mismatch
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const row = rows[0];
+    const user = rows[0];
 
-    // Build and sign a short token { userId, exp } that middleware validates
+    // Create a short self-signed session token (HMAC, same scheme as middleware)
     const exp = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30; // 30 days
-    const payload = JSON.stringify({ userId: row.id, exp });
-    const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-    const payloadB64 = b64urlFromBytes(new TextEncoder().encode(payload));
-    const sig = await signToken(payload, secret);
-    const token = `${payloadB64}.${sig}`;
+    const token = await sign(JSON.stringify({ userId: user.id, exp }));
 
     const res = NextResponse.json({
       ok: true,
-      user: {
-        id: row.id,
-        email: row.email,
-        fullName: row.fullName,
-        role: row.role,
-      },
+      user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role },
     });
 
     // Primary cookie used by middleware
@@ -111,11 +90,11 @@ export async function POST(req: Request) {
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
       path: "/",
-      maxAge: 60 * 60 * 24 * 30, // 30 days
+      maxAge: 60 * 60 * 24 * 30,
     });
 
-    // Legacy convenience cookie used by lib/auth.getCurrentUser()
-    res.cookies.set("sbp_email", row.email.toLowerCase(), {
+    // Optional legacy helper (if any server code still reads sbp_email)
+    res.cookies.set("sbp_email", email, {
       httpOnly: true,
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
@@ -125,9 +104,6 @@ export async function POST(req: Request) {
 
     return res;
   } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message || "Server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: e?.message || "Server error" }, { status: 500 });
   }
 }
