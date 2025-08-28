@@ -3,16 +3,54 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 type PanelKey = "rep" | "brand" | "stocked" | null;
 
 export default function SettingsMenu() {
+  const pathname = usePathname();
+
+  // gate the whole menu behind auth
+  const [authed, setAuthed] = useState<boolean | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<PanelKey>(null);
   const [msg, setMsg] = useState<string | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // 1) Never show on the login page
+  const onLoginPage = pathname === "/login";
+  // Early bail if we know it's the login page
+  if (onLoginPage) return null;
+
+  // 2) Check auth + role (hides the menu entirely if not logged in)
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/me", { cache: "no-store" })
+      .then(async (r) => {
+        if (!r.ok) throw new Error("unauth");
+        const j = await r.json();
+        if (!cancelled) {
+          setAuthed(true);
+          setIsAdmin(j?.role === "ADMIN");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuthed(false);
+          setIsAdmin(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Hide the button while loading or if unauthenticated
+  if (authed !== true) return null;
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -26,13 +64,24 @@ export default function SettingsMenu() {
     return () => document.removeEventListener("click", onDocClick);
   }, []);
 
-  // Check current user role to show admin links
-  useEffect(() => {
-    fetch("/api/me", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j) => setIsAdmin(j?.role === "ADMIN"))
-      .catch(() => setIsAdmin(false));
-  }, []);
+  async function handleLogout() {
+    setMsg(null);
+    setLoggingOut(true);
+    try {
+      // prefer new path; fall back to legacy if present
+      const res =
+        (await fetch("/api/auth/logout", { method: "POST" })) ||
+        (await fetch("/api/logout", { method: "POST" }));
+
+      // ignore body; just reload to clear UI and hit middleware
+      window.location.href = "/login";
+    } catch {
+      // even if API hiccups, force a reload; middleware will redirect if cookie is gone
+      window.location.href = "/login";
+    } finally {
+      setLoggingOut(false);
+    }
+  }
 
   async function handleAddRep(formData: FormData) {
     setMsg(null);
@@ -92,19 +141,6 @@ export default function SettingsMenu() {
     }
   }
 
-  async function handleLogout() {
-    try {
-      setLoggingOut(true);
-      setMsg(null);
-      await fetch("/api/auth/logout", { method: "POST" });
-      window.location.href = "/login";
-    } catch {
-      setMsg("Failed to sign out. Try again.");
-    } finally {
-      setLoggingOut(false);
-    }
-  }
-
   const itemStyle: React.CSSProperties = {
     display: "flex",
     alignItems: "center",
@@ -135,10 +171,9 @@ export default function SettingsMenu() {
           padding: "8px 10px",
         }}
       >
-        {/* Gear icon */}
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="#111" strokeWidth="1.5"/>
-          <path d="M19.4 15a7.9 7.9 0 0 0 .1-2l1.9-1.4-2-3.4-2.2.7a8 8 0 0 0-1.7-1l-.4-2.3h-4l-.4 2.3a8 8 0 0 0-1.7 1l-2.2-.7-2 3.4L4.5 13a7.9 7.9 0 0 0 .1 2l-1.9 1.4 2 3.4 2.2-.7c.5.4 1.1.7 1.7 1l.4 2.3h4l.4-2.3c.6-.3 1.2-.6 1.7-1l2.2.7 2-3.4-1.9-1.4Z" stroke="#111" strokeWidth="1.5"/>
+          <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="#111" strokeWidth="1.5" />
+          <path d="M19.4 15a7.9 7.9 0 0 0 .1-2l1.9-1.4-2-3.4-2.2.7a8 8 0 0 0-1.7-1l-.4-2.3h-4l-.4 2.3a8 8 0 0 0-1.7 1l-2.2-.7-2 3.4L4.5 13a7.9 7.9 0 0 0 .1 2l-1.9 1.4 2 3.4 2.2-.7c.5.4 1.1.7 1.7 1l.4 2.3h4l.4-2.3c.6-.3 1.2-.6 1.7-1l2.2.7 2-3.4-1.9-1.4Z" stroke="#111" strokeWidth="1.5" />
         </svg>
       </button>
 
@@ -148,7 +183,7 @@ export default function SettingsMenu() {
             position: "absolute",
             right: 0,
             marginTop: 8,
-            width: 360,
+            width: 340,
             background: "#fff",
             border: "1px solid #e5e7eb",
             borderRadius: 12,
@@ -159,7 +194,7 @@ export default function SettingsMenu() {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="grid" style={{ gap: 10 }}>
-            {/* ---- Navigation ---- */}
+            {/* Navigation */}
             <div className="small muted" style={{ padding: "2px 2px 0" }}>Navigation</div>
             <Link href="/settings" style={itemStyle} onClick={() => setOpen(false)}>
               <span>⚙️</span>
@@ -170,11 +205,7 @@ export default function SettingsMenu() {
               <span>Account Settings</span>
             </Link>
 
-            <div style={{ height: 1, background: "#e5e7eb", margin: "6px 0" }} />
-
-            {/* ---- Global Settings (admin) ---- */}
-            <div className="small muted" style={{ padding: "2px 2px 0" }}>Global Settings</div>
-            {isAdmin ? (
+            {isAdmin && (
               <>
                 <Link href="/settings/users" style={itemStyle} onClick={() => setOpen(false)}>
                   <span>👥</span>
@@ -184,8 +215,22 @@ export default function SettingsMenu() {
                   <span>➕</span>
                   <span>Add New User</span>
                 </Link>
+              </>
+            )}
 
-                {/* Quick Add lives under Global Settings now */}
+            <div style={{ height: 1, background: "#e5e7eb", margin: "6px 0" }} />
+
+            {/* Global Settings (admin-only quick adds) */}
+            <div className="small muted" style={{ padding: "2px 2px 0" }}>Global Settings</div>
+            {!isAdmin && (
+              <div className="small muted" style={{ padding: "0 2px 4px" }}>
+                You need admin access to edit global settings.
+              </div>
+            )}
+
+            {isAdmin && (
+              <>
+                {/* Add Sales Rep */}
                 <button
                   className="primary"
                   onClick={() => { setActive(active === "rep" ? null : "rep"); setMsg(null); }}
@@ -213,6 +258,7 @@ export default function SettingsMenu() {
                   </form>
                 )}
 
+                {/* Add Competitor Brand */}
                 <button
                   className="primary"
                   onClick={() => { setActive(active === "brand" ? null : "brand"); setMsg(null); }}
@@ -236,6 +282,7 @@ export default function SettingsMenu() {
                   </form>
                 )}
 
+                {/* Add Stocked Brand */}
                 <button
                   className="primary"
                   onClick={() => { setActive(active === "stocked" ? null : "stocked"); setMsg(null); }}
@@ -259,15 +306,13 @@ export default function SettingsMenu() {
                   </form>
                 )}
               </>
-            ) : (
-              <div className="small" style={{ padding: "6px 2px" }}>
-                You need admin access to edit global settings.
-              </div>
             )}
+
+            {msg && <div className="small" style={{ marginTop: 6 }}>{msg}</div>}
 
             <div style={{ height: 1, background: "#e5e7eb", margin: "6px 0" }} />
 
-            {/* ---- Sign out ---- */}
+            {/* Sign out */}
             <button
               onClick={handleLogout}
               disabled={loggingOut}
@@ -275,7 +320,7 @@ export default function SettingsMenu() {
                 width: "100%",
                 borderRadius: 8,
                 padding: "8px 10px",
-                border: "1px solid #fecaca",
+                border: "1px solid #fca5a5",
                 background: loggingOut ? "#fef2f2" : "#fee2e2",
                 color: "#991b1b",
                 fontWeight: 600,
@@ -286,7 +331,9 @@ export default function SettingsMenu() {
               {loggingOut ? "Signing out…" : "Sign out"}
             </button>
 
-            {msg && <div className="small" style={{ marginTop: 6 }}>{msg}</div>}
+            <div className="small muted">
+              New Sales Reps, Competitor Brands and Stocked Brands will be available in forms automatically.
+            </div>
           </div>
         </div>
       )}
