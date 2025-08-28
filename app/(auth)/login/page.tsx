@@ -2,8 +2,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Image from "next/image";
-import logo from "@/public/sbp-logo.png"; // <- static import (file lives in /public)
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -26,6 +24,7 @@ export default function LoginPage() {
     e.preventDefault();
     setMsg(null);
     setSubmitting(true);
+
     try {
       const fd = new FormData();
       fd.set("email", email.trim());
@@ -35,7 +34,8 @@ export default function LoginPage() {
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json?.error || "Sign-in failed");
 
-      window.location.href = nextUrl; // cookie is set by API
+      // Cookie is set by the API; send them on their way
+      window.location.href = nextUrl;
     } catch (err: any) {
       setMsg(err?.message || "Sign-in failed");
     } finally {
@@ -54,18 +54,7 @@ export default function LoginPage() {
       }}
     >
       <div className="card" style={{ width: 420, maxWidth: "90vw", padding: 20 }}>
-        {/* Brand logo (centered) */}
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
-          <Image
-            src={logo}
-            alt="Salon Brands Pro"
-            height={28}
-            priority
-            style={{ height: 28, width: "auto" }}
-          />
-        </div>
-
-        {/* Login form */}
+        {/* Login form (no in-card logo) */}
         <form method="post" action="/api/login" onSubmit={onSubmit} className="grid" style={{ gap: 12 }}>
           <div>
             <label className="sr-only">Email</label>
