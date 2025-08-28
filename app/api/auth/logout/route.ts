@@ -1,23 +1,14 @@
 // app/api/auth/logout/route.ts
 import { NextResponse, NextRequest } from "next/server";
+import { clearSessionCookie } from "@/lib/session";
 
-const COOKIE_NAME = "sbp_session";
-
-function clearCookie(res: NextResponse, name: string) {
-  res.cookies.set(name, "", {
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 0,
-  });
-}
+export const dynamic = "force-dynamic";
 
 export async function POST(_req: NextRequest) {
   const res = NextResponse.json({ ok: true });
-  clearCookie(res, COOKIE_NAME);
-  clearCookie(res, "sbp_email");
+  clearSessionCookie(res);
   return res;
 }
 
+// Allow GET in the address bar
 export const GET = POST;
