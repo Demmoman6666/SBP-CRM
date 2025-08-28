@@ -1,109 +1,110 @@
-// app/api/login/route.ts
-import { NextResponse, NextRequest } from "next/server";
+// app/api/auth/login/route.ts
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import bcrypt from "bcryptjs";
+import crypto from "crypto";
 
-// --- small helpers for the signed cookie your middleware verifies ---
+export const dynamic = "force-dynamic";
+
 const COOKIE_NAME = "sbp_session";
+const SECRET = process.env.AUTH_SECRET; // must be set in Vercel (Preview & Production)
 
-function b64url(bytes: Uint8Array) {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return Buffer.from(bin, "binary").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+/* ---------- helpers ---------- */
+function base64url(input: string | Uint8Array) {
+  const buf = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-async function sign(payloadJson: string) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(process.env.AUTH_SECRET || "dev-insecure-secret-change-me"),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const payloadBytes = new TextEncoder().encode(payloadJson);
-  const sig = await crypto.subtle.sign("HMAC", key, payloadBytes);
-  return `${b64url(payloadBytes)}.${b64url(new Uint8Array(sig))}`;
+function signToken(payloadJson: string) {
+  if (!SECRET) {
+    throw new Error("AUTH_SECRET is not set");
+  }
+  const sig = crypto.createHmac("sha256", SECRET).update(payloadJson).digest();
+  return `${base64url(payloadJson)}.${base64url(sig)}`; // 2-part payload.sig (matches middleware)
 }
 
-// GET /api/login?ping=1 — simple health check
-export async function GET(req: NextRequest) {
-  const ping = req.nextUrl.searchParams.get("ping");
-  if (ping) return NextResponse.json({ ok: true, method: "GET" });
-  return NextResponse.json({ ok: true });
+async function readBody(req: NextRequest) {
+  const ct = req.headers.get("content-type") || "";
+  if (ct.includes("application/json")) {
+    return (await req.json().catch(() => ({}))) as Record<string, any>;
+  }
+  const fd = await req.formData();
+  return Object.fromEntries(fd.entries()) as Record<string, any>;
 }
 
+function setSessionCookie(res: NextResponse, token: string, maxAge: number) {
+  res.cookies.set(COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge,
+  });
+}
+
+/* ---------- POST /api/auth/login ---------- */
 export async function POST(req: NextRequest) {
   try {
-    // Accept JSON or form posts
-    let email = "";
-    let password = "";
+    const body = await readBody(req);
 
-    const ct = req.headers.get("content-type") || "";
-    if (ct.includes("application/json")) {
-      const j = await req.json().catch(() => ({}));
-      email = String(j?.email ?? "");
-      password = String(j?.password ?? "");
-    } else {
-      const fd = await req.formData();
-      email = String(fd.get("email") ?? "");
-      password = String(fd.get("password") ?? "");
+    const email = String(body.email ?? "").trim().toLowerCase();
+    const password = String(body.password ?? "");
+    const remember = String(body.remember ?? "true") === "true"; // default remember
+    const next = String(body.next ?? "");
+    const wantsRedirect =
+      String(body.redirect ?? "") === "1" ||
+      (req.headers.get("accept") || "").includes("text/html");
+
+    if (!SECRET) {
+      return NextResponse.json({ error: "Auth helpers missing" }, { status: 500 });
     }
-
-    email = email.trim().toLowerCase();
-    password = password ?? "";
 
     if (!email || !password) {
       return NextResponse.json({ error: "Missing credentials" }, { status: 400 });
     }
 
-    // Verify user in Postgres using pgcrypto's `crypt`
-    // (requires CREATE EXTENSION IF NOT EXISTS pgcrypto;)
-    const rows = await prisma.$queryRaw<
-      { id: string; fullName: string; email: string; role: string; isActive: boolean }[]
-    >`
-      SELECT "id","fullName","email","role","isActive"
-      FROM "User"
-      WHERE lower(trim("email")) = ${email}
-        AND "isActive" = true
-        AND "passwordHash" = crypt(${password}, "passwordHash")
-      LIMIT 1;
-    `;
+    // Look up user (case-insensitive) and check bcrypt hash
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: email, mode: "insensitive" } },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        isActive: true,
+        passwordHash: true,
+      },
+    });
 
-    if (!rows.length) {
-      // either no such email (after trim/lower) or password mismatch
+    if (!user || !user.isActive) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const user = rows[0];
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-    // Create a short self-signed session token (HMAC, same scheme as middleware)
-    const exp = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30; // 30 days
-    const token = await sign(JSON.stringify({ userId: user.id, exp }));
+    const maxAge = remember ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7; // 30d or 7d
+    const payload = { userId: user.id, exp: Math.floor(Date.now() / 1000) + maxAge };
+    const token = signToken(JSON.stringify(payload));
 
-    const res = NextResponse.json({
+    // If it's a form submit or caller wants a redirect, set cookie then 303 redirect.
+    if (wantsRedirect) {
+      const dest = new URL(next || "/", req.url);
+      const redirect = NextResponse.redirect(dest, 303);
+      setSessionCookie(redirect, token, maxAge);
+      return redirect;
+    }
+
+    // Otherwise return JSON and set the cookie.
+    const resJson = NextResponse.json({
       ok: true,
       user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role },
     });
-
-    // Primary cookie used by middleware
-    res.cookies.set(COOKIE_NAME, token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30,
-    });
-
-    // Optional legacy helper (if any server code still reads sbp_email)
-    res.cookies.set("sbp_email", email, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30,
-    });
-
-    return res;
+    setSessionCookie(resJson, token, maxAge);
+    return resJson;
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Server error" }, { status: 500 });
+    return NextResponse.json({ error: e?.message || "Login failed" }, { status: 400 });
   }
 }
