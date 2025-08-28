@@ -45,23 +45,42 @@ async function verifyToken(token: string | undefined | null): Promise<{ userId: 
   }
 }
 
+/**
+ * Public routes (exact paths)
+ * - keep login/logout open
+ * - favicon and common root files
+ */
 const PUBLIC_PATHS = [
   "/login",
-  "/api/login",        // allow login POST/GET
-  "/api/auth/login",   // (if you expose this path too)
+  "/api/login",
+  "/api/auth/login",
   "/api/auth/logout",
   "/favicon.ico",
+  "/robots.txt",
+  "/site.webmanifest",
+  "/logo.svg", // handy explicit allow (also covered by file matcher below)
 ];
 
-// Any public asset under /public (images, fonts, css, js, etc.)
+/** Any /public file extensions you want to serve without auth */
 const PUBLIC_FILES = /\.(?:png|jpg|jpeg|svg|gif|webp|avif|ico|txt|xml|css|js|map|woff2?|ttf|eot)$/i;
 
+/**
+ * Treat these prefixes as public so webhooks & debug utilities are not blocked by auth.
+ * Adjust if your webhook/debug paths differ.
+ */
 function isPublicPath(pathname: string) {
-  if (PUBLIC_FILES.test(pathname)) return true;   // any /public file
-  if (PUBLIC_PATHS.includes(pathname)) return true;
-  if (pathname.startsWith("/_next/")) return true;  // Next internals
-  if (pathname.startsWith("/assets/")) return true; // your static
+  if (PUBLIC_FILES.test(pathname)) return true;           // any /public* file
+  if (PUBLIC_PATHS.includes(pathname)) return true;       // exact matches
+  if (pathname.startsWith("/_next/")) return true;        // Next internals
+  if (pathname.startsWith("/assets/")) return true;       // your static
   if (pathname.startsWith("/images/")) return true;
+
+  // ✅ Keep Shopify webhooks unauthenticated
+  if (pathname.startsWith("/api/shopify/webhooks")) return true;
+
+  // ✅ Keep debug tools open (optional; remove if you want them protected)
+  if (pathname.startsWith("/api/debug/")) return true;
+
   return false;
 }
 
@@ -97,7 +116,10 @@ export async function middleware(req: NextRequest) {
   return NextResponse.redirect(url);
 }
 
-// Protect everything by default; exclude Next internals and any file with an extension (public assets)
+/**
+ * Protect everything by default; exclude Next internals and any file with an extension (public assets)
+ * This ensures things like /logo.svg, /fonts/*.woff2, etc. bypass the middleware entirely.
+ */
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)'],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)"],
 };
