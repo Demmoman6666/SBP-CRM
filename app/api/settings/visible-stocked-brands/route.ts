@@ -1,19 +1,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-export async function GET() {
-  // Whitelisted set via VisibilityToggle
-  const toggles = await prisma.visibilityToggle.findMany({
-    where: { type: "STOCKED", visible: true },
-    select: { brandId: true },
-  });
-  const ids = toggles.map(t => t.brandId);
-  if (ids.length === 0) return NextResponse.json([]);
+export const dynamic = "force-dynamic";
 
-  const brands = await prisma.stockedBrand.findMany({
-    where: { id: { in: ids } },
+export async function GET() {
+  const rows = await prisma.stockedBrand.findMany({
+    where: { visibleInCallLog: true },
     orderBy: { name: "asc" },
     select: { id: true, name: true },
   });
-  return NextResponse.json(brands);
+  return NextResponse.json(rows);
 }
