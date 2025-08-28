@@ -6,6 +6,15 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   const me = await getCurrentUser();
-  if (!me) return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
-  return NextResponse.json(me);
+  if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  return NextResponse.json({
+    id: me.id,
+    email: me.email,
+    fullName: me.fullName,
+    phone: me.phone,
+    role: me.role,
+    isActive: me.isActive,
+    createdAt: me.createdAt,
+    updatedAt: me.updatedAt,
+  });
 }
