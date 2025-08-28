@@ -11,7 +11,7 @@ export default function LoginPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [nextUrl, setNextUrl] = useState("/");
 
-  // read ?next=… without useSearchParams (avoids suspense warning)
+  // Read ?next=... without useSearchParams (avoids suspense warning)
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
@@ -26,20 +26,15 @@ export default function LoginPage() {
     setSubmitting(true);
 
     try {
-      // Send as form data so it works with our route that accepts JSON or form
       const fd = new FormData();
       fd.set("email", email.trim());
       fd.set("password", password);
 
-      const res = await fetch("/api/login", {
-        method: "POST",
-        body: fd,
-      });
-
+      const res = await fetch("/api/login", { method: "POST", body: fd });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json?.error || "Sign-in failed");
 
-      // success: cookie set by API; go to next/home
+      // Cookie is set by the API; send them on their way
       window.location.href = nextUrl;
     } catch (err: any) {
       setMsg(err?.message || "Sign-in failed");
@@ -49,28 +44,39 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{ minHeight: "100dvh", display: "grid", placeItems: "center", background: "linear-gradient(180deg,#f8fafc,#ffffff)" }}>
+    <div
+      style={{
+        minHeight: "100dvh",
+        display: "grid",
+        placeItems: "center",
+        background: "#fff",
+        padding: 24,
+      }}
+    >
       <div className="card" style={{ width: 420, maxWidth: "90vw", padding: 20 }}>
-        {/* Brand */}
-        <div className="row" style={{ alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 10, background: "#111", display: "grid", placeItems: "center", color: "#fff", fontWeight: 700 }}>
-            SB
-          </div>
-          <div>
-            <div style={{ fontWeight: 700 }}>Salon Brands Pro</div>
-            <div className="small muted">Staff Sign-in</div>
-          </div>
+        {/* Brand logo only */}
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+          <img
+            src="/logo.svg"
+            alt="Logo"
+            height={28}
+            style={{ height: 28 }}
+            onError={(e) => {
+              const el = e.currentTarget as HTMLImageElement;
+              if (el.src.endsWith("/logo.svg")) el.src = "/logo.png"; // fallback
+            }}
+          />
         </div>
 
-        {/* The form posts to /api/login with email & password */}
+        {/* Login form */}
         <form method="post" action="/api/login" onSubmit={onSubmit} className="grid" style={{ gap: 12 }}>
           <div>
-            <label>Email</label>
+            <label className="sr-only">Email</label>
             <input
               name="email"
               type="email"
               className="input"
-              placeholder="you@salonbrandspro.com"
+              placeholder="Email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
@@ -79,16 +85,17 @@ export default function LoginPage() {
           </div>
 
           <div>
-            <label>Password</label>
+            <label className="sr-only">Password</label>
             <div className="row" style={{ gap: 8 }}>
               <input
                 name="password"
                 type={show ? "text" : "password"}
                 className="input"
-                placeholder="Your password"
+                placeholder="Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
+                minLength={8}
                 autoComplete="current-password"
                 style={{ flex: 1 }}
               />
@@ -113,12 +120,11 @@ export default function LoginPage() {
             </div>
           )}
 
-          <p className="small muted" style={{ marginTop: 6 }}>
+          <p className="small muted" style={{ marginTop: 6, textAlign: "center" }}>
             Trouble signing in? Contact your admin.
           </p>
 
-          {/* Progressive enhancement: if JS is disabled, the form still posts to /api/login,
-              but will show JSON. With JS enabled (onSubmit), we stay on the page and redirect. */}
+          {/* Progressive enhancement: if JS is disabled, the form still posts to /api/login (will show JSON). */}
           <input type="hidden" name="__enhanced" value="1" />
         </form>
       </div>
