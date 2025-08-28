@@ -1,60 +1,37 @@
 // lib/auth.ts
-import { prisma } from "@/lib/prisma";
-import { cookies } from "next/headers";
-import type { User } from "@prisma/client";
-import bcrypt from "bcryptjs";
 import crypto from "crypto";
+import { cookies as nextCookies, headers as nextHeaders } from "next/headers";
+import { prisma } from "@/lib/prisma";
+import type { User } from "@prisma/client";
 
-/**
- * We use an HMAC-signed, base64url token stored in cookie `sbp_session`.
- * Payload: { userId: string, exp: number } (exp in seconds)
- */
-const COOKIE_NAME = "sbp_session";
-const DEFAULT_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
-const AUTH_SECRET = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-
-/* ---------------- Types ---------------- */
 export type SafeUser = Pick<
   User,
   "id" | "fullName" | "email" | "phone" | "role" | "isActive" | "createdAt" | "updatedAt"
 >;
 
-/* ---------------- Base64url helpers (Node) ---------------- */
-function b64urlEncode(buf: Buffer) {
-  return buf.toString("base64url");
-}
-function b64urlDecodeToBuf(s: string) {
-  return Buffer.from(s, "base64url");
-}
+const SESSION_COOKIE = "sbp_session";
+const LEGACY_EMAIL_COOKIES = ["sbp_email", "email"]; // legacy fallback
 
-/* ---------------- Session token helpers (Node/Server) ---------------- */
-export function createSessionToken(userId: string, maxAgeSec = DEFAULT_MAX_AGE) {
-  const payload = { userId, exp: Math.floor(Date.now() / 1000) + maxAgeSec };
-  const p = b64urlEncode(Buffer.from(JSON.stringify(payload), "utf8"));
-  const sig = crypto.createHmac("sha256", AUTH_SECRET).update(p).digest("base64url");
-  return `${p}.${sig}`;
-}
+// ---- session token helpers (must match middleware) ----
+type SessionPayload = { id: string; exp: number };
 
-export function verifySessionToken(
-  token: string | undefined | null
-): { userId: string; exp: number } | null {
-  if (!token || typeof token !== "string") return null;
+function verifySessionToken(token?: string | null): SessionPayload | null {
+  if (!token) return null;
   const parts = token.split(".");
   if (parts.length !== 2) return null;
   const [p, sig] = parts;
+  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
 
-  const expected = crypto.createHmac("sha256", AUTH_SECRET).update(p).digest("base64url");
-  // Timing-safe compare
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(p)
+    .digest("base64url");
+
+  if (expected !== sig) return null;
 
   try {
-    const json = JSON.parse(b64urlDecodeToBuf(p).toString("utf8")) as {
-      userId: string;
-      exp: number;
-    };
-    if (!json?.userId || typeof json.exp !== "number") return null;
+    const json = JSON.parse(Buffer.from(p, "base64url").toString("utf8")) as SessionPayload;
+    if (!json?.id || typeof json.exp !== "number") return null;
     if (json.exp < Math.floor(Date.now() / 1000)) return null;
     return json;
   } catch {
@@ -62,13 +39,11 @@ export function verifySessionToken(
   }
 }
 
-/* ---------------- Public helpers ---------------- */
-
-/** Look up a user by email (case-insensitive) and return a safe subset of fields. */
+// ---- lookups ----
 export async function getUserByEmail(email: string): Promise<SafeUser | null> {
   if (!email) return null;
-  return prisma.user.findFirst({
-    where: { email: { equals: email, mode: "insensitive" } },
+  return prisma.user.findUnique({
+    where: { email: email.toLowerCase() },
     select: {
       id: true,
       fullName: true,
@@ -82,11 +57,10 @@ export async function getUserByEmail(email: string): Promise<SafeUser | null> {
   });
 }
 
-/** For login flow only: includes passwordHash for verification. */
-export async function getUserWithPasswordByEmail(email: string) {
-  if (!email) return null;
-  return prisma.user.findFirst({
-    where: { email: { equals: email, mode: "insensitive" } },
+export async function getUserById(id: string): Promise<SafeUser | null> {
+  if (!id) return null;
+  return prisma.user.findUnique({
+    where: { id },
     select: {
       id: true,
       fullName: true,
@@ -96,52 +70,43 @@ export async function getUserWithPasswordByEmail(email: string) {
       isActive: true,
       createdAt: true,
       updatedAt: true,
-      passwordHash: true,
     },
   });
 }
 
 /**
- * Current user (server-only).
- * Reads and verifies the signed `sbp_session` cookie, then fetches the user.
+ * Current user (server). Prefers the signed sbp_session token,
+ * falls back to legacy email cookie/header for compatibility.
  */
 export async function getCurrentUser(): Promise<SafeUser | null> {
   try {
-    const token = cookies().get(COOKIE_NAME)?.value;
-    const sess = verifySessionToken(token);
-    if (!sess) return null;
+    const cookies = nextCookies();
 
-    const user = await prisma.user.findUnique({
-      where: { id: sess.userId },
-      select: {
-        id: true,
-        fullName: true,
-        email: true,
-        phone: true,
-        role: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
+    // 1) session token
+    const tok = cookies.get(SESSION_COOKIE)?.value;
+    const sess = verifySessionToken(tok);
+    if (sess?.id) {
+      const u = await getUserById(sess.id);
+      if (u?.isActive) return u;
+      return null;
+    }
 
-    if (!user || !user.isActive) return null;
-    return user;
+    // 2) legacy: headers/cookies with email
+    const hdrs = nextHeaders();
+    const emailFromHeader = hdrs.get("x-user-email") || hdrs.get("x-user");
+    const emailFromCookie =
+      LEGACY_EMAIL_COOKIES.map((n) => cookies.get(n)?.value).find(Boolean) || undefined;
+
+    const email = (emailFromHeader || emailFromCookie || "").trim().toLowerCase();
+    if (!email) return null;
+
+    const u = await getUserByEmail(email);
+    return u && u.isActive ? u : null;
   } catch {
     return null;
   }
 }
 
-/** Password helpers */
-export async function hashPassword(plain: string) {
-  const salt = await bcrypt.genSalt(10);
-  return bcrypt.hash(plain, salt);
-}
-export async function verifyPassword(plain: string, hash: string) {
-  return bcrypt.compare(plain, hash);
-}
-
-/** Convenience guard */
 export function isAdmin(user: SafeUser | null | undefined): boolean {
   return !!user && user.role === "ADMIN";
 }
