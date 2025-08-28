@@ -17,7 +17,7 @@ type CustomerHit = {
   customerTelephone?: string | null;
   customerEmailAddress?: string | null;
 };
-type BrandOpt = { id: string; name: string; visibleInCallLog?: boolean };
+type BrandOpt = { id: string; name: string };
 
 /* Helpers */
 function fmtCustomerLine(c?: CustomerHit | null) {
@@ -55,48 +55,22 @@ export default function NewCallPage() {
   /* Brand lists (only those toggled to be visible in Global Settings) */
   const [stockedBrands, setStockedBrands] = useState<BrandOpt[]>([]);
   const [competitorBrands, setCompetitorBrands] = useState<BrandOpt[]>([]);
+
   useEffect(() => {
-    (async () => {
-      // Preferred consolidated endpoint (returns { stocked: BrandOpt[], competitors: BrandOpt[] })
-      try {
-        const res = await fetch("/api/settings/call-brand-options", { cache: "no-store" });
-        if (res.ok) {
-          const j = await res.json();
-          setStockedBrands(Array.isArray(j?.stocked) ? j.stocked : []);
-          setCompetitorBrands(Array.isArray(j?.competitors) ? j.competitors : []);
-          return;
-        }
-      } catch {}
+    const norm = (x: any): BrandOpt => ({ id: String(x.id), name: String(x.name) });
 
-      // Fallback to existing endpoints; if they include visibleInCallLog use it, else show all.
-      try {
-        const [s, b] = await Promise.all([
-          fetch("/api/stocked-brands").then((r) => r.json()).catch(() => []),
-          fetch("/api/brands").then((r) => r.json()).catch(() => []),
-        ]);
-        const normS = (Array.isArray(s) ? s : []).map((x: any) => ({
-          id: String(x.id),
-          name: String(x.name),
-          visibleInCallLog: typeof x.visibleInCallLog === "boolean" ? x.visibleInCallLog : undefined,
-        })) as BrandOpt[];
-        const normB = (Array.isArray(b) ? b : []).map((x: any) => ({
-          id: String(x.id),
-          name: String(x.name),
-          visibleInCallLog: typeof x.visibleInCallLog === "boolean" ? x.visibleInCallLog : undefined,
-        })) as BrandOpt[];
-
-        const filterOrAll = (arr: BrandOpt[]) =>
-          arr.some((x) => typeof x.visibleInCallLog === "boolean")
-            ? arr.filter((x) => !!x.visibleInCallLog)
-            : arr;
-
-        setStockedBrands(filterOrAll(normS));
-        setCompetitorBrands(filterOrAll(normB));
-      } catch {
+    Promise.all([
+      fetch("/api/settings/visible-stocked-brands", { cache: "no-store" }).then((r) => r.json()).catch(() => []),
+      fetch("/api/settings/visible-competitor-brands", { cache: "no-store" }).then((r) => r.json()).catch(() => []),
+    ])
+      .then(([s, b]) => {
+        setStockedBrands(Array.isArray(s) ? s.map(norm) : []);
+        setCompetitorBrands(Array.isArray(b) ? b.map(norm) : []);
+      })
+      .catch(() => {
         setStockedBrands([]);
         setCompetitorBrands([]);
-      }
-    })();
+      });
   }, []);
 
   /* Existing customer toggle */
@@ -287,6 +261,7 @@ export default function NewCallPage() {
                 if (isExisting && custTerm.trim().length >= 2) setCustOpen(true);
               }}
               required
+              autoComplete="off"
             />
             {/* Hidden values server can use */}
             <input type="hidden" name="customerId" value={custSelected?.id || ""} />
@@ -422,14 +397,14 @@ export default function NewCallPage() {
           </div>
         </div>
 
-        {/* Brands discussed (STOCKED — show only toggled ones) */}
+        {/* Brands discussed (STOCKED — visible only) */}
         <div className="field">
           <label>What brands did you discuss? (Stocked Brands)</label>
           <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr" }}>
             {stockedBrands.length > 0 ? (
               stockedBrands.map((b) => (
                 <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
-                  {/* send IDs, not names; multiple fields with same name -> FormData.getAll("stockedBrandIds") */}
+                  {/* Multiple of same name -> FormData.getAll("stockedBrandIds") */}
                   <input type="checkbox" name="stockedBrandIds" value={b.id} />
                   {b.name}
                 </label>
@@ -440,14 +415,13 @@ export default function NewCallPage() {
           </div>
         </div>
 
-        {/* Competitor brands (show only toggled ones) */}
+        {/* Competitor brands (visible only) */}
         <div className="field">
           <label>Brands used (Competitor Brands)</label>
           <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr 1fr" }}>
             {competitorBrands.length > 0 ? (
               competitorBrands.map((b) => (
                 <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
-                  {/* send IDs; multiple with same name -> FormData.getAll("competitorBrandIds") */}
                   <input type="checkbox" name="competitorBrandIds" value={b.id} />
                   {b.name}
                 </label>
