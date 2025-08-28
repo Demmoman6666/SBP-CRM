@@ -1,7 +1,7 @@
 // app/api/users/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { Role } from "@prisma/client";
+import { Role, Permission } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { cookies } from "next/headers";
@@ -9,10 +9,9 @@ import { cookies } from "next/headers";
 export const dynamic = "force-dynamic";
 
 const COOKIE_NAME = "sbp_session";
-
 type TokenPayload = { userId: string; exp: number };
 
-// --- token helpers (mirror middleware) ---
+/* ---------------- token helpers (mirror middleware) ---------------- */
 function verifyToken(token?: string | null): TokenPayload | null {
   if (!token) return null;
   const parts = token.split(".");
@@ -53,7 +52,7 @@ async function requireAdmin() {
   return { adminId: sess.userId };
 }
 
-// Accept JSON or form bodies
+/* ---------------- body helper ---------------- */
 async function readBody(req: Request) {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) return await req.json();
@@ -68,6 +67,30 @@ async function readBody(req: Request) {
   }
 }
 
+/* ---------------- GET /api/users (list) ---------------- */
+export async function GET() {
+  const guard = await requireAdmin();
+  if ("error" in guard) return guard.error;
+
+  const users = await prisma.user.findMany({
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      createdAt: true,
+      updatedAt: true,
+      fullName: true,
+      email: true,
+      phone: true,
+      role: true,
+      isActive: true,
+      overrides: { select: { perm: true } },
+    },
+  });
+
+  return NextResponse.json({ users });
+}
+
+/* ---------------- POST /api/users (create) ---------------- */
 export async function POST(req: Request) {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
@@ -81,16 +104,29 @@ export async function POST(req: Request) {
   const password = String(body.password || "");
   const confirm = body.confirm != null ? String(body.confirm) : undefined;
 
-  // Map incoming role to Prisma enum. Keep backward-compat for "USER" -> REP (change to VIEWER if you prefer).
+  // Map incoming role to Prisma enum. Legacy "USER" -> REP by default.
   const roleInput = String(body.role || "USER").toUpperCase();
   const roleMap: Record<string, Role> = {
     ADMIN: Role.ADMIN,
     MANAGER: Role.MANAGER,
     REP: Role.REP,
     VIEWER: Role.VIEWER,
-    USER: Role.REP, // <-- legacy UI “User” becomes REP by default
+    USER: Role.REP,
   };
   const role: Role = roleMap[roleInput] ?? Role.VIEWER;
+
+  // Optional permission overrides: accept `permissions` or `overrides` arrays of enum names.
+  const rawPerms: any[] =
+    Array.isArray(body.permissions) ? body.permissions :
+    Array.isArray(body.overrides) ? body.overrides :
+    [];
+  const validPerms = Array.from(
+    new Set(
+      rawPerms
+        .map((p) => String(p).toUpperCase())
+        .filter((p): p is keyof typeof Permission => p in Permission)
+    )
+  ) as Permission[];
 
   if (!fullName || !email || !password) {
     return NextResponse.json({ error: "fullName, email and password are required" }, { status: 400 });
@@ -111,8 +147,12 @@ export async function POST(req: Request) {
         email,
         phone,
         passwordHash,
-        role,       // <-- enum, not a plain string
+        role,
         isActive: true,
+        overrides:
+          validPerms.length > 0
+            ? { create: validPerms.map((perm) => ({ perm })) }
+            : undefined,
       },
       select: {
         id: true,
@@ -123,6 +163,7 @@ export async function POST(req: Request) {
         isActive: true,
         createdAt: true,
         updatedAt: true,
+        overrides: { select: { perm: true } },
       },
     });
 
