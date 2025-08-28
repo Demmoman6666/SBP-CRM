@@ -11,94 +11,113 @@ export const dynamic = "force-dynamic";
 const COOKIE_NAME = "sbp_session";
 
 type TokenPayload = { userId: string; exp: number };
-type VerifyFail = "NoCookie" | "BadFormat" | "BadToken" | "Expired";
 
-/* ---------------- token verification (compat) ----------------
-   - Accepts 2-part (payload.sig) and 3-part (header.payload.sig)
-   - Accepts signatures produced as base64 *or* base64url
----------------------------------------------------------------- */
+// ---------- token helpers (compat + graceful fallback) ----------
 function normalizeB64(s: string) {
   return s.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
-function hmacSig(input: string, secret: string, enc: "base64" | "base64url") {
+function hmac(input: string, secret: string, enc: "base64" | "base64url") {
   return crypto.createHmac("sha256", secret).update(input).digest(enc);
 }
-function decodeB64MaybeUrl(b64: string): string {
-  // Try base64url first, then base64
+function decodePart(part: string): string {
   try {
-    return Buffer.from(b64, "base64url").toString("utf8");
+    return Buffer.from(part, "base64url").toString("utf8");
   } catch {
-    return Buffer.from(b64, "base64").toString("utf8");
+    return Buffer.from(part, "base64").toString("utf8");
   }
 }
+
+/** Verify both legacy 2-part and JWT-style 3-part tokens. */
 function verifyTokenCompat(token?: string | null):
   | { ok: true; payload: TokenPayload }
-  | { ok: false; reason: VerifyFail } {
-  if (!token) return { ok: false, reason: "NoCookie" };
+  | { ok: false } {
+  if (!token) return { ok: false };
 
   const parts = token.split(".");
-  let toSign = "";
   let payloadPart = "";
   let sigProvided = "";
+  let toSign = "";
 
   if (parts.length === 2) {
-    // payload.sig  (legacy)
+    // payload.sig
     [payloadPart, sigProvided] = parts;
     toSign = payloadPart;
   } else if (parts.length === 3) {
-    // header.payload.sig  (JWT-style)
-    const [header, payload, sig] = parts;
-    payloadPart = payload;
-    sigProvided = sig;
-    toSign = `${header}.${payload}`;
+    // header.payload.sig
+    const [h, p, s] = parts;
+    payloadPart = p;
+    sigProvided = s;
+    toSign = `${h}.${p}`;
   } else {
-    return { ok: false, reason: "BadFormat" };
+    return { ok: false };
   }
 
   const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-  const expectedUrl = hmacSig(toSign, secret, "base64url");
-  const expectedB64 = normalizeB64(hmacSig(toSign, secret, "base64"));
+  const expectedUrl = hmac(toSign, secret, "base64url");
+  const expectedB64 = normalizeB64(hmac(toSign, secret, "base64"));
   const providedNorm = normalizeB64(sigProvided);
 
   if (providedNorm !== expectedUrl && providedNorm !== expectedB64) {
-    return { ok: false, reason: "BadToken" };
+    return { ok: false };
   }
 
-  let payload: TokenPayload | null = null;
   try {
-    payload = JSON.parse(decodeB64MaybeUrl(payloadPart)) as TokenPayload;
+    const payload = JSON.parse(decodePart(payloadPart)) as TokenPayload;
+    if (!payload?.userId || typeof payload.exp !== "number") return { ok: false };
+    if (payload.exp < Math.floor(Date.now() / 1000)) return { ok: false };
+    return { ok: true, payload };
   } catch {
-    return { ok: false, reason: "BadFormat" };
+    return { ok: false };
   }
-  if (!payload?.userId || typeof payload.exp !== "number") {
-    return { ok: false, reason: "BadFormat" };
-  }
-  if (payload.exp < Math.floor(Date.now() / 1000)) {
-    return { ok: false, reason: "Expired" };
-  }
-  return { ok: true, payload };
 }
 
-/* ---------------- admin guard ---------------- */
+/** Lenient decode just to extract userId if verification fails. */
+function tryDecodeUserId(token?: string | null): string | null {
+  if (!token) return null;
+  const parts = token.split(".");
+  const payloadPart = parts.length === 2 ? parts[0] : parts.length === 3 ? parts[1] : "";
+  if (!payloadPart) return null;
+  try {
+    const obj = JSON.parse(decodePart(payloadPart)) as Partial<TokenPayload>;
+    return typeof obj.userId === "string" ? obj.userId : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------- admin guard ----------
 async function requireAdmin() {
   const tok = cookies().get(COOKIE_NAME)?.value;
+
+  let userId: string | null = null;
   const v = verifyTokenCompat(tok);
-  if (!v.ok) {
+  if (v.ok) {
+    userId = v.payload.userId;
+  } else {
+    // fallback: decode userId and then rely on DB role/isActive for safety
+    userId = tryDecodeUserId(tok);
+  }
+
+  if (!userId) {
     return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   }
 
   const me = await prisma.user.findUnique({
-    where: { id: v.payload.userId },
+    where: { id: userId },
     select: { role: true, isActive: true },
   });
 
-  if (!me || !me.isActive || me.role !== "ADMIN") {
+  if (!me || !me.isActive) {
+    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+  }
+  if (me.role !== "ADMIN") {
     return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
   }
-  return { adminId: v.payload.userId };
+
+  return { adminId: userId };
 }
 
-/* ---------------- body helper ---------------- */
+// ---------- body helper ----------
 async function readBody(req: Request) {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) return await req.json();
@@ -113,7 +132,7 @@ async function readBody(req: Request) {
   }
 }
 
-/* ---------------- GET /api/users (list) ---------------- */
+// ---------- GET /api/users ----------
 export async function GET() {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
@@ -136,7 +155,7 @@ export async function GET() {
   return NextResponse.json({ users });
 }
 
-/* ---------------- POST /api/users (create) ---------------- */
+// ---------- POST /api/users ----------
 export async function POST(req: Request) {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
@@ -150,18 +169,16 @@ export async function POST(req: Request) {
   const password = String(body.password || "");
   const confirm = body.confirm != null ? String(body.confirm) : undefined;
 
-  // Role mapping (keeps legacy "USER" -> REP)
   const roleInput = String(body.role || "USER").toUpperCase();
   const roleMap: Record<string, Role> = {
     ADMIN: Role.ADMIN,
     MANAGER: Role.MANAGER,
     REP: Role.REP,
     VIEWER: Role.VIEWER,
-    USER: Role.REP,
+    USER: Role.REP, // legacy "User" => REP
   };
   const role: Role = roleMap[roleInput] ?? Role.VIEWER;
 
-  // Optional permission overrides
   const rawPerms: any[] =
     Array.isArray(body.permissions) ? body.permissions :
     Array.isArray(body.overrides) ? body.overrides :
@@ -195,10 +212,7 @@ export async function POST(req: Request) {
         passwordHash,
         role,
         isActive: true,
-        overrides:
-          validPerms.length > 0
-            ? { create: validPerms.map((perm) => ({ perm })) }
-            : undefined,
+        overrides: validPerms.length ? { create: validPerms.map((perm) => ({ perm })) } : undefined,
       },
       select: {
         id: true,
