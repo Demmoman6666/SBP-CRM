@@ -30,7 +30,7 @@ async function verifyToken(token: string | undefined | null): Promise<{ userId: 
   if (parts.length !== 2) return null;
   const [p, sig] = parts;
 
-  const secret = (process.env.AUTH_SECRET || "dev-insecure-secret-change-me");
+  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
   const keyBytes = new TextEncoder().encode(secret);
   const payloadBytes = b64urlToBytes(p);
   const expected = await hmacSHA256(keyBytes, payloadBytes);
@@ -49,15 +49,16 @@ async function verifyToken(token: string | undefined | null): Promise<{ userId: 
 
 const PUBLIC_PATHS = [
   "/login",
-  "/api/auth/login",
+  "/api/login",        // 👈 add this so the login POST is allowed
+  "/api/auth/login",   // (kept in case you also expose this path)
   "/api/auth/logout",
   "/favicon.ico",
 ];
 
 function isPublicPath(pathname: string) {
   if (PUBLIC_PATHS.includes(pathname)) return true;
-  if (pathname.startsWith("/_next/")) return true;        // Next assets
-  if (pathname.startsWith("/assets/")) return true;       // your static
+  if (pathname.startsWith("/_next/")) return true;  // Next assets
+  if (pathname.startsWith("/assets/")) return true; // your static
   if (pathname.startsWith("/images/")) return true;
   return false;
 }
