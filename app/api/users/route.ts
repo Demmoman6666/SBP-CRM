@@ -11,15 +11,16 @@ export const dynamic = "force-dynamic";
 const COOKIE_NAME = "sbp_session";
 type TokenPayload = { userId: string; exp: number };
 
-// ---------- token helpers (mirror middleware) ----------
-type BadReason = "NoCookie" | "BadFormat" | "BadToken" | "Expired";
-type TokenCheck =
+type VerifyFail =
+  | "NoCookie"
+  | "BadFormat"
+  | "BadToken"
+  | "Expired";
+
+function verifyTokenVerbose(token?: string | null):
   | { ok: true; payload: TokenPayload }
-  | { ok: false; reason: BadReason };
-
-function verifyTokenVerbose(token?: string | null): TokenCheck {
+  | { ok: false; reason: VerifyFail } {
   if (!token) return { ok: false, reason: "NoCookie" };
-
   const parts = token.split(".");
   if (parts.length !== 2) return { ok: false, reason: "BadFormat" };
   const [payloadB64url, sigB64url] = parts;
@@ -33,42 +34,44 @@ function verifyTokenVerbose(token?: string | null): TokenCheck {
   if (expected !== sigB64url) return { ok: false, reason: "BadToken" };
 
   try {
-    const payload = JSON.parse(
-      Buffer.from(payloadB64url, "base64url").toString()
-    ) as TokenPayload;
-
-    if (!payload?.userId || typeof payload.exp !== "number") {
-      return { ok: false, reason: "BadToken" };
-    }
-    if (payload.exp < Math.floor(Date.now() / 1000)) {
-      return { ok: false, reason: "Expired" };
-    }
-    return { ok: true, payload };
+    const json = JSON.parse(Buffer.from(payloadB64url, "base64url").toString()) as TokenPayload;
+    if (!json?.userId || typeof json.exp !== "number") return { ok: false, reason: "BadFormat" };
+    if (json.exp < Math.floor(Date.now() / 1000)) return { ok: false, reason: "Expired" };
+    return { ok: true, payload: json };
   } catch {
-    return { ok: false, reason: "BadToken" };
+    return { ok: false, reason: "BadFormat" };
   }
 }
 
-async function requireAdmin() {
+async function requireAdmin():
+  Promise<
+    | { adminId: string }
+    | { error: NextResponse }
+  > {
   const tok = cookies().get(COOKIE_NAME)?.value;
   const v = verifyTokenVerbose(tok);
   if (!v.ok) {
-    const reason = "reason" in v ? v.reason : "BadToken";
-    return { error: NextResponse.json({ error: "Unauthorized", reason }, { status: 401 }) };
+    return { error: NextResponse.json({ error: "Unauthorized", reason: v.reason }, { status: 401 }) };
   }
 
   const me = await prisma.user.findUnique({
     where: { id: v.payload.userId },
-    select: { role: true, isActive: true },
+    select: { id: true, role: true, isActive: true },
   });
 
-  if (!me || !me.isActive || me.role !== "ADMIN") {
-    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
+  if (!me) {
+    return { error: NextResponse.json({ error: "Forbidden", reason: "NoUser" }, { status: 403 }) };
   }
-  return { adminId: v.payload.userId };
+  if (!me.isActive) {
+    return { error: NextResponse.json({ error: "Forbidden", reason: "Inactive" }, { status: 403 }) };
+  }
+  if (me.role !== "ADMIN") {
+    return { error: NextResponse.json({ error: "Forbidden", reason: "NotAdmin" }, { status: 403 }) };
+  }
+  return { adminId: me.id };
 }
 
-// ---------- body helper ----------
+// Accept JSON or form bodies
 async function readBody(req: Request) {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) return await req.json();
@@ -83,7 +86,7 @@ async function readBody(req: Request) {
   }
 }
 
-// ---------- GET /api/users (list) ----------
+/* ---------------- GET /api/users (list) ---------------- */
 export async function GET() {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
@@ -106,7 +109,7 @@ export async function GET() {
   return NextResponse.json({ users });
 }
 
-// ---------- POST /api/users (create) ----------
+/* ---------------- POST /api/users (create) ---------------- */
 export async function POST(req: Request) {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
@@ -132,11 +135,10 @@ export async function POST(req: Request) {
   const role: Role = roleMap[roleInput] ?? Role.VIEWER;
 
   // Optional permission overrides: accept `permissions` or `overrides` arrays of enum names.
-  const rawPerms: any[] = Array.isArray(body.permissions)
-    ? body.permissions
-    : Array.isArray(body.overrides)
-    ? body.overrides
-    : [];
+  const rawPerms: any[] =
+    Array.isArray(body.permissions) ? body.permissions :
+    Array.isArray(body.overrides) ? body.overrides :
+    [];
   const validPerms = Array.from(
     new Set(
       rawPerms
