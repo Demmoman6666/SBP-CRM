@@ -1,4 +1,3 @@
-// app/settings/global/stocked-brands/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -15,12 +14,13 @@ export default function StockedBrandVisibility() {
     setLoading(true);
     setMsg(null);
     try {
-      const res = await fetch("/api/stocked-brands", { cache: "no-store" });
+      const res = await fetch("/api/stocked-brands", { credentials: "include", cache: "no-store" });
       const j = await res.json();
-      if (!Array.isArray(j)) throw new Error(j?.error || "Failed to load brands");
+      if (!res.ok) throw new Error(j?.error || "Failed to load stocked brands");
+      if (!Array.isArray(j)) throw new Error("Unexpected response");
       setRows(j);
     } catch (e: any) {
-      setMsg(e?.message || "Failed to load brands");
+      setMsg(e?.message || "Failed to load stocked brands");
     } finally {
       setLoading(false);
     }
@@ -36,6 +36,7 @@ export default function StockedBrandVisibility() {
     try {
       const res = await fetch("/api/stocked-brands", {
         method: "PATCH",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, visible: next }),
       });
