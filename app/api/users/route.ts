@@ -11,25 +11,13 @@ export const dynamic = "force-dynamic";
 const COOKIE_NAME = "sbp_session";
 type TokenPayload = { userId: string; exp: number };
 
-/* ---------------- helpers: base64url + json ---------------- */
-function toB64Url(b64: string) {
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-function hmacSha256Base64Url(secret: string, msg: string) {
-  // Some Node runtimes don’t support digest('base64url'), so do base64 → base64url.
-  const b64 = crypto.createHmac("sha256", secret).update(msg).digest("base64");
-  return toB64Url(b64);
-}
-function json(data: any, status = 200) {
-  return NextResponse.json(data, { status });
-}
-
-/* ---------------- token verify (mirrors middleware) ----------------
-   Returns either { ok: true, payload } or { ok: false, reason }
--------------------------------------------------------------------- */
-function verifyTokenVerbose(token: string | undefined | null):
+// ---------- token helpers (mirror middleware) ----------
+type BadReason = "NoCookie" | "BadFormat" | "BadToken" | "Expired";
+type TokenCheck =
   | { ok: true; payload: TokenPayload }
-  | { ok: false; reason: "NoCookie" | "BadFormat" | "BadToken" | "Expired" } {
+  | { ok: false; reason: BadReason };
+
+function verifyTokenVerbose(token?: string | null): TokenCheck {
   if (!token) return { ok: false, reason: "NoCookie" };
 
   const parts = token.split(".");
@@ -37,23 +25,37 @@ function verifyTokenVerbose(token: string | undefined | null):
   const [payloadB64url, sigB64url] = parts;
 
   const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-  const expectedSig = hmacSha256Base64Url(secret, payloadB64url);
-  if (expectedSig !== sigB64url) return { ok: false, reason: "BadToken" };
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(payloadB64url)
+    .digest("base64url");
+
+  if (expected !== sigB64url) return { ok: false, reason: "BadToken" };
 
   try {
-    const payload = JSON.parse(Buffer.from(payloadB64url, "base64url").toString()) as TokenPayload;
-    if (!payload?.userId || typeof payload.exp !== "number") return { ok: false, reason: "BadFormat" };
-    if (payload.exp < Math.floor(Date.now() / 1000)) return { ok: false, reason: "Expired" };
+    const payload = JSON.parse(
+      Buffer.from(payloadB64url, "base64url").toString()
+    ) as TokenPayload;
+
+    if (!payload?.userId || typeof payload.exp !== "number") {
+      return { ok: false, reason: "BadToken" };
+    }
+    if (payload.exp < Math.floor(Date.now() / 1000)) {
+      return { ok: false, reason: "Expired" };
+    }
     return { ok: true, payload };
   } catch {
-    return { ok: false, reason: "BadFormat" };
+    return { ok: false, reason: "BadToken" };
   }
 }
 
 async function requireAdmin() {
   const tok = cookies().get(COOKIE_NAME)?.value;
   const v = verifyTokenVerbose(tok);
-  if (!v.ok) return { error: json({ error: "Unauthorized", reason: v.reason }, 401) };
+  if (!v.ok) {
+    const reason = "reason" in v ? v.reason : "BadToken";
+    return { error: NextResponse.json({ error: "Unauthorized", reason }, { status: 401 }) };
+  }
 
   const me = await prisma.user.findUnique({
     where: { id: v.payload.userId },
@@ -61,12 +63,12 @@ async function requireAdmin() {
   });
 
   if (!me || !me.isActive || me.role !== "ADMIN") {
-    return { error: json({ error: "Forbidden" }, 403) };
+    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
   }
   return { adminId: v.payload.userId };
 }
 
-/* ---------------- body helper ---------------- */
+// ---------- body helper ----------
 async function readBody(req: Request) {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) return await req.json();
@@ -81,7 +83,7 @@ async function readBody(req: Request) {
   }
 }
 
-/* ---------------- GET /api/users (list) ---------------- */
+// ---------- GET /api/users (list) ----------
 export async function GET() {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
@@ -101,10 +103,10 @@ export async function GET() {
     },
   });
 
-  return json({ users });
+  return NextResponse.json({ users });
 }
 
-/* ---------------- POST /api/users (create) ---------------- */
+// ---------- POST /api/users (create) ----------
 export async function POST(req: Request) {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
@@ -129,11 +131,12 @@ export async function POST(req: Request) {
   };
   const role: Role = roleMap[roleInput] ?? Role.VIEWER;
 
-  // Optional permission overrides: accept `permissions` or `overrides`
-  const rawPerms: any[] =
-    Array.isArray(body.permissions) ? body.permissions :
-    Array.isArray(body.overrides) ? body.overrides :
-    [];
+  // Optional permission overrides: accept `permissions` or `overrides` arrays of enum names.
+  const rawPerms: any[] = Array.isArray(body.permissions)
+    ? body.permissions
+    : Array.isArray(body.overrides)
+    ? body.overrides
+    : [];
   const validPerms = Array.from(
     new Set(
       rawPerms
@@ -143,13 +146,13 @@ export async function POST(req: Request) {
   ) as Permission[];
 
   if (!fullName || !email || !password) {
-    return json({ error: "fullName, email and password are required" }, 400);
+    return NextResponse.json({ error: "fullName, email and password are required" }, { status: 400 });
   }
   if (password.length < 8) {
-    return json({ error: "Password must be at least 8 characters" }, 400);
+    return NextResponse.json({ error: "Password must be at least 8 characters" }, { status: 400 });
   }
   if (typeof confirm === "string" && confirm !== password) {
-    return json({ error: "Passwords do not match" }, 400);
+    return NextResponse.json({ error: "Passwords do not match" }, { status: 400 });
   }
 
   try {
@@ -163,7 +166,10 @@ export async function POST(req: Request) {
         passwordHash,
         role,
         isActive: true,
-        overrides: validPerms.length ? { create: validPerms.map((perm) => ({ perm })) } : undefined,
+        overrides:
+          validPerms.length > 0
+            ? { create: validPerms.map((perm) => ({ perm })) }
+            : undefined,
       },
       select: {
         id: true,
@@ -178,12 +184,12 @@ export async function POST(req: Request) {
       },
     });
 
-    return json({ user: created }, 201);
+    return NextResponse.json({ user: created }, { status: 201 });
   } catch (e: any) {
     const msg = String(e?.message || "Create failed");
     if (msg.toLowerCase().includes("unique") && msg.toLowerCase().includes("email")) {
-      return json({ error: "Email already in use" }, 409);
+      return NextResponse.json({ error: "Email already in use" }, { status: 409 });
     }
-    return json({ error: msg }, 400);
+    return NextResponse.json({ error: msg }, { status: 400 });
   }
 }
