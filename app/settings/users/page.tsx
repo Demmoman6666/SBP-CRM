@@ -32,6 +32,7 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
   const [who, setWho] = useState<any>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -100,6 +101,26 @@ export default function UsersPage() {
     load();
   }, []);
 
+  async function flipActive(id: string, current: boolean) {
+    setSavingId(id);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/users/${id}?ts=${Date.now()}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: !current }),
+      });
+      const j = await safeJson(res);
+      if (!res.ok) throw new Error((j as any)?.error || "Update failed");
+      setRows((prev) => prev.map((u) => (u.id === id ? { ...u, isActive: !current } : u)));
+    } catch (e: any) {
+      setMsg(e?.message || "Failed to update status");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <div className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
@@ -134,9 +155,10 @@ export default function UsersPage() {
                 <div className="small muted row" style={{ gap: 8 }}>
                   <div style={{ flex: "0 0 220px" }}>Name</div>
                   <div style={{ flex: "0 0 260px" }}>Email</div>
-                  <div style={{ flex: "0 0 160px" }}>Role</div>
-                  <div style={{ flex: "0 0 100px" }}>Status</div>
+                  <div style={{ flex: "0 0 120px" }}>Role</div>
+                  <div style={{ flex: "0 0 120px" }}>Status</div>
                   <div style={{ flex: "1 1 auto" }}>Created</div>
+                  <div style={{ flex: "0 0 220px" }} className="right">Actions</div>
                 </div>
 
                 {rows.map((u) => (
@@ -152,10 +174,28 @@ export default function UsersPage() {
                   >
                     <div style={{ flex: "0 0 220px" }}>{u.fullName || "—"}</div>
                     <div style={{ flex: "0 0 260px" }}>{u.email}</div>
-                    <div style={{ flex: "0 0 160px" }}>{u.role}</div>
-                    <div style={{ flex: "0 0 100px" }}>{u.isActive ? "Active" : "Inactive"}</div>
+                    <div style={{ flex: "0 0 120px" }}>{u.role}</div>
+                    <div style={{ flex: "0 0 120px" }}>{u.isActive ? "Active" : "Inactive"}</div>
                     <div style={{ flex: "1 1 auto" }}>
                       {new Date(u.createdAt).toLocaleString("en-GB")}
+                    </div>
+
+                    <div style={{ flex: "0 0 220px" }} className="right row" role="group">
+                      <Link href={`/settings/users/${u.id}`} className="btn">Edit</Link>
+                      <button
+                        type="button"
+                        onClick={() => flipActive(u.id, u.isActive)}
+                        disabled={savingId === u.id}
+                        className="btn"
+                        style={{
+                          background: u.isActive ? "#fee2e2" : "#dcfce7",
+                          border: `1px solid ${u.isActive ? "#fca5a5" : "#86efac"}`,
+                          color: u.isActive ? "#991b1b" : "#166534",
+                        }}
+                        title={u.isActive ? "Deactivate" : "Reactivate"}
+                      >
+                        {savingId === u.id ? "Saving…" : u.isActive ? "Deactivate" : "Reactivate"}
+                      </button>
                     </div>
                   </div>
                 ))}
