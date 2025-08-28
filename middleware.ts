@@ -1,9 +1,7 @@
 // middleware.ts
 import { NextResponse, NextRequest } from "next/server";
 
-/**
- * Edge-safe verification (Web Crypto). Must mirror the server logic from lib/auth.
- */
+/** Edge-safe verification (Web Crypto). Must mirror the server logic from lib/auth. */
 const COOKIE_NAME = "sbp_session";
 
 function b64urlToBytes(s: string) {
@@ -49,15 +47,19 @@ async function verifyToken(token: string | undefined | null): Promise<{ userId: 
 
 const PUBLIC_PATHS = [
   "/login",
-  "/api/login",        // 👈 add this so the login POST is allowed
-  "/api/auth/login",   // (kept in case you also expose this path)
+  "/api/login",        // allow login POST/GET
+  "/api/auth/login",   // (if you expose this path too)
   "/api/auth/logout",
   "/favicon.ico",
 ];
 
+// Any public asset under /public (images, fonts, css, js, etc.)
+const PUBLIC_FILES = /\.(?:png|jpg|jpeg|svg|gif|webp|avif|ico|txt|xml|css|js|map|woff2?|ttf|eot)$/i;
+
 function isPublicPath(pathname: string) {
+  if (PUBLIC_FILES.test(pathname)) return true;   // any /public file
   if (PUBLIC_PATHS.includes(pathname)) return true;
-  if (pathname.startsWith("/_next/")) return true;  // Next assets
+  if (pathname.startsWith("/_next/")) return true;  // Next internals
   if (pathname.startsWith("/assets/")) return true; // your static
   if (pathname.startsWith("/images/")) return true;
   return false;
@@ -95,7 +97,7 @@ export async function middleware(req: NextRequest) {
   return NextResponse.redirect(url);
 }
 
-// Protect everything by default; the isPublicPath above handles exclusions.
+// Protect everything by default; exclude Next internals and any file with an extension (public assets)
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)'],
 };
