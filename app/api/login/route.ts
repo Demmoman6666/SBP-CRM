@@ -1,100 +1,84 @@
 // app/api/login/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { Prisma, Role } from "@prisma/client";
 
+// We need Node (not edge) because Prisma uses Node APIs
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// small helper because raw SQL booleans can arrive as true/'t'/1
-function asBool(v: any): boolean {
-  if (typeof v === "boolean") return v;
-  if (typeof v === "number") return v === 1;
-  if (typeof v === "string") return v === "t" || v === "true" || v === "1";
-  return false;
-}
-
-// Quick sanity endpoint to verify the deployed file
+// Simple probe so you can confirm this file is live after deploy
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  if (searchParams.get("ping")) {
-    return NextResponse.json({ ok: true, method: "GET", time: Date.now() });
+  const url = new URL(req.url);
+  if (url.searchParams.get("ping") === "1") {
+    return NextResponse.json({ ok: true, method: "GET" });
   }
-  return NextResponse.json({ error: "Method not allowed" }, { status: 405 });
+  return NextResponse.json({ ok: true });
 }
 
+type Row = {
+  id: string;
+  fullName: string;
+  email: string;
+  phone: string | null;
+  role: "ADMIN" | "MANAGER" | "REP" | "VIEWER";
+  isActive: boolean;
+};
+
+// Email+password login, verified in Postgres using pgcrypto's bcrypt
 export async function POST(req: Request) {
   try {
-    // Accept JSON or form posts
-    const ct = req.headers.get("content-type") || "";
-    let email = "";
-    let password = "";
+    const { email, password } = await req.json().catch(() => ({} as any));
+    const e = String(email || "").trim();
+    const p = String(password || "");
 
-    if (ct.includes("application/json")) {
-      const b = await req.json().catch(() => ({}));
-      email = String(b?.email || "").trim();
-      password = String(b?.password || "");
-    } else {
-      const form = await req.formData();
-      email = String(form.get("email") || "").trim();
-      password = String(form.get("password") || "");
-    }
-
-    if (!email || !password) {
+    if (!e || !p) {
       return NextResponse.json({ error: "Missing credentials" }, { status: 400 });
     }
 
-    // Verify against Postgres with pgcrypto/bcrypt
-    const rows = await prisma.$queryRaw<
-      {
-        id: string;
-        fullName: string;
-        email: string;
-        phone: string | null;
-        role: Role;
-        isActive: boolean | "t" | "f" | 1 | 0;
-        ok: boolean | "t" | "f" | 1 | 0;
-      }[]
-    >(Prisma.sql`
-      SELECT
-        id,
-        "fullName",
-        email,
-        phone,
-        role,
-        "isActive",
-        ("passwordHash" = crypt(${password}, "passwordHash")) AS ok
+    // Verify in the database: email match (case-insensitive), active user,
+    // and bcrypt hash match via pgcrypto's crypt()
+    const rows = await prisma.$queryRaw<Row[]>`
+      SELECT id, "fullName", email, phone, role, "isActive"
       FROM "User"
-      WHERE lower(email) = lower(${email})
+      WHERE lower(email) = lower(${e})
+        AND "isActive" = true
+        AND "passwordHash" = crypt(${p}, "passwordHash")
       LIMIT 1
-    `);
+    `;
 
-    const row = rows[0];
-    if (!row || !asBool(row.ok) || !asBool(row.isActive)) {
+    if (!rows.length) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Set the cookie that getCurrentUser() reads
+    const user = rows[0];
+
+    // Issue the cookie that getCurrentUser() reads
+    const cookieVal = user.email.toLowerCase();
+
     const res = NextResponse.json({
       ok: true,
-      user: { id: row.id, email: row.email, fullName: row.fullName, role: row.role },
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+      },
     });
 
-    const cookieVal = row.email.toLowerCase();
-
-    // primary cookie
+    // Primary cookie
     res.cookies.set("sbp_email", cookieVal, {
       httpOnly: true,
-      sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
       path: "/",
       maxAge: 60 * 60 * 24 * 30, // 30 days
     });
 
-    // legacy fallback (since getCurrentUser() also checks `email`)
+    // Fallback cookie (your getCurrentUser() also checks 'email')
     res.cookies.set("email", cookieVal, {
       httpOnly: true,
-      sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
       path: "/",
       maxAge: 60 * 60 * 24 * 30,
     });
