@@ -2,60 +2,20 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Role, Permission } from "@prisma/client";
-import { cookies } from "next/headers";
-import crypto from "crypto";
 import bcrypt from "bcryptjs";
+import { cookies } from "next/headers";
+import { verifyTokenVerbose, COOKIE_NAME } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-const COOKIE_NAME = "sbp_session";
-type TokenPayload = { userId: string; exp: number };
-
-/* ---------------- token helpers (match other routes) ---------------- */
-function verifyToken(token?: string | null): TokenPayload | null {
-  if (!token) return null;
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-  const [payloadB64url, sigB64url] = parts;
-
-  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(payloadB64url)
-    .digest("base64url");
-
-  if (expected !== sigB64url) return null;
-
-  try {
-    const json = JSON.parse(Buffer.from(payloadB64url, "base64url").toString()) as TokenPayload;
-    if (!json?.userId || typeof json.exp !== "number") return null;
-    if (json.exp < Math.floor(Date.now() / 1000)) return null;
-    return json;
-  } catch {
-    return null;
-  }
-}
-
-async function requireAdmin() {
-  const tok = cookies().get(COOKIE_NAME)?.value;
-  const sess = verifyToken(tok);
-  if (!sess) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
-
-  const me = await prisma.user.findUnique({
-    where: { id: sess.userId },
-    select: { role: true, isActive: true },
-  });
-  if (!me || !me.isActive || me.role !== "ADMIN") {
-    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
-  }
-  return { adminId: sess.userId };
-}
-
-/* ---------------- body helper ---------------- */
+/* ---------------- body helper (JSON or form) ---------------- */
 async function readBody(req: Request) {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) return await req.json();
-  if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
+  if (
+    ct.includes("multipart/form-data") ||
+    ct.includes("application/x-www-form-urlencoded")
+  ) {
     const fd = await req.formData();
     return Object.fromEntries(fd.entries());
   }
@@ -66,13 +26,54 @@ async function readBody(req: Request) {
   }
 }
 
+/* ---------------- admin guard (shared) ---------------- */
+async function requireAdmin() {
+  const tok = cookies().get(COOKIE_NAME)?.value ?? null;
+  const v = verifyTokenVerbose(tok);
+
+  if (v.ok === false) {
+    return {
+      error: NextResponse.json(
+        { error: "Unauthorized", reason: v.reason },
+        { status: 401, headers: { "Cache-Control": "no-store" } }
+      ),
+    };
+  }
+
+  const me = await prisma.user.findUnique({
+    where: { id: v.payload.userId },
+    select: { role: true, isActive: true },
+  });
+
+  if (!me || !me.isActive) {
+    return {
+      error: NextResponse.json(
+        { error: "Unauthorized", reason: "InactiveOrMissing" },
+        { status: 401, headers: { "Cache-Control": "no-store" } }
+      ),
+    };
+  }
+  if (me.role !== "ADMIN") {
+    return {
+      error: NextResponse.json(
+        { error: "Forbidden" },
+        { status: 403, headers: { "Cache-Control": "no-store" } }
+      ),
+    };
+  }
+
+  return { adminId: v.payload.userId };
+}
+
 /* ---------------- GET /api/users/:id ---------------- */
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
   const g = await requireAdmin();
   if ("error" in g) return g.error;
 
   const id = String(params.id || "");
-  if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+  if (!id) {
+    return NextResponse.json({ error: "id required" }, { status: 400 });
+  }
 
   const user = await prisma.user.findUnique({
     where: { id },
@@ -89,8 +90,11 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
     },
   });
 
-  if (!user) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json({ user });
+  if (!user) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  return NextResponse.json({ user }, { headers: { "Cache-Control": "no-store" } });
 }
 
 /* ---------------- PATCH /api/users/:id ----------------
@@ -99,14 +103,16 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
    - role: "ADMIN" | "MANAGER" | "REP" | "VIEWER"
    - isActive: boolean or "true"/"false"
    - password via `password` or `newPassword` (+ optional `confirm`)
-   - overrides/permissions: string[] of Permission enum names
+   - overrides/permissions: string[] of Permission enum names (replaces all)
 ------------------------------------------------------- */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   const g = await requireAdmin();
   if ("error" in g) return g.error;
 
   const id = String(params.id || "");
-  if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+  if (!id) {
+    return NextResponse.json({ error: "id required" }, { status: 400 });
+  }
 
   const body: any = await readBody(req);
 
@@ -138,13 +144,20 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 
   // Password (optional) — supports `newPassword` OR `password`, + optional `confirm`
-  const pw = body.newPassword != null ? String(body.newPassword) :
-             body.password    != null ? String(body.password)    : undefined;
+  const pw =
+    body.newPassword != null
+      ? String(body.newPassword)
+      : body.password != null
+      ? String(body.password)
+      : undefined;
   const confirm = body.confirm != null ? String(body.confirm) : undefined;
 
   if (pw !== undefined) {
     if (pw.length < 8) {
-      return NextResponse.json({ error: "Password must be at least 8 characters" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Password must be at least 8 characters" },
+        { status: 400 }
+      );
     }
     if (confirm !== undefined && confirm !== pw) {
       return NextResponse.json({ error: "Passwords do not match" }, { status: 400 });
@@ -152,10 +165,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 
   // Permission overrides (optional)
-  const rawPerms: any[] =
-    Array.isArray(body.permissions) ? body.permissions :
-    Array.isArray(body.overrides)   ? body.overrides   :
-    [];
+  const rawPerms: any[] = Array.isArray(body.permissions)
+    ? body.permissions
+    : Array.isArray(body.overrides)
+    ? body.overrides
+    : [];
   const validPerms = Array.from(
     new Set(
       rawPerms
@@ -197,7 +211,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         overrides: { select: { perm: true } },
       },
     });
-    return NextResponse.json({ user: updated });
+
+    return NextResponse.json({ user: updated }, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
     const msg = String(e?.message || "Update failed");
     if (msg.toLowerCase().includes("unique") && msg.toLowerCase().includes("email")) {
