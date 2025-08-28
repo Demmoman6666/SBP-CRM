@@ -1,8 +1,10 @@
 // app/api/users/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { Role } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
+import { cookies } from "next/headers";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +12,7 @@ const COOKIE_NAME = "sbp_session";
 
 type TokenPayload = { userId: string; exp: number };
 
-// ---- token helpers (same shape as other secured routes) ----
+// --- token helpers (mirror middleware) ---
 function verifyToken(token?: string | null): TokenPayload | null {
   if (!token) return null;
   const parts = token.split(".");
@@ -36,63 +38,62 @@ function verifyToken(token?: string | null): TokenPayload | null {
 }
 
 async function requireAdmin() {
-  const cookieStore = (await import("next/headers")).cookies();
-  const token = cookieStore.get(COOKIE_NAME)?.value;
-  const sess = verifyToken(token);
+  const tok = cookies().get(COOKIE_NAME)?.value;
+  const sess = verifyToken(tok);
   if (!sess) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
 
   const me = await prisma.user.findUnique({
     where: { id: sess.userId },
-    select: { id: true, role: true },
+    select: { role: true, isActive: true },
   });
-  if (!me) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
-  if (me.role !== "ADMIN") {
+
+  if (!me || !me.isActive || me.role !== "ADMIN") {
     return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
   }
-  return { adminId: me.id };
+  return { adminId: sess.userId };
 }
 
-// ---- POST /api/users -> create a user ----
+// Accept JSON or form bodies
+async function readBody(req: Request) {
+  const ct = req.headers.get("content-type") || "";
+  if (ct.includes("application/json")) {
+    return await req.json();
+  }
+  if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
+    const fd = await req.formData();
+    return Object.fromEntries(fd.entries());
+  }
+  try {
+    return await req.json();
+  } catch {
+    return {};
+  }
+}
+
 export async function POST(req: Request) {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const body: any = await readBody(req);
 
-  // accept either `fullName` or `name`
-  const fullName = String(body.fullName ?? body.name ?? "").trim();
-  const email = String(body.email ?? "").trim().toLowerCase();
-  const phone = String(body.phone ?? "").trim(); // schema seems non-null; use empty string if not provided
-  const role = (String(body.role ?? "USER").toUpperCase() === "ADMIN" ? "ADMIN" : "USER") as
-    | "ADMIN"
-    | "USER";
+  const fullName = String(body.fullName || body.name || "").trim();
+  const email = String(body.email || "").trim().toLowerCase();
+  const phoneRaw = body.phone == null ? "" : String(body.phone).trim();
+  const phone = phoneRaw || null;
+  const password = String(body.password || "");
+  const confirm = body.confirm != null ? String(body.confirm) : undefined;
 
-  const password = String(body.password ?? "");
-  const confirm = String(body.confirm ?? body.confirmPassword ?? "");
+  const roleInput = String(body.role || "USER").toUpperCase();
+  const role: Role = roleInput === "ADMIN" ? Role.ADMIN : Role.USER; // <-- enum, not string
 
-  // --- server-side validation (includes confirm) ---
   if (!fullName || !email || !password) {
-    return NextResponse.json(
-      { error: "fullName, email and password are required" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "fullName, email and password are required" }, { status: 400 });
   }
   if (password.length < 8) {
-    return NextResponse.json(
-      { error: "Password must be at least 8 characters" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Password must be at least 8 characters" }, { status: 400 });
   }
-  if (!confirm || confirm !== password) {
-    return NextResponse.json(
-      { error: "Passwords do not match" },
-      { status: 400 }
-    );
+  if (typeof confirm === "string" && confirm !== password) {
+    return NextResponse.json({ error: "Passwords do not match" }, { status: 400 });
   }
 
   try {
@@ -102,9 +103,9 @@ export async function POST(req: Request) {
       data: {
         fullName,
         email,
-        phone, // if your column is nullable, you can pass phone || null instead
+        phone,
         passwordHash,
-        role,
+        role,          // <-- enum value goes here
         isActive: true,
       },
       select: {
@@ -118,9 +119,6 @@ export async function POST(req: Request) {
         updatedAt: true,
       },
     });
-
-    // NOTE: We intentionally ignore `features` / `permissions` in request.
-    // If you later add a permissions table, we can upsert those here.
 
     return NextResponse.json({ user: created });
   } catch (e: any) {
