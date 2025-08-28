@@ -2,11 +2,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-// We need Node (not edge) because Prisma uses Node APIs
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Simple probe so you can confirm this file is live after deploy
 export async function GET(req: Request) {
   const url = new URL(req.url);
   if (url.searchParams.get("ping") === "1") {
@@ -24,19 +22,15 @@ type Row = {
   isActive: boolean;
 };
 
-// Email+password login, verified in Postgres using pgcrypto's bcrypt
 export async function POST(req: Request) {
   try {
     const { email, password } = await req.json().catch(() => ({} as any));
     const e = String(email || "").trim();
     const p = String(password || "");
-
     if (!e || !p) {
       return NextResponse.json({ error: "Missing credentials" }, { status: 400 });
     }
 
-    // Verify in the database: email match (case-insensitive), active user,
-    // and bcrypt hash match via pgcrypto's crypt()
     const rows = await prisma.$queryRaw<Row[]>`
       SELECT id, "fullName", email, phone, role, "isActive"
       FROM "User"
@@ -51,30 +45,20 @@ export async function POST(req: Request) {
     }
 
     const user = rows[0];
-
-    // Issue the cookie that getCurrentUser() reads
     const cookieVal = user.email.toLowerCase();
 
     const res = NextResponse.json({
       ok: true,
-      user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        role: user.role,
-      },
+      user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role },
     });
 
-    // Primary cookie
     res.cookies.set("sbp_email", cookieVal, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
-      maxAge: 60 * 60 * 24 * 30, // 30 days
+      maxAge: 60 * 60 * 24 * 30,
     });
-
-    // Fallback cookie (your getCurrentUser() also checks 'email')
     res.cookies.set("email", cookieVal, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
