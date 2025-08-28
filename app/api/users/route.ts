@@ -1,55 +1,61 @@
 // app/api/users/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCurrentUser } from "@/lib/auth";
 import bcrypt from "bcryptjs";
-import type { Role } from "@prisma/client";
+import crypto from "crypto";
 
 export const dynamic = "force-dynamic";
 
-/** Simple role gates */
-function canViewUsers(role?: Role | null) {
-  return role === "ADMIN" || role === "MANAGER";
-}
-function canCreateUsers(role?: Role | null) {
-  return role === "ADMIN";
-}
+const COOKIE_NAME = "sbp_session";
 
-/** GET /api/users
- *  List users (ADMIN & MANAGER)
- */
-export async function GET() {
-  const me = await getCurrentUser();
-  if (!me || !canViewUsers(me.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+type TokenPayload = { userId: string; exp: number };
+
+// ---- token helpers (same shape as other secured routes) ----
+function verifyToken(token?: string | null): TokenPayload | null {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [payloadB64url, sigB64url] = parts;
+
+  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(payloadB64url)
+    .digest("base64url");
+
+  if (expected !== sigB64url) return null;
+
+  try {
+    const json = JSON.parse(Buffer.from(payloadB64url, "base64url").toString()) as TokenPayload;
+    if (!json?.userId || typeof json.exp !== "number") return null;
+    if (json.exp < Math.floor(Date.now() / 1000)) return null;
+    return json;
+  } catch {
+    return null;
   }
+}
 
-  const users = await prisma.user.findMany({
-    orderBy: { createdAt: "desc" },
-    select: {
-      id: true,
-      fullName: true,
-      email: true,
-      phone: true,
-      role: true,
-      isActive: true,
-      createdAt: true,
-      updatedAt: true,
-    },
+async function requireAdmin() {
+  const cookieStore = (await import("next/headers")).cookies();
+  const token = cookieStore.get(COOKIE_NAME)?.value;
+  const sess = verifyToken(token);
+  if (!sess) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+
+  const me = await prisma.user.findUnique({
+    where: { id: sess.userId },
+    select: { id: true, role: true },
   });
-
-  return NextResponse.json(users);
+  if (!me) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+  if (me.role !== "ADMIN") {
+    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
+  }
+  return { adminId: me.id };
 }
 
-/** POST /api/users
- *  Create a new user (ADMIN only)
- *  Body: { fullName, email, phone?, password, role?, isActive? }
- */
+// ---- POST /api/users -> create a user ----
 export async function POST(req: Request) {
-  const me = await getCurrentUser();
-  if (!me || !canCreateUsers(me.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const guard = await requireAdmin();
+  if ("error" in guard) return guard.error;
 
   let body: any;
   try {
@@ -58,20 +64,33 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const fullName = String(body?.fullName ?? "").trim();
-  const email = String(body?.email ?? "").trim().toLowerCase();
-  const phone = (body?.phone ?? "").toString().trim() || null;
-  const password = String(body?.password ?? "").trim();
-  const role: Role = (["ADMIN", "MANAGER", "REP", "VIEWER"] as const).includes(
-    String(body?.role ?? "").toUpperCase() as Role
-  )
-    ? (String(body.role).toUpperCase() as Role)
-    : "VIEWER";
-  const isActive = typeof body?.isActive === "boolean" ? body.isActive : true;
+  // accept either `fullName` or `name`
+  const fullName = String(body.fullName ?? body.name ?? "").trim();
+  const email = String(body.email ?? "").trim().toLowerCase();
+  const phone = String(body.phone ?? "").trim(); // schema seems non-null; use empty string if not provided
+  const role = (String(body.role ?? "USER").toUpperCase() === "ADMIN" ? "ADMIN" : "USER") as
+    | "ADMIN"
+    | "USER";
 
+  const password = String(body.password ?? "");
+  const confirm = String(body.confirm ?? body.confirmPassword ?? "");
+
+  // --- server-side validation (includes confirm) ---
   if (!fullName || !email || !password) {
     return NextResponse.json(
       { error: "fullName, email and password are required" },
+      { status: 400 }
+    );
+  }
+  if (password.length < 8) {
+    return NextResponse.json(
+      { error: "Password must be at least 8 characters" },
+      { status: 400 }
+    );
+  }
+  if (!confirm || confirm !== password) {
+    return NextResponse.json(
+      { error: "Passwords do not match" },
       { status: 400 }
     );
   }
@@ -83,10 +102,10 @@ export async function POST(req: Request) {
       data: {
         fullName,
         email,
-        phone,
+        phone, // if your column is nullable, you can pass phone || null instead
         passwordHash,
         role,
-        isActive,
+        isActive: true,
       },
       select: {
         id: true,
@@ -100,12 +119,15 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json(created, { status: 201 });
+    // NOTE: We intentionally ignore `features` / `permissions` in request.
+    // If you later add a permissions table, we can upsert those here.
+
+    return NextResponse.json({ user: created });
   } catch (e: any) {
-    // Unique email violation
-    if (e?.code === "P2002" && Array.isArray(e?.meta?.target) && e.meta.target.includes("email")) {
-      return NextResponse.json({ error: "Email is already in use" }, { status: 400 });
+    const msg = String(e?.message || "Create failed");
+    if (msg.toLowerCase().includes("unique") && msg.toLowerCase().includes("email")) {
+      return NextResponse.json({ error: "Email already in use" }, { status: 409 });
     }
-    return NextResponse.json({ error: e?.message ?? "Create failed" }, { status: 400 });
+    return NextResponse.json({ error: msg }, { status: 400 });
   }
 }
