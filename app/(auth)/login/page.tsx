@@ -11,7 +11,7 @@ export default function LoginPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [nextUrl, setNextUrl] = useState("/");
 
-  // Read ?next=... without useSearchParams (avoids suspense warning)
+  // Read ?next=... safely without useSearchParams
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
@@ -26,18 +26,33 @@ export default function LoginPage() {
     setSubmitting(true);
 
     try {
-      const fd = new FormData();
-      fd.set("email", email.trim());
-      fd.set("password", password);
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        credentials: "include", // make sure the Set-Cookie is honored
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+          remember: true,
+          redirect: 0, // force JSON response from the API
+        }),
+      });
 
-      const res = await fetch("/api/login", { method: "POST", body: fd });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json?.error || "Sign-in failed");
+      const json = await res.json().catch(() => ({} as any));
 
-      // Cookie is set by the API; send them on their way
-      window.location.href = nextUrl;
+      if (res.ok && json?.ok) {
+        // Cookie was set by the API; go where we were headed
+        window.location.replace(nextUrl);
+        return;
+      }
+
+      // Show a clear reason if API rejected
+      const reason =
+        json?.error ||
+        (res.status === 401 ? "Unauthorized" : res.status === 400 ? "Bad request" : "Login failed");
+      setMsg(reason);
     } catch (err: any) {
-      setMsg(err?.message || "Sign-in failed");
+      setMsg(err?.message || "Network error");
     } finally {
       setSubmitting(false);
     }
@@ -54,8 +69,7 @@ export default function LoginPage() {
       }}
     >
       <div className="card" style={{ width: 420, maxWidth: "90vw", padding: 20 }}>
-        {/* Login form (no in-card logo) */}
-        <form method="post" action="/api/login" onSubmit={onSubmit} className="grid" style={{ gap: 12 }}>
+        <form onSubmit={onSubmit} className="grid" style={{ gap: 12 }}>
           <div>
             <label className="sr-only">Email</label>
             <input
@@ -110,8 +124,8 @@ export default function LoginPage() {
             Trouble signing in? Contact your admin.
           </p>
 
-          {/* Progressive enhancement: if JS is disabled, the form still posts to /api/login */}
-          <input type="hidden" name="__enhanced" value="1" />
+          {/* Preserve target after login */}
+          <input type="hidden" name="next" value={nextUrl} />
         </form>
       </div>
     </div>
