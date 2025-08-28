@@ -1,4 +1,3 @@
-// app/settings/global/competitor-brands/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -10,14 +9,20 @@ export default function CompetitorBrandVisibility() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [who, setWho] = useState<any>(null);
 
   async function load() {
     setLoading(true);
     setMsg(null);
     try {
-      const res = await fetch("/api/brands", { cache: "no-store" });
+      // sanity: prove cookies/session are present
+      const me = await fetch("/api/me", { credentials: "include", cache: "no-store" });
+      setWho(me.ok ? await me.json().catch(() => null) : null);
+
+      const res = await fetch("/api/brands", { credentials: "include", cache: "no-store" });
       const j = await res.json();
-      if (!Array.isArray(j)) throw new Error(j?.error || "Failed to load brands");
+      if (!res.ok) throw new Error(j?.error || "Failed to load brands");
+      if (!Array.isArray(j)) throw new Error("Unexpected response");
       setRows(j);
     } catch (e: any) {
       setMsg(e?.message || "Failed to load brands");
@@ -36,6 +41,7 @@ export default function CompetitorBrandVisibility() {
     try {
       const res = await fetch("/api/brands", {
         method: "PATCH",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, visible: next }),
       });
@@ -81,6 +87,13 @@ export default function CompetitorBrandVisibility() {
         <p className="small muted" style={{ marginTop: 8 }}>
           Checked brands will appear as checkboxes on the “Log Call” page under “Competitor Brands”.
         </p>
+
+        {/* optional tiny debug */}
+        {who && (
+          <p className="small muted" style={{ marginTop: 8 }}>
+            Signed in as: {who?.fullName ?? who?.email ?? "(unknown)"} ({who?.role})
+          </p>
+        )}
       </div>
     </div>
   );
