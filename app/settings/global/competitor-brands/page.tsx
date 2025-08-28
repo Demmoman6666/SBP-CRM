@@ -1,82 +1,44 @@
-"use client";
+// app/settings/global/competitor-brands/page.tsx
+import { prisma } from "@/lib/prisma";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
+export const dynamic = "force-dynamic";
 
-type Row = { id: string; name: string; visible: boolean };
+async function getAll() {
+  return prisma.brand.findMany({
+    orderBy: { name: "asc" },
+    select: { id: true, name: true, visibleInCallLog: true },
+  });
+}
 
-export default function ToggleCompetitorBrandsPage() {
-  const [rows, setRows] = useState<Row[]>([]);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+export default async function CompetitorBrandVisibilityPage() {
+  const items = await getAll();
 
-  useEffect(() => {
-    fetch("/api/settings/brand-visibility?type=COMPETITOR", { cache: "no-store" })
-      .then(r => r.json()).then(setRows).catch(() => setRows([]));
-  }, []);
-
-  async function setOne(id: string, visible: boolean) {
-    setErr(null);
-    setSaving(true);
-    setRows(prev => prev.map(r => r.id === id ? { ...r, visible } : r));
-    try {
-      const r = await fetch("/api/settings/brand-visibility", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "COMPETITOR", brandId: id, visible }),
-      });
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        throw new Error(j.error || "Failed to save");
-      }
-    } catch (e: any) {
-      setErr(e?.message || "Failed to save");
-      const fresh = await fetch("/api/settings/brand-visibility?type=COMPETITOR", { cache: "no-store" }).then(r => r.json()).catch(() => []);
-      setRows(fresh);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function all(on: boolean) {
-    rows.forEach(r => setOne(r.id, on));
+  async function save(formData: FormData) {
+    "use server";
+    const ids = formData.getAll("ids").map(String);
+    await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/settings/brand-visibility`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "competitor", ids }),
+      cache: "no-store",
+    });
   }
 
   return (
-    <div className="grid" style={{ gap: 12 }}>
-      <div className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <h1>Toggle Competitor Brands</h1>
-        <Link className="btn" href="/settings">← Back to Settings</Link>
-      </div>
-
-      <div className="card">
-        <div className="row" style={{ gap: 8, justifyContent: "space-between", alignItems: "center" }}>
-          <div className="small muted">Check the brands you want to appear in “Log Call”.</div>
-          <div className="row" style={{ gap: 8 }}>
-            <button className="btn" onClick={() => all(true)} disabled={saving}>Select all</button>
-            <button className="btn" onClick={() => all(false)} disabled={saving}>Clear all</button>
-          </div>
+    <div className="card grid" style={{ gap: 12 }}>
+      <h2>Toggle Competitor Brands</h2>
+      <form action={save} className="grid" style={{ gap: 8 }}>
+        {items.map((b) => (
+          <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
+            <input type="checkbox" name="ids" value={b.id} defaultChecked={b.visibleInCallLog} />
+            {b.name}
+          </label>
+        ))}
+        {items.length === 0 && <div className="small muted">No competitor brands yet.</div>}
+        <div className="right">
+          <button className="primary" type="submit">Save</button>
         </div>
-
-        <div className="grid" style={{ gap: 8, marginTop: 10 }}>
-          {rows.map(r => (
-            <label key={r.id} className="row" style={{ gap: 8, alignItems: "center" }}>
-              <input
-                type="checkbox"
-                checked={r.visible}
-                onChange={(e) => setOne(r.id, e.target.checked)}
-              />
-              {r.name}
-            </label>
-          ))}
-          {rows.length === 0 && <div className="small muted">No brands found.</div>}
-        </div>
-
-        <div className="row" style={{ gap: 8, marginTop: 10 }}>
-          {saving && <span className="small" style={{ color: "#0ea5e9" }}>Saving…</span>}
-          {err && <span className="small" style={{ color: "#b91c1c" }}>{err}</span>}
-        </div>
-      </div>
+      </form>
     </div>
   );
 }
