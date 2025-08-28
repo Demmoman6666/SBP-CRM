@@ -9,18 +9,18 @@ import { cookies } from "next/headers";
 export const dynamic = "force-dynamic";
 
 const COOKIE_NAME = "sbp_session";
+
 type TokenPayload = { userId: string; exp: number };
+type VerifyFail = "NoCookie" | "BadFormat" | "BadToken" | "Expired";
 
-type VerifyFail =
-  | "NoCookie"
-  | "BadFormat"
-  | "BadToken"
-  | "Expired";
-
-function verifyTokenVerbose(token?: string | null):
+/* ---------------- token helpers ---------------- */
+function verifyTokenVerbose(
+  token?: string | null
+):
   | { ok: true; payload: TokenPayload }
   | { ok: false; reason: VerifyFail } {
   if (!token) return { ok: false, reason: "NoCookie" };
+
   const parts = token.split(".");
   if (parts.length !== 2) return { ok: false, reason: "BadFormat" };
   const [payloadB64url, sigB64url] = parts;
@@ -43,20 +43,23 @@ function verifyTokenVerbose(token?: string | null):
   }
 }
 
-async function requireAdmin():
-  Promise<
-    | { adminId: string }
-    | { error: NextResponse }
-  > {
+async function requireAdmin() {
   const tok = cookies().get(COOKIE_NAME)?.value;
   const v = verifyTokenVerbose(tok);
-  if (!v.ok) {
-    return { error: NextResponse.json({ error: "Unauthorized", reason: v.reason }, { status: 401 }) };
+
+  if (v.ok !== true) {
+    // v is now { ok:false, reason: VerifyFail }
+    return {
+      error: NextResponse.json(
+        { error: "Unauthorized", reason: (v as { ok: false; reason: VerifyFail }).reason },
+        { status: 401 }
+      ),
+    };
   }
 
   const me = await prisma.user.findUnique({
     where: { id: v.payload.userId },
-    select: { id: true, role: true, isActive: true },
+    select: { role: true, isActive: true },
   });
 
   if (!me) {
@@ -68,10 +71,11 @@ async function requireAdmin():
   if (me.role !== "ADMIN") {
     return { error: NextResponse.json({ error: "Forbidden", reason: "NotAdmin" }, { status: 403 }) };
   }
-  return { adminId: me.id };
+
+  return { adminId: v.payload.userId };
 }
 
-// Accept JSON or form bodies
+/* ---------------- body helper ---------------- */
 async function readBody(req: Request) {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) return await req.json();
@@ -135,10 +139,11 @@ export async function POST(req: Request) {
   const role: Role = roleMap[roleInput] ?? Role.VIEWER;
 
   // Optional permission overrides: accept `permissions` or `overrides` arrays of enum names.
-  const rawPerms: any[] =
-    Array.isArray(body.permissions) ? body.permissions :
-    Array.isArray(body.overrides) ? body.overrides :
-    [];
+  const rawPerms: any[] = Array.isArray(body.permissions)
+    ? body.permissions
+    : Array.isArray(body.overrides)
+    ? body.overrides
+    : [];
   const validPerms = Array.from(
     new Set(
       rawPerms
@@ -168,10 +173,7 @@ export async function POST(req: Request) {
         passwordHash,
         role,
         isActive: true,
-        overrides:
-          validPerms.length > 0
-            ? { create: validPerms.map((perm) => ({ perm })) }
-            : undefined,
+        overrides: validPerms.length ? { create: validPerms.map((perm) => ({ perm })) } : undefined,
       },
       select: {
         id: true,
