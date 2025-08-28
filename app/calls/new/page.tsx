@@ -260,4 +260,219 @@ export default function NewCallPage() {
           </div>
 
           <div className="field">
-            <label>Sales Rep (required)</
+            <label>Sales Rep (required)</label>
+            <select name="salesRep" required defaultValue="">
+              <option value="" disabled>— Select a Sales Rep —</option>
+              {reps.map((r) => (
+                <option key={r.id} value={r.name}>{r.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Row: Customer + Outcome */}
+        <div className="grid grid-2">
+          <div className="field" ref={custWrapRef} style={{ position: "relative" }}>
+            <label>Customer*</label>
+            <input
+              name="customer"
+              placeholder={isExisting ? "Type to search" : "Type to search or free-type for new lead"}
+              value={custTerm}
+              onChange={(e) => {
+                setCustTerm(e.target.value);
+                if (custSelected) setCustSelected(null);
+                if (isExisting) setCustOpen(true);
+              }}
+              onFocus={() => {
+                if (isExisting && custTerm.trim().length >= 2) setCustOpen(true);
+              }}
+              required
+            />
+            {/* Hidden values server can use */}
+            <input type="hidden" name="customerId" value={custSelected?.id || ""} />
+            <input type="hidden" name="customerResolved" value={fmtCustomerLine(custSelected) || ""} />
+
+            {/* Suggestion panel */}
+            {isExisting && custOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 6px)",
+                  left: 0,
+                  width: "min(620px, 92vw)",
+                  background: "#fff",
+                  border: "1px solid var(--border)",
+                  borderRadius: 12,
+                  boxShadow: "var(--shadow)",
+                  padding: 6,
+                  zIndex: 40,
+                }}
+              >
+                {custHits.length === 0 ? (
+                  <div className="small" style={{ padding: 10 }}>No matches found.</div>
+                ) : (
+                  custHits.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => handlePickCustomer(c)}
+                      style={{
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "10px 12px",
+                        borderRadius: 10,
+                        border: "1px solid transparent",
+                        cursor: "pointer",
+                      }}
+                      onMouseEnter={(e) => {
+                        (e.currentTarget.style.background = "#fafafa");
+                        (e.currentTarget.style.borderColor = "#eee");
+                      }}
+                      onMouseLeave={(e) => {
+                        (e.currentTarget.style.background = "transparent");
+                        (e.currentTarget.style.borderColor = "transparent");
+                      }}
+                    >
+                      <div style={{ fontWeight: 600 }}>{c.salonName || "-"}</div>
+                      <div className="small">
+                        Contact: {c.customerName || "-"}
+                        {c.customerTelephone ? ` • ${c.customerTelephone}` : ""}
+                        {c.customerEmailAddress ? ` • ${c.customerEmailAddress}` : ""}
+                      </div>
+                      <div className="small muted">{addressLines(c).join(", ") || "-"}</div>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+
+            {/* Selected customer card */}
+            {isExisting && custSelected && (
+              <div className="card" style={{ marginTop: 8, padding: 10, borderRadius: 10 }}>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>{custSelected.salonName || "-"}</div>
+                <div className="small">
+                  Contact: {custSelected.customerName || "-"}
+                  {custSelected.customerTelephone ? ` • ${custSelected.customerTelephone}` : ""}
+                  {custSelected.customerEmailAddress ? ` • ${custSelected.customerEmailAddress}` : ""}
+                </div>
+                <div className="small muted" style={{ marginTop: 2 }}>{addressLines(custSelected).join(", ") || "-"}</div>
+                <div className="right" style={{ marginTop: 8 }}>
+                  <button type="button" className="btn" onClick={clearPickedCustomer}>Change</button>
+                </div>
+              </div>
+            )}
+
+            {!isExisting && <div className="form-hint">Free-type for a lead.</div>}
+          </div>
+
+          <div className="field">
+            <label>Outcome</label>
+            <select name="outcome" defaultValue="">
+              <option value="" disabled>— Select —</option>
+              <option>Sale</option>
+              <option>No Sale</option>
+              <option>Appointment booked</option>
+              <option>Demo Booked</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Times & duration */}
+        <div className="grid grid-2">
+          <div className="field">
+            <label>Start Time</label>
+            <div className="row" style={{ gap: 8 }}>
+              <input type="time" name="startTime" value={start} onChange={(e) => setStart(e.target.value)} />
+              <button type="button" className="btn" onClick={() => setStart(nowHHMM())}>Now</button>
+            </div>
+          </div>
+
+          <div className="field">
+            <label>Finish Time</label>
+            <div className="row" style={{ gap: 8 }}>
+              <input type="time" name="endTime" value={finish} onChange={(e) => setFinish(e.target.value)} />
+              <button type="button" className="btn" onClick={() => setFinish(nowHHMM())}>Now</button>
+            </div>
+          </div>
+        </div>
+
+        <div className="field">
+          <label>Total Duration (mins)</label>
+          <input name="durationMinutes" value={duration} readOnly placeholder="—" />
+        </div>
+
+        {/* Call type + follow-up */}
+        <div className="grid grid-2">
+          <div className="field">
+            <label>Call Type</label>
+            <select name="callType" defaultValue="">
+              <option value="" disabled>— Select —</option>
+              <option>Cold Call</option>
+              <option>Booked Call</option>
+              <option>Booked Demo</option>
+            </select>
+          </div>
+
+          <div className="field">
+            <label>Follow-up (date & time)</label>
+            <div className="input-group">
+              <input type="date" name="followUpAt" />
+              <input type="time" name="followUpTime" />
+            </div>
+          </div>
+        </div>
+
+        {/* Brands discussed (STOCKED — show only toggled ones) */}
+        <div className="field">
+          <label>What brands did you discuss? (Stocked Brands)</label>
+          <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr" }}>
+            {stockedBrands.length > 0 ? (
+              stockedBrands.map((b) => (
+                <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
+                  {/* send IDs, not names; multiple fields with same name -> FormData.getAll("stockedBrandIds") */}
+                  <input type="checkbox" name="stockedBrandIds" value={b.id} />
+                  {b.name}
+                </label>
+              ))
+            ) : (
+              <div className="small muted">No stocked brands are toggled to show. Ask an admin to enable them in Global Settings.</div>
+            )}
+          </div>
+        </div>
+
+        {/* Competitor brands (show only toggled ones) */}
+        <div className="field">
+          <label>Brands used (Competitor Brands)</label>
+          <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr 1fr" }}>
+            {competitorBrands.length > 0 ? (
+              competitorBrands.map((b) => (
+                <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
+                  {/* send IDs; multiple with same name -> FormData.getAll("competitorBrandIds") */}
+                  <input type="checkbox" name="competitorBrandIds" value={b.id} />
+                  {b.name}
+                </label>
+              ))
+            ) : (
+              <div className="small muted">No competitor brands are toggled to show. Ask an admin to enable them in Global Settings.</div>
+            )}
+          </div>
+        </div>
+
+        {/* Summary */}
+        <div className="field">
+          <label>Summary (required)</label>
+          <textarea name="summary" rows={4} placeholder="What was discussed?" required />
+        </div>
+
+        {error && <div className="form-error">{error}</div>}
+
+        <div className="right row" style={{ gap: 8 }}>
+          <a href="/" className="btn" style={{ background: "#f3f4f6" }}>Cancel</a>
+          <button className="primary" type="submit" disabled={submitting}>
+            {submitting ? "Saving…" : "Save Call"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
