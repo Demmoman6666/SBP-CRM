@@ -1,3 +1,4 @@
+// app/settings/global/stocked-brands/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -14,13 +15,17 @@ export default function StockedBrandVisibility() {
     setLoading(true);
     setMsg(null);
     try {
-      const res = await fetch("/api/stocked-brands", { credentials: "include", cache: "no-store" });
+      const res = await fetch(
+        "/api/settings/brand-visibility?type=stocked",
+        { credentials: "include", cache: "no-store" }
+      );
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || "Failed to load stocked brands");
-      if (!Array.isArray(j)) throw new Error("Unexpected response");
-      setRows(j);
+      if (!Array.isArray(j?.rows)) throw new Error("Unexpected response");
+      setRows(j.rows);
     } catch (e: any) {
       setMsg(e?.message || "Failed to load stocked brands");
+      setRows([]);
     } finally {
       setLoading(false);
     }
@@ -34,14 +39,19 @@ export default function StockedBrandVisibility() {
     setSaving(id);
     setMsg(null);
     try {
-      const res = await fetch("/api/stocked-brands", {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, visible: next }),
-      });
+      const res = await fetch(
+        "/api/settings/brand-visibility?type=stocked",
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, visible: next }),
+        }
+      );
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j?.error || "Update failed");
+
+      // Optimistic local update
       setRows((r) => r.map((x) => (x.id === id ? { ...x, visibleInCallLog: next } : x)));
     } catch (e: any) {
       setMsg(e?.message || "Update failed");
@@ -54,7 +64,10 @@ export default function StockedBrandVisibility() {
     <div className="grid" style={{ gap: 16 }}>
       <div className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <h1>Toggle Stocked Brands</h1>
-        <a href="/settings" className="btn">Back to Settings</a>
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn" onClick={load} disabled={loading}>Refresh</button>
+          <a href="/settings" className="btn">Back to Settings</a>
+        </div>
       </div>
 
       <div className="card">
