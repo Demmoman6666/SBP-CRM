@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import DeleteCustomerButton from "@/components/DeleteCustomerButton";
 import RecentOrders from "./RecentOrders";
+import { formatDateTimeUK } from "@/lib/dates";
 
 const DOW: Array<"Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"> = [
   "Mon",
@@ -202,7 +203,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             >
               <div>
                 <div className="small">
-                  {new Date(n.createdAt).toLocaleString()} {n.staff ? `• ${n.staff}` : ""}
+                  {formatDateTimeUK(n.createdAt)} {n.staff ? `• ${n.staff}` : ""}
                 </div>
                 <div>{n.text}</div>
               </div>
@@ -229,11 +230,11 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             >
               <div>
                 <div className="small">
-                  {new Date(c.createdAt).toLocaleString()}
+                  {formatDateTimeUK(c.createdAt)}
                   {c.staff ? ` • ${c.staff}` : ""}
                   {c.callType ? ` • ${c.callType}` : ""}
                   {c.outcome ? ` • ${c.outcome}` : ""}
-                  {c.followUpAt ? ` • follow-up ${new Date(c.followUpAt as any).toLocaleString()}` : ""}
+                  {c.followUpAt ? ` • follow-up ${formatDateTimeUK(c.followUpAt)}` : ""}
                 </div>
                 <div>{c.summary || "-"}</div>
 
