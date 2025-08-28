@@ -4,14 +4,12 @@
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const dynamic = "force-dynamic"; // No `revalidate` export here
 
 function LoginInner() {
   const params = useSearchParams();
   const next = params.get("next") || "/";
   const msg = params.get("m") || params.get("error") || "";
-
   const [showPw, setShowPw] = useState(false);
 
   return (
@@ -38,15 +36,13 @@ function LoginInner() {
       >
         {/* Brand header */}
         <div className="row" style={{ alignItems: "center", gap: 12, marginBottom: 8 }}>
-          {/* Simple SBP monogram */}
           <div
             aria-hidden
             style={{
               width: 40,
               height: 40,
               borderRadius: 10,
-              background:
-                "linear-gradient(135deg,#111827 0%,#374151 50%,#111827 100%)",
+              background: "linear-gradient(135deg,#111827 0%,#374151 50%,#111827 100%)",
               display: "grid",
               placeItems: "center",
               color: "white",
@@ -58,13 +54,10 @@ function LoginInner() {
           </div>
           <div>
             <h2 style={{ margin: 0 }}>Salon Brands Pro</h2>
-            <div className="small muted" style={{ marginTop: 2 }}>
-              Staff Sign-in
-            </div>
+            <div className="small muted" style={{ marginTop: 2 }}>Staff Sign-in</div>
           </div>
         </div>
 
-        {/* Optional message from querystring */}
         {msg ? (
           <div
             className="small"
@@ -81,7 +74,6 @@ function LoginInner() {
           </div>
         ) : null}
 
-        {/* Email + password form posts to /api/login */}
         <form method="post" action="/api/login" className="grid" style={{ gap: 10 }}>
           <input type="hidden" name="next" value={next} />
 
@@ -111,15 +103,9 @@ function LoginInner() {
               />
               <button
                 type="button"
-                onClick={() => setShowPw((v) => !v)}
+                onClick={() => setShowPw(v => !v)}
                 className="btn"
-                style={{
-                  position: "absolute",
-                  right: 6,
-                  top: 6,
-                  padding: "6px 8px",
-                  borderRadius: 8,
-                }}
+                style={{ position: "absolute", right: 6, top: 6, padding: "6px 8px", borderRadius: 8 }}
                 aria-label={showPw ? "Hide password" : "Show password"}
               >
                 {showPw ? "Hide" : "Show"}
