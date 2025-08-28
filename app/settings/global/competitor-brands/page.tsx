@@ -1,44 +1,87 @@
 // app/settings/global/competitor-brands/page.tsx
-import { prisma } from "@/lib/prisma";
+"use client";
 
-export const dynamic = "force-dynamic";
+import { useEffect, useState } from "react";
 
-async function getAll() {
-  return prisma.brand.findMany({
-    orderBy: { name: "asc" },
-    select: { id: true, name: true, visibleInCallLog: true },
-  });
-}
+type Brand = { id: string; name: string; visibleInCallLog: boolean };
 
-export default async function CompetitorBrandVisibilityPage() {
-  const items = await getAll();
+export default function CompetitorBrandVisibility() {
+  const [rows, setRows] = useState<Brand[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  async function save(formData: FormData) {
-    "use server";
-    const ids = formData.getAll("ids").map(String);
-    await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/settings/brand-visibility`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "competitor", ids }),
-      cache: "no-store",
-    });
+  async function load() {
+    setLoading(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/brands", { cache: "no-store" });
+      const j = await res.json();
+      if (!Array.isArray(j)) throw new Error(j?.error || "Failed to load brands");
+      setRows(j);
+    } catch (e: any) {
+      setMsg(e?.message || "Failed to load brands");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function toggle(id: string, next: boolean) {
+    setSaving(id);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/brands", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, visible: next }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || "Update failed");
+      setRows((r) => r.map((x) => (x.id === id ? { ...x, visibleInCallLog: next } : x)));
+    } catch (e: any) {
+      setMsg(e?.message || "Update failed");
+    } finally {
+      setSaving(null);
+    }
   }
 
   return (
-    <div className="card grid" style={{ gap: 12 }}>
-      <h2>Toggle Competitor Brands</h2>
-      <form action={save} className="grid" style={{ gap: 8 }}>
-        {items.map((b) => (
-          <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
-            <input type="checkbox" name="ids" value={b.id} defaultChecked={b.visibleInCallLog} />
-            {b.name}
-          </label>
-        ))}
-        {items.length === 0 && <div className="small muted">No competitor brands yet.</div>}
-        <div className="right">
-          <button className="primary" type="submit">Save</button>
-        </div>
-      </form>
+    <div className="grid" style={{ gap: 16 }}>
+      <div className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <h1>Toggle Competitor Brands</h1>
+        <a href="/settings" className="btn">Back to Settings</a>
+      </div>
+
+      <div className="card">
+        {loading ? (
+          <div className="small muted">Loading…</div>
+        ) : rows.length === 0 ? (
+          <div className="small muted">No competitor brands found.</div>
+        ) : (
+          <div className="grid" style={{ gap: 8 }}>
+            {rows.map((b) => (
+              <label key={b.id} className="row" style={{ gap: 10, alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={!!b.visibleInCallLog}
+                  onChange={(e) => toggle(b.id, e.currentTarget.checked)}
+                  disabled={saving === b.id}
+                />
+                <span>{b.name}</span>
+              </label>
+            ))}
+          </div>
+        )}
+
+        {msg && <div className="form-error" style={{ marginTop: 10 }}>{msg}</div>}
+        <p className="small muted" style={{ marginTop: 8 }}>
+          Checked brands will appear as checkboxes on the “Log Call” page under “Competitor Brands”.
+        </p>
+      </div>
     </div>
   );
 }
