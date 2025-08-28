@@ -1,50 +1,63 @@
 // app/api/settings/account/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCurrentUser } from "@/lib/auth";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 
-export const dynamic = "force-dynamic";
+const COOKIE_NAME = "sbp_session";
 
-/** GET /api/settings/account
- *  Returns the current user's profile (safe fields only)
- */
-export async function GET() {
-  const me = await getCurrentUser();
-  if (!me) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+type TokenPayload = { userId: string; exp: number };
+
+// --- token helpers (mirror middleware) ---
+function verifyToken(token?: string | null): TokenPayload | null {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [payloadB64url, sigB64url] = parts;
+
+  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(payloadB64url)
+    .digest("base64url");
+
+  if (expected !== sigB64url) return null;
+
+  try {
+    const json = JSON.parse(Buffer.from(payloadB64url, "base64url").toString()) as TokenPayload;
+    if (!json?.userId || typeof json.exp !== "number") return null;
+    if (json.exp < Math.floor(Date.now() / 1000)) return null;
+    return json;
+  } catch {
+    return null;
   }
-
-  const user = await prisma.user.findUnique({
-    where: { id: me.id },
-    select: {
-      id: true,
-      email: true,
-      fullName: true,
-      phone: true,
-      role: true,
-      isActive: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  });
-
-  if (!user) {
-    return NextResponse.json({ error: "User not found" }, { status: 404 });
-  }
-
-  return NextResponse.json(user);
 }
 
-/** PUT /api/settings/account
- *  Body (any subset): { fullName?, phone?, email?, currentPassword?, newPassword? }
- *  - If changing password, currentPassword is required and must match.
- */
-export async function PUT(req: Request) {
-  const me = await getCurrentUser();
-  if (!me) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+async function requireSelf() {
+  const cookie = (await import("next/headers")).cookies();
+  const token = cookie.get(COOKIE_NAME)?.value;
+  const sess = verifyToken(token);
+  if (!sess) {
+    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   }
+  return { userId: sess.userId as string };
+}
+
+// Accept POST, PATCH, PUT -> all behave the same
+export async function POST(req: Request) {
+  return handleUpdate(req);
+}
+export async function PATCH(req: Request) {
+  return handleUpdate(req);
+}
+export async function PUT(req: Request) {
+  return handleUpdate(req);
+}
+
+async function handleUpdate(req: Request) {
+  const guard = await requireSelf();
+  if ("error" in guard) return guard.error;
+  const { userId } = guard;
 
   let body: any;
   try {
@@ -53,61 +66,50 @@ export async function PUT(req: Request) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const fullName = (body?.fullName ?? "").toString().trim();
-  const phone = (body?.phone ?? "").toString().trim();
-  const email = (body?.email ?? "").toString().trim().toLowerCase();
-  const currentPassword = (body?.currentPassword ?? "").toString();
-  const newPassword = (body?.newPassword ?? "").toString();
+  const fullName = (body.fullName ?? "").trim();
+  const phone = (body.phone ?? "").trim();
+  const email = (body.email ?? "").trim().toLowerCase();
 
-  const updateData: {
-    fullName?: string;
-    phone?: string | null;
-    email?: string;
-    passwordHash?: string;
-  } = {};
+  const currentPassword = String(body.currentPassword ?? "");
+  const newPassword = String(body.newPassword ?? "");
 
-  if (fullName) updateData.fullName = fullName;
-  if (phone || phone === "") updateData.phone = phone || null;
-  if (email) updateData.email = email;
-
-  // If changing password, require current password and verify
-  if (newPassword) {
-    if (!currentPassword) {
-      return NextResponse.json(
-        { error: "Current password is required to set a new password" },
-        { status: 400 }
-      );
-    }
-
-    const existing = await prisma.user.findUnique({
-      where: { id: me.id },
-      select: { passwordHash: true },
-    });
-    if (!existing?.passwordHash) {
-      return NextResponse.json(
-        { error: "Password cannot be changed for this account" },
-        { status: 400 }
-      );
-    }
-    const ok = await bcrypt.compare(currentPassword, existing.passwordHash);
-    if (!ok) {
-      return NextResponse.json({ error: "Current password is incorrect" }, { status: 400 });
-    }
-    updateData.passwordHash = await bcrypt.hash(newPassword, 10);
-  }
-
-  if (Object.keys(updateData).length === 0) {
-    return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
-  }
+  const data: any = {};
+  if (fullName) data.fullName = fullName;
+  if (phone) data.phone = phone;
+  if (email) data.email = email;
 
   try {
+    // If changing password, verify current password matches
+    if (newPassword) {
+      if (!currentPassword) {
+        return NextResponse.json({ error: "Current password required" }, { status: 400 });
+      }
+      const me = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { passwordHash: true },
+      });
+      if (!me) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+      const ok = await bcrypt.compare(currentPassword, me.passwordHash);
+      if (!ok) {
+        return NextResponse.json({ error: "Current password is incorrect" }, { status: 400 });
+      }
+      const newHash = await bcrypt.hash(newPassword, 10);
+      data.passwordHash = newHash;
+    }
+
+    if (!Object.keys(data).length) {
+      return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
+    }
+
     const updated = await prisma.user.update({
-      where: { id: me.id },
-      data: updateData,
+      where: { id: userId },
+      data,
       select: {
         id: true,
-        email: true,
         fullName: true,
+        email: true,
         phone: true,
         role: true,
         isActive: true,
@@ -115,17 +117,14 @@ export async function PUT(req: Request) {
         updatedAt: true,
       },
     });
+
     return NextResponse.json(updated);
   } catch (e: any) {
-    // Handle unique email violation
-    if (e?.code === "P2002" && Array.isArray(e?.meta?.target) && e.meta.target.includes("email")) {
-      return NextResponse.json({ error: "Email is already in use" }, { status: 400 });
+    const msg = typeof e?.message === "string" ? e.message : "Update failed";
+    // Handle unique email constraint nicely
+    if (msg.toLowerCase().includes("unique") && msg.toLowerCase().includes("email")) {
+      return NextResponse.json({ error: "Email already in use" }, { status: 400 });
     }
-    return NextResponse.json({ error: e?.message ?? "Update failed" }, { status: 400 });
+    return NextResponse.json({ error: msg }, { status: 400 });
   }
-}
-
-export async function PATCH(req: Request) {
-  // Alias to PUT for convenience
-  return PUT(req);
 }
