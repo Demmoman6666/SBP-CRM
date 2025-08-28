@@ -54,17 +54,12 @@ export default function LoginPage() {
       }}
     >
       <div className="card" style={{ width: 420, maxWidth: "90vw", padding: 20 }}>
-        {/* Brand logo only */}
+        {/* Brand logo */}
         <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
           <img
-            src="/logo.svg"
-            alt="Logo"
-            height={28}
-            style={{ height: 28 }}
-            onError={(e) => {
-              const el = e.currentTarget as HTMLImageElement;
-              if (el.src.endsWith("/logo.svg")) el.src = "/logo.png"; // fallback
-            }}
+            src="/sbp-logo.png"
+            alt="Salon Brands Pro"
+            style={{ height: 28, width: "auto", display: "block" }}
           />
         </div>
 
@@ -124,7 +119,7 @@ export default function LoginPage() {
             Trouble signing in? Contact your admin.
           </p>
 
-          {/* Progressive enhancement: if JS is disabled, the form still posts to /api/login (will show JSON). */}
+          {/* Progressive enhancement: if JS is disabled, the form still posts to /api/login */}
           <input type="hidden" name="__enhanced" value="1" />
         </form>
       </div>
