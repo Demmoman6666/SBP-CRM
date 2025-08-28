@@ -11,6 +11,12 @@ export const dynamic = "force-dynamic";
 const COOKIE_NAME = "sbp_session";
 type TokenPayload = { userId: string; exp: number };
 
+function json(data: any, init?: number | ResponseInit) {
+  const headers = { "cache-control": "no-store" };
+  if (typeof init === "number") return NextResponse.json(data, { status: init, headers });
+  return NextResponse.json(data, { ...(init || {}), headers });
+}
+
 /* ---------------- token helpers (mirror middleware) ---------------- */
 function verifyToken(token?: string | null): TokenPayload | null {
   if (!token) return null;
@@ -38,17 +44,20 @@ function verifyToken(token?: string | null): TokenPayload | null {
 
 async function requireAdmin() {
   const tok = cookies().get(COOKIE_NAME)?.value;
+  if (!tok) return { error: json({ error: "Unauthorized", reason: "NoCookie" }, 401) };
+
   const sess = verifyToken(tok);
-  if (!sess) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+  if (!sess) return { error: json({ error: "Unauthorized", reason: "BadToken" }, 401) };
 
   const me = await prisma.user.findUnique({
     where: { id: sess.userId },
     select: { role: true, isActive: true },
   });
 
-  if (!me || !me.isActive || me.role !== "ADMIN") {
-    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
-  }
+  if (!me) return { error: json({ error: "Forbidden", reason: "NoUser" }, 403) };
+  if (!me.isActive) return { error: json({ error: "Forbidden", reason: "Inactive" }, 403) };
+  if (me.role !== "ADMIN") return { error: json({ error: "Forbidden", reason: "NotAdmin" }, 403) };
+
   return { adminId: sess.userId };
 }
 
@@ -87,7 +96,7 @@ export async function GET() {
     },
   });
 
-  return NextResponse.json({ users });
+  return json({ users });
 }
 
 /* ---------------- POST /api/users (create) ---------------- */
@@ -115,27 +124,32 @@ export async function POST(req: Request) {
   };
   const role: Role = roleMap[roleInput] ?? Role.VIEWER;
 
-  // Optional permission overrides: accept `permissions` or `overrides` arrays of enum names.
-  const rawPerms: any[] =
-    Array.isArray(body.permissions) ? body.permissions :
-    Array.isArray(body.overrides) ? body.overrides :
-    [];
+  // Optional permission overrides: accept `permissions` or `overrides`, string or array.
+  const rawPermsAny =
+    body.permissions ?? body.overrides ?? [];
+  const rawPerms: string[] = Array.isArray(rawPermsAny)
+    ? rawPermsAny.map(String)
+    : String(rawPermsAny || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
   const validPerms = Array.from(
     new Set(
       rawPerms
-        .map((p) => String(p).toUpperCase())
+        .map((p) => p.toUpperCase())
         .filter((p): p is keyof typeof Permission => p in Permission)
     )
   ) as Permission[];
 
   if (!fullName || !email || !password) {
-    return NextResponse.json({ error: "fullName, email and password are required" }, { status: 400 });
+    return json({ error: "fullName, email and password are required" }, 400);
   }
   if (password.length < 8) {
-    return NextResponse.json({ error: "Password must be at least 8 characters" }, { status: 400 });
+    return json({ error: "Password must be at least 8 characters" }, 400);
   }
   if (typeof confirm === "string" && confirm !== password) {
-    return NextResponse.json({ error: "Passwords do not match" }, { status: 400 });
+    return json({ error: "Passwords do not match" }, 400);
   }
 
   try {
@@ -167,12 +181,12 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json({ user: created });
+    return json({ user: created }, 201);
   } catch (e: any) {
     const msg = String(e?.message || "Create failed");
     if (msg.toLowerCase().includes("unique") && msg.toLowerCase().includes("email")) {
-      return NextResponse.json({ error: "Email already in use" }, { status: 409 });
+      return json({ error: "Email already in use" }, 409);
     }
-    return NextResponse.json({ error: msg }, { status: 400 });
+    return json({ error: msg }, 400);
   }
 }
