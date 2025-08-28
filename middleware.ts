@@ -1,25 +1,27 @@
 // middleware.ts
 import { NextResponse, NextRequest } from "next/server";
 
-/** Cookie name shared across app */
+/** Auth cookie name (must match server) */
 const COOKIE_NAME = "sbp_session";
 
-/* ---------------- Base64URL + HMAC helpers (Edge-safe) ---------------- */
-function toB64url(bytes: Uint8Array) {
+/* ---------------- WebCrypto helpers ---------------- */
+function b64urlEncode(bytes: Uint8Array) {
+  // base64url (no padding)
   let bin = "";
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  // btoa is available in the Edge runtime
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  // btoa expects latin1
+  const b64 = btoa(bin);
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
-function fromB64url(s: string) {
+function b64urlDecodeToBytes(s: string) {
   const norm = s.replace(/-/g, "+").replace(/_/g, "/");
   const pad = norm.length % 4 ? "====".slice(norm.length % 4) : "";
   const bin = atob(norm + pad);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
 }
-async function hmacSHA256_str(secret: string, msg: string) {
+async function hmacSHA256_base64url(messageAscii: string, secret: string) {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -27,19 +29,19 @@ async function hmacSHA256_str(secret: string, msg: string) {
     false,
     ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(msg));
-  return new Uint8Array(sig);
-}
-function canon(sig: string) {
-  // normalize any base64/base64url signature to url-safe, no padding
-  return sig.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(messageAscii));
+  return b64urlEncode(new Uint8Array(sig));
 }
 
-/* ---------------- Token verification (2-part OR 3-part) ----------------
-   - 2-part:  payload.sig               (legacy)
-   - 3-part:  header.payload.sig        (JWT-style)
-------------------------------------------------------------------------- */
-async function verifyTokenCompat(token?: string | null): Promise<{ userId: string; exp: number } | null> {
+/* ------------------------------------------------------------------
+   verifyTokenCompatEdge
+   Accepts BOTH:
+   - legacy 2-part: payload.sig        (HMAC over the *payload string*, base64url)
+   - JWT 3-part:    header.payload.sig (HMAC over the ASCII "header.payload")
+------------------------------------------------------------------- */
+async function verifyTokenCompatEdge(
+  token?: string | null
+): Promise<{ userId: string; exp: number } | null> {
   if (!token) return null;
 
   const parts = token.split(".");
@@ -48,23 +50,27 @@ async function verifyTokenCompat(token?: string | null): Promise<{ userId: strin
   let toSign = "";
 
   if (parts.length === 2) {
-    [payloadPart, providedSig] = parts;     // HMAC over payload
+    // legacy: payload.sig  (server signs the BASE64URL payload string)
+    [payloadPart, providedSig] = parts;
     toSign = payloadPart;
   } else if (parts.length === 3) {
-    const [headerPart, p, s] = parts;       // HMAC over header.payload
+    // JWT: header.payload.sig  (server signs the ASCII `${header}.${payload}`)
+    const [h, p, s] = parts;
     payloadPart = p;
     providedSig = s;
-    toSign = `${headerPart}.${payloadPart}`;
+    toSign = `${h}.${p}`;
   } else {
     return null;
   }
 
   const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-  const expected = toB64url(await hmacSHA256_str(secret, toSign));
-  if (canon(providedSig) !== expected) return null;
+  const expectedSig = await hmacSHA256_base64url(toSign, secret);
+  if (providedSig.replace(/=+$/g, "") !== expectedSig) return null;
 
+  // Parse payload JSON
   try {
-    const json = JSON.parse(new TextDecoder().decode(fromB64url(payloadPart))) as { userId: string; exp: number };
+    const bytes = b64urlDecodeToBytes(payloadPart);
+    const json = JSON.parse(new TextDecoder().decode(bytes)) as { userId: string; exp: number };
     if (!json?.userId || typeof json.exp !== "number") return null;
     if (json.exp < Math.floor(Date.now() / 1000)) return null;
     return json;
@@ -73,10 +79,12 @@ async function verifyTokenCompat(token?: string | null): Promise<{ userId: strin
   }
 }
 
-/* ---------------- Public paths & assets ---------------- */
+/**
+ * Public routes (exact paths)
+ */
 const PUBLIC_PATHS = [
   "/login",
-  "/api/login",          // legacy
+  "/api/login",
   "/api/auth/login",
   "/api/auth/logout",
   "/favicon.ico",
@@ -85,35 +93,36 @@ const PUBLIC_PATHS = [
   "/logo.svg",
 ];
 
+/** Public file extensions */
 const PUBLIC_FILES = /\.(?:png|jpg|jpeg|svg|gif|webp|avif|ico|txt|xml|css|js|map|woff2?|ttf|eot)$/i;
 
+/** Which paths bypass auth entirely */
 function isPublicPath(pathname: string) {
-  if (PUBLIC_FILES.test(pathname)) return true;     // any static asset
-  if (PUBLIC_PATHS.includes(pathname)) return true; // exact
-  if (pathname.startsWith("/_next/")) return true;  // Next internals
+  if (PUBLIC_FILES.test(pathname)) return true;
+  if (PUBLIC_PATHS.includes(pathname)) return true;
+  if (pathname.startsWith("/_next/")) return true;
   if (pathname.startsWith("/assets/")) return true;
   if (pathname.startsWith("/images/")) return true;
 
-  // Webhooks should bypass auth
+  // keep Shopify webhooks unauthenticated
   if (pathname.startsWith("/api/shopify/webhooks")) return true;
 
-  // Optional: keep debug tools open
+  // keep debug tools open (optional)
   if (pathname.startsWith("/api/debug/")) return true;
 
   return false;
 }
 
-/* ---------------- Middleware ---------------- */
 export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
   // Allow public assets/routes
   if (isPublicPath(pathname)) {
-    // If a logged-in user hits /login, bounce them to next or home
+    // If a logged-in user hits /login, bounce to next or home
     if (pathname === "/login") {
       const tok = req.cookies.get(COOKIE_NAME)?.value;
-      const sess = await verifyTokenCompat(tok);
-      if (sess) {
+      const ok = await verifyTokenCompatEdge(tok);
+      if (ok) {
         const next = req.nextUrl.searchParams.get("next") || "/";
         return NextResponse.redirect(new URL(next, req.url));
       }
@@ -123,26 +132,20 @@ export async function middleware(req: NextRequest) {
 
   // Verify session for everything else
   const token = req.cookies.get(COOKIE_NAME)?.value;
-  const sess = await verifyTokenCompat(token);
+  const sess = await verifyTokenCompatEdge(token);
   if (sess) return NextResponse.next();
 
-  // Unauthenticated: APIs -> 401 JSON, Pages -> redirect to /login
+  // Unauthenticated: page → redirect to /login, API → 401
   if (pathname.startsWith("/api/")) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-
   const url = req.nextUrl.clone();
   url.pathname = "/login";
-  url.search = search
-    ? `?next=${encodeURIComponent(pathname + search)}`
-    : `?next=${encodeURIComponent(pathname)}`;
+  url.search = search ? `?next=${encodeURIComponent(pathname + search)}` : `?next=${encodeURIComponent(pathname)}`;
   return NextResponse.redirect(url);
 }
 
-/* ---------------- Matcher ----------------
-   Protect everything by default; exclude Next internals
-   and any request for a file (has a dot in the last path segment).
-------------------------------------------- */
+/** Protect everything by default, excluding Next internals and any file with an extension */
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)"],
 };
