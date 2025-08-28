@@ -11,54 +11,59 @@ export const dynamic = "force-dynamic";
 const COOKIE_NAME = "sbp_session";
 type TokenPayload = { userId: string; exp: number };
 
-function json(data: any, init?: number | ResponseInit) {
-  const headers = { "cache-control": "no-store" };
-  if (typeof init === "number") return NextResponse.json(data, { status: init, headers });
-  return NextResponse.json(data, { ...(init || {}), headers });
+/* ---------------- helpers: base64url + json ---------------- */
+function toB64Url(b64: string) {
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+function hmacSha256Base64Url(secret: string, msg: string) {
+  // Some Node runtimes don’t support digest('base64url'), so do base64 → base64url.
+  const b64 = crypto.createHmac("sha256", secret).update(msg).digest("base64");
+  return toB64Url(b64);
+}
+function json(data: any, status = 200) {
+  return NextResponse.json(data, { status });
 }
 
-/* ---------------- token helpers (mirror middleware) ---------------- */
-function verifyToken(token?: string | null): TokenPayload | null {
-  if (!token) return null;
+/* ---------------- token verify (mirrors middleware) ----------------
+   Returns either { ok: true, payload } or { ok: false, reason }
+-------------------------------------------------------------------- */
+function verifyTokenVerbose(token: string | undefined | null):
+  | { ok: true; payload: TokenPayload }
+  | { ok: false; reason: "NoCookie" | "BadFormat" | "BadToken" | "Expired" } {
+  if (!token) return { ok: false, reason: "NoCookie" };
+
   const parts = token.split(".");
-  if (parts.length !== 2) return null;
+  if (parts.length !== 2) return { ok: false, reason: "BadFormat" };
   const [payloadB64url, sigB64url] = parts;
 
   const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(payloadB64url)
-    .digest("base64url");
-
-  if (expected !== sigB64url) return null;
+  const expectedSig = hmacSha256Base64Url(secret, payloadB64url);
+  if (expectedSig !== sigB64url) return { ok: false, reason: "BadToken" };
 
   try {
-    const json = JSON.parse(Buffer.from(payloadB64url, "base64url").toString()) as TokenPayload;
-    if (!json?.userId || typeof json.exp !== "number") return null;
-    if (json.exp < Math.floor(Date.now() / 1000)) return null;
-    return json;
+    const payload = JSON.parse(Buffer.from(payloadB64url, "base64url").toString()) as TokenPayload;
+    if (!payload?.userId || typeof payload.exp !== "number") return { ok: false, reason: "BadFormat" };
+    if (payload.exp < Math.floor(Date.now() / 1000)) return { ok: false, reason: "Expired" };
+    return { ok: true, payload };
   } catch {
-    return null;
+    return { ok: false, reason: "BadFormat" };
   }
 }
 
 async function requireAdmin() {
   const tok = cookies().get(COOKIE_NAME)?.value;
-  if (!tok) return { error: json({ error: "Unauthorized", reason: "NoCookie" }, 401) };
-
-  const sess = verifyToken(tok);
-  if (!sess) return { error: json({ error: "Unauthorized", reason: "BadToken" }, 401) };
+  const v = verifyTokenVerbose(tok);
+  if (!v.ok) return { error: json({ error: "Unauthorized", reason: v.reason }, 401) };
 
   const me = await prisma.user.findUnique({
-    where: { id: sess.userId },
+    where: { id: v.payload.userId },
     select: { role: true, isActive: true },
   });
 
-  if (!me) return { error: json({ error: "Forbidden", reason: "NoUser" }, 403) };
-  if (!me.isActive) return { error: json({ error: "Forbidden", reason: "Inactive" }, 403) };
-  if (me.role !== "ADMIN") return { error: json({ error: "Forbidden", reason: "NotAdmin" }, 403) };
-
-  return { adminId: sess.userId };
+  if (!me || !me.isActive || me.role !== "ADMIN") {
+    return { error: json({ error: "Forbidden" }, 403) };
+  }
+  return { adminId: v.payload.userId };
 }
 
 /* ---------------- body helper ---------------- */
@@ -124,20 +129,15 @@ export async function POST(req: Request) {
   };
   const role: Role = roleMap[roleInput] ?? Role.VIEWER;
 
-  // Optional permission overrides: accept `permissions` or `overrides`, string or array.
-  const rawPermsAny =
-    body.permissions ?? body.overrides ?? [];
-  const rawPerms: string[] = Array.isArray(rawPermsAny)
-    ? rawPermsAny.map(String)
-    : String(rawPermsAny || "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-
+  // Optional permission overrides: accept `permissions` or `overrides`
+  const rawPerms: any[] =
+    Array.isArray(body.permissions) ? body.permissions :
+    Array.isArray(body.overrides) ? body.overrides :
+    [];
   const validPerms = Array.from(
     new Set(
       rawPerms
-        .map((p) => p.toUpperCase())
+        .map((p) => String(p).toUpperCase())
         .filter((p): p is keyof typeof Permission => p in Permission)
     )
   ) as Permission[];
@@ -163,10 +163,7 @@ export async function POST(req: Request) {
         passwordHash,
         role,
         isActive: true,
-        overrides:
-          validPerms.length > 0
-            ? { create: validPerms.map((perm) => ({ perm })) }
-            : undefined,
+        overrides: validPerms.length ? { create: validPerms.map((perm) => ({ perm })) } : undefined,
       },
       select: {
         id: true,
