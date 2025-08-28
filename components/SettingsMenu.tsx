@@ -3,82 +3,78 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 
 type PanelKey = "rep" | "brand" | "stocked" | null;
 
 export default function SettingsMenu() {
-  const pathname = usePathname();
+  // Hide completely on /login to avoid any chance of interfering with the auth page
+  if (typeof window !== "undefined" && window.location.pathname === "/login") {
+    return null;
+  }
 
-  // gate the whole menu behind auth
-  const [authed, setAuthed] = useState<boolean | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-
+  const [mounted, setMounted] = useState(false);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<PanelKey>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // 1) Never show on the login page
-  const onLoginPage = pathname === "/login";
-  // Early bail if we know it's the login page
-  if (onLoginPage) return null;
-
-  // 2) Check auth + role (hides the menu entirely if not logged in)
+  // Ensure we only touch DOM / run effects after mount
   useEffect(() => {
-    let cancelled = false;
-    fetch("/api/me", { cache: "no-store" })
-      .then(async (r) => {
-        if (!r.ok) throw new Error("unauth");
-        const j = await r.json();
-        if (!cancelled) {
-          setAuthed(true);
-          setIsAdmin(j?.role === "ADMIN");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAuthed(false);
-          setIsAdmin(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
+    setMounted(true);
   }, []);
 
-  // Hide the button while loading or if unauthenticated
-  if (authed !== true) return null;
-
+  // Close when clicking outside
   useEffect(() => {
+    if (!mounted) return;
     function onDocClick(e: MouseEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        setOpen(false);
-        setActive(null);
-        setMsg(null);
+      try {
+        if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+          setOpen(false);
+          setActive(null);
+          setMsg(null);
+        }
+      } catch {
+        // swallow
       }
     }
     document.addEventListener("click", onDocClick);
     return () => document.removeEventListener("click", onDocClick);
-  }, []);
+  }, [mounted]);
+
+  // Ask who I am (admin?) after mount
+  useEffect(() => {
+    if (!mounted) return;
+    (async () => {
+      try {
+        const r = await fetch("/api/me", { cache: "no-store" });
+        if (!r.ok) {
+          setIsAdmin(false);
+          return;
+        }
+        const j = await r.json().catch(() => null);
+        setIsAdmin(j?.role === "ADMIN");
+      } catch {
+        setIsAdmin(false);
+      }
+    })();
+  }, [mounted]);
 
   async function handleLogout() {
     setMsg(null);
     setLoggingOut(true);
     try {
-      // prefer new path; fall back to legacy if present
-      const res =
-        (await fetch("/api/auth/logout", { method: "POST" })) ||
-        (await fetch("/api/logout", { method: "POST" }));
-
-      // ignore body; just reload to clear UI and hit middleware
+      // Primary path
+      const r = await fetch("/api/auth/logout", { method: "POST" });
+      if (!r.ok) {
+        // Backwards-compat path if you kept /api/logout
+        await fetch("/api/logout", { method: "POST" });
+      }
+      // Go to login; middleware will treat us as signed out
       window.location.href = "/login";
-    } catch {
-      // even if API hiccups, force a reload; middleware will redirect if cookie is gone
-      window.location.href = "/login";
-    } finally {
+    } catch (e: any) {
+      setMsg(e?.message || "Failed to sign out");
       setLoggingOut(false);
     }
   }
@@ -89,17 +85,21 @@ export default function SettingsMenu() {
     const email = (String(formData.get("email") || "").trim() || null) as string | null;
     if (!name) return setMsg("Sales rep name is required.");
 
-    const res = await fetch("/api/salesreps", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email }),
-    });
-    if (res.ok) {
-      (document.getElementById("rep-form") as HTMLFormElement)?.reset();
-      setMsg("Sales rep added ✔");
-    } else {
-      const j = await res.json().catch(() => ({}));
-      setMsg(j.error || "Failed to add sales rep.");
+    try {
+      const res = await fetch("/api/salesreps", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email }),
+      });
+      if (res.ok) {
+        (document.getElementById("rep-form") as HTMLFormElement | null)?.reset();
+        setMsg("Sales rep added ✔");
+      } else {
+        const j = await res.json().catch(() => ({}));
+        setMsg(j.error || "Failed to add sales rep.");
+      }
+    } catch {
+      setMsg("Failed to add sales rep.");
     }
   }
 
@@ -107,18 +107,21 @@ export default function SettingsMenu() {
     setMsg(null);
     const name = String(formData.get("name") || "").trim();
     if (!name) return setMsg("Brand name is required.");
-
-    const res = await fetch("/api/brands", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    if (res.ok) {
-      (document.getElementById("brand-form") as HTMLFormElement)?.reset();
-      setMsg("Competitor brand added ✔");
-    } else {
-      const j = await res.json().catch(() => ({}));
-      setMsg(j.error || "Failed to add competitor brand.");
+    try {
+      const res = await fetch("/api/brands", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (res.ok) {
+        (document.getElementById("brand-form") as HTMLFormElement | null)?.reset();
+        setMsg("Competitor brand added ✔");
+      } else {
+        const j = await res.json().catch(() => ({}));
+        setMsg(j.error || "Failed to add competitor brand.");
+      }
+    } catch {
+      setMsg("Failed to add competitor brand.");
     }
   }
 
@@ -126,21 +129,25 @@ export default function SettingsMenu() {
     setMsg(null);
     const name = String(formData.get("name") || "").trim();
     if (!name) return setMsg("Stocked brand name is required.");
-
-    const res = await fetch("/api/stocked-brands", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    if (res.ok) {
-      (document.getElementById("stocked-brand-form") as HTMLFormElement)?.reset();
-      setMsg("Stocked brand added ✔");
-    } else {
-      const j = await res.json().catch(() => ({}));
-      setMsg(j.error || "Failed to add stocked brand.");
+    try {
+      const res = await fetch("/api/stocked-brands", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (res.ok) {
+        (document.getElementById("stocked-brand-form") as HTMLFormElement | null)?.reset();
+        setMsg("Stocked brand added ✔");
+      } else {
+        const j = await res.json().catch(() => ({}));
+        setMsg(j.error || "Failed to add stocked brand.");
+      }
+    } catch {
+      setMsg("Failed to add stocked brand.");
     }
   }
 
+  // Simple menu item styling
   const itemStyle: React.CSSProperties = {
     display: "flex",
     alignItems: "center",
@@ -152,6 +159,8 @@ export default function SettingsMenu() {
     textDecoration: "none",
     color: "inherit",
   };
+
+  if (!mounted) return null;
 
   return (
     <div ref={panelRef} style={{ position: "relative" }}>
@@ -171,6 +180,7 @@ export default function SettingsMenu() {
           padding: "8px 10px",
         }}
       >
+        {/* Gear icon */}
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
           <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="#111" strokeWidth="1.5" />
           <path d="M19.4 15a7.9 7.9 0 0 0 .1-2l1.9-1.4-2-3.4-2.2.7a8 8 0 0 0-1.7-1l-.4-2.3h-4l-.4 2.3a8 8 0 0 0-1.7 1l-2.2-.7-2 3.4L4.5 13a7.9 7.9 0 0 0 .1 2l-1.9 1.4 2 3.4 2.2-.7c.5.4 1.1.7 1.7 1l.4 2.3h4l.4-2.3c.6-.3 1.2-.6 1.7-1l2.2.7 2-3.4-1.9-1.4Z" stroke="#111" strokeWidth="1.5" />
@@ -194,7 +204,7 @@ export default function SettingsMenu() {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="grid" style={{ gap: 10 }}>
-            {/* Navigation */}
+            {/* ---- Navigation shortcuts ---- */}
             <div className="small muted" style={{ padding: "2px 2px 0" }}>Navigation</div>
             <Link href="/settings" style={itemStyle} onClick={() => setOpen(false)}>
               <span>⚙️</span>
@@ -205,6 +215,11 @@ export default function SettingsMenu() {
               <span>Account Settings</span>
             </Link>
 
+            {/* ---- Global Settings (admin only) ---- */}
+            <div className="small muted" style={{ padding: "8px 2px 0" }}>Global Settings</div>
+            {!isAdmin && (
+              <div className="small muted">You need admin access to edit global settings.</div>
+            )}
             {isAdmin && (
               <>
                 <Link href="/settings/users" style={itemStyle} onClick={() => setOpen(false)}>
@@ -215,21 +230,9 @@ export default function SettingsMenu() {
                   <span>➕</span>
                   <span>Add New User</span>
                 </Link>
-              </>
-            )}
 
-            <div style={{ height: 1, background: "#e5e7eb", margin: "6px 0" }} />
+                <div className="small muted" style={{ padding: "6px 2px 0" }}>Quick Add</div>
 
-            {/* Global Settings (admin-only quick adds) */}
-            <div className="small muted" style={{ padding: "2px 2px 0" }}>Global Settings</div>
-            {!isAdmin && (
-              <div className="small muted" style={{ padding: "0 2px 4px" }}>
-                You need admin access to edit global settings.
-              </div>
-            )}
-
-            {isAdmin && (
-              <>
                 {/* Add Sales Rep */}
                 <button
                   className="primary"
@@ -308,8 +311,7 @@ export default function SettingsMenu() {
               </>
             )}
 
-            {msg && <div className="small" style={{ marginTop: 6 }}>{msg}</div>}
-
+            {/* Divider */}
             <div style={{ height: 1, background: "#e5e7eb", margin: "6px 0" }} />
 
             {/* Sign out */}
@@ -331,6 +333,7 @@ export default function SettingsMenu() {
               {loggingOut ? "Signing out…" : "Sign out"}
             </button>
 
+            {msg && <div className="small" style={{ marginTop: 6 }}>{msg}</div>}
             <div className="small muted">
               New Sales Reps, Competitor Brands and Stocked Brands will be available in forms automatically.
             </div>
