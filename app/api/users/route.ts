@@ -56,9 +56,7 @@ async function requireAdmin() {
 // Accept JSON or form bodies
 async function readBody(req: Request) {
   const ct = req.headers.get("content-type") || "";
-  if (ct.includes("application/json")) {
-    return await req.json();
-  }
+  if (ct.includes("application/json")) return await req.json();
   if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
     const fd = await req.formData();
     return Object.fromEntries(fd.entries());
@@ -83,8 +81,16 @@ export async function POST(req: Request) {
   const password = String(body.password || "");
   const confirm = body.confirm != null ? String(body.confirm) : undefined;
 
+  // Map incoming role to Prisma enum. Keep backward-compat for "USER" -> REP (change to VIEWER if you prefer).
   const roleInput = String(body.role || "USER").toUpperCase();
-  const role: Role = roleInput === "ADMIN" ? Role.ADMIN : Role.USER; // <-- enum, not string
+  const roleMap: Record<string, Role> = {
+    ADMIN: Role.ADMIN,
+    MANAGER: Role.MANAGER,
+    REP: Role.REP,
+    VIEWER: Role.VIEWER,
+    USER: Role.REP, // <-- legacy UI “User” becomes REP by default
+  };
+  const role: Role = roleMap[roleInput] ?? Role.VIEWER;
 
   if (!fullName || !email || !password) {
     return NextResponse.json({ error: "fullName, email and password are required" }, { status: 400 });
@@ -105,7 +111,7 @@ export async function POST(req: Request) {
         email,
         phone,
         passwordHash,
-        role,          // <-- enum value goes here
+        role,       // <-- enum, not a plain string
         isActive: true,
       },
       select: {
