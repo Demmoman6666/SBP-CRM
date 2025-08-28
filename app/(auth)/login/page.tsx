@@ -1,36 +1,28 @@
 // app/(auth)/login/page.tsx
 "use client";
 
+import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import Link from "next/link";
-import { useMemo } from "react";
 
-export default function LoginPage() {
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+function LoginInner() {
   const params = useSearchParams();
+  const next = params.get("next") || "/";
+  const msg = params.get("m") || params.get("error") || "";
 
-  // If /api/login redirects back with ?error=...
-  const error = params.get("error");
-  // Allow deep-links like /login?redirect=/reports
-  const redirect = params.get("redirect") || "/";
-
-  const niceError = useMemo(() => {
-    if (!error) return null;
-    try {
-      return decodeURIComponent(error);
-    } catch {
-      return error;
-    }
-  }, [error]);
+  const [showPw, setShowPw] = useState(false);
 
   return (
     <div
       style={{
-        minHeight: "100dvh",
+        minHeight: "100vh",
         display: "grid",
         placeItems: "center",
+        padding: 24,
         background:
-          "radial-gradient(1200px 600px at 50% -10%, #f1f5f9 0%, #ffffff 60%)",
-        padding: 16,
+          "radial-gradient(1000px 600px at 85% -10%, #f0f9ff 0%, transparent 60%), radial-gradient(800px 500px at -10% 110%, #fef3c7 0%, transparent 60%)",
       }}
     >
       <div
@@ -38,66 +30,60 @@ export default function LoginPage() {
         style={{
           width: "100%",
           maxWidth: 440,
-          borderRadius: 16,
           padding: 20,
-          boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
-          border: "1px solid #e5e7eb",
+          borderRadius: 16,
+          boxShadow: "0 12px 40px rgba(0,0,0,0.08)",
           background: "#fff",
         }}
       >
         {/* Brand header */}
-        <div style={{ display: "grid", gap: 6, marginBottom: 14 }}>
+        <div className="row" style={{ alignItems: "center", gap: 12, marginBottom: 8 }}>
+          {/* Simple SBP monogram */}
           <div
+            aria-hidden
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 10,
+              width: 40,
+              height: 40,
+              borderRadius: 10,
+              background:
+                "linear-gradient(135deg,#111827 0%,#374151 50%,#111827 100%)",
+              display: "grid",
+              placeItems: "center",
+              color: "white",
+              fontWeight: 800,
+              letterSpacing: 0.3,
             }}
           >
-            <div
-              aria-hidden
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                background:
-                  "linear-gradient(135deg, #111827 0%, #1f2937 60%, #374151 100%)",
-              }}
-            />
-            <div>
-              <h2 style={{ margin: 0 }}>Salon Brands Pro</h2>
-              <div className="small muted" style={{ marginTop: 2 }}>
-                Staff sign-in
-              </div>
+            SB
+          </div>
+          <div>
+            <h2 style={{ margin: 0 }}>Salon Brands Pro</h2>
+            <div className="small muted" style={{ marginTop: 2 }}>
+              Staff Sign-in
             </div>
           </div>
-
-          {niceError && (
-            <div
-              role="alert"
-              className="small"
-              style={{
-                marginTop: 6,
-                color: "#991b1b",
-                background: "#fee2e2",
-                border: "1px solid #fecaca",
-                padding: "8px 10px",
-                borderRadius: 8,
-              }}
-            >
-              {niceError}
-            </div>
-          )}
         </div>
 
-        <form
-          method="post"
-          action="/api/login"
-          className="grid"
-          style={{ gap: 12 }}
-        >
-          {/* preserve redirect target */}
-          <input type="hidden" name="redirect" value={redirect} />
+        {/* Optional message from querystring */}
+        {msg ? (
+          <div
+            className="small"
+            style={{
+              margin: "8px 0 12px",
+              padding: "8px 10px",
+              borderRadius: 10,
+              background: "#fef2f2",
+              color: "#991b1b",
+              border: "1px solid #fecaca",
+            }}
+          >
+            {msg}
+          </div>
+        ) : null}
+
+        {/* Email + password form posts to /api/login */}
+        <form method="post" action="/api/login" className="grid" style={{ gap: 10 }}>
+          <input type="hidden" name="next" value={next} />
 
           <div className="field">
             <label>Email</label>
@@ -105,53 +91,59 @@ export default function LoginPage() {
               className="input"
               type="email"
               name="email"
-              placeholder="you@company.com"
-              autoComplete="email"
+              placeholder="you@salonbrandspro.com"
               required
+              autoComplete="email"
             />
           </div>
 
           <div className="field">
             <label>Password</label>
-            <input
-              className="input"
-              type="password"
-              name="password"
-              placeholder="Your password"
-              autoComplete="current-password"
-              minLength={8}
-              required
-            />
-          </div>
-
-          <div
-            className="row"
-            style={{ justifyContent: "space-between", alignItems: "center" }}
-          >
-            <label className="small row" style={{ gap: 8, alignItems: "center" }}>
-              <input type="checkbox" name="remember" value="1" />
-              Remember me
-            </label>
-
-            {/* Optional future route */}
-            <Link
-              href="/forgot-password"
-              className="small"
-              style={{ textDecoration: "underline" }}
-            >
-              Forgot password?
-            </Link>
+            <div style={{ position: "relative" }}>
+              <input
+                className="input"
+                type={showPw ? "text" : "password"}
+                name="password"
+                placeholder="••••••••"
+                required
+                minLength={8}
+                autoComplete="current-password"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPw((v) => !v)}
+                className="btn"
+                style={{
+                  position: "absolute",
+                  right: 6,
+                  top: 6,
+                  padding: "6px 8px",
+                  borderRadius: 8,
+                }}
+                aria-label={showPw ? "Hide password" : "Show password"}
+              >
+                {showPw ? "Hide" : "Show"}
+              </button>
+            </div>
           </div>
 
           <button className="primary" type="submit" style={{ marginTop: 4 }}>
             Sign in
           </button>
-        </form>
 
-        <p className="small muted" style={{ marginTop: 12 }}>
-          By signing in you agree to the Salon Brands Pro terms &amp; policies.
-        </p>
+          <div className="small muted" style={{ marginTop: 6 }}>
+            Trouble signing in? Contact your admin.
+          </div>
+        </form>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div style={{ padding: 32 }}>Loading…</div>}>
+      <LoginInner />
+    </Suspense>
   );
 }
