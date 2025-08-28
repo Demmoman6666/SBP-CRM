@@ -1,12 +1,7 @@
 // app/customers/[id]/RecentOrders.tsx
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-
-function fmtDate(d?: Date | string | null) {
-  if (!d) return "—";
-  const dt = typeof d === "string" ? new Date(d) : d;
-  return dt.toLocaleString();
-}
+import { formatDateTimeUK } from "@/lib/dates"; // <<— UK DD/MM/YYYY HH:mm
 
 function asNumber(n: any): number | null {
   if (n == null) return null;
@@ -30,7 +25,7 @@ function fmtMoney(n: any, currency?: string) {
   const num = asNumber(n);
   if (num == null) return "—";
   try {
-    return new Intl.NumberFormat(undefined, {
+    return new Intl.NumberFormat("en-GB", {
       style: "currency",
       currency: currency || "GBP",
       currencyDisplay: "narrowSymbol",
@@ -81,7 +76,7 @@ export default async function RecentOrders({ customerId }: { customerId: string 
         <div style={{ flex: "1 1 auto" }}>Total</div>
         <div style={{ flex: "0 0 160px" }}>Financial</div>
         <div style={{ flex: "0 0 160px" }}>Fulfillment</div>
-        <div style={{ flex: "0 0 80px" }}></div>
+        <div style={{ flex: "0 0 80px" }} />
       </div>
 
       {orders.map((o) => (
@@ -95,8 +90,12 @@ export default async function RecentOrders({ customerId }: { customerId: string 
             alignItems: "center",
           }}
         >
-          <div style={{ flex: "0 0 170px" }}>{fmtDate(o.processedAt || o.createdAt)}</div>
-          <div style={{ flex: "0 0 140px" }}>{o.shopifyName ?? o.shopifyOrderNumber ?? "—"}</div>
+          <div style={{ flex: "0 0 170px" }}>
+            {formatDateTimeUK(o.processedAt ?? o.createdAt)}
+          </div>
+          <div style={{ flex: "0 0 140px" }}>
+            {o.shopifyName ?? o.shopifyOrderNumber ?? "—"}
+          </div>
           <div style={{ flex: "1 1 auto" }}>{fmtMoney(o.subtotal, o.currency)}</div>
           <div style={{ flex: "1 1 auto" }}>{fmtMoney(o.taxes, o.currency)}</div>
           <div style={{ flex: "1 1 auto", fontWeight: 600 }}>{fmtMoney(o.total, o.currency)}</div>
