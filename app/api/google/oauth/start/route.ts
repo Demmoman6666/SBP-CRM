@@ -1,5 +1,6 @@
 // app/api/google/oauth/start/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
 
 function baseUrlFromHeaders(req: NextRequest) {
   const proto = req.headers.get("x-forwarded-proto") || "https";
@@ -9,22 +10,14 @@ function baseUrlFromHeaders(req: NextRequest) {
 }
 
 function buildState(returnTo: string) {
-  const raw = JSON.stringify({ returnTo });
+  const raw = JSON.stringify({ returnTo, t: Date.now() });
   return Buffer.from(raw).toString("base64url");
 }
 
-function googleAuthUrl({
-  clientId,
-  redirectUri,
-  state,
-}: {
-  clientId: string;
-  redirectUri: string;
-  state: string;
-}) {
+function googleAuthUrl(opts: { clientId: string; redirectUri: string; state: string }) {
   const p = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
+    client_id: opts.clientId,
+    redirect_uri: opts.redirectUri,
     response_type: "code",
     access_type: "offline",
     include_granted_scopes: "true",
@@ -36,7 +29,7 @@ function googleAuthUrl({
       "https://www.googleapis.com/auth/calendar",
     ].join(" "),
     prompt: "consent",
-    state,
+    state: opts.state,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${p.toString()}`;
 }
@@ -45,29 +38,28 @@ async function handle(req: NextRequest) {
   try {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     if (!clientId) {
-      return NextResponse.json(
-        { error: "GOOGLE_CLIENT_ID is not set" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "GOOGLE_CLIENT_ID is not set" }, { status: 500 });
     }
 
-    const base = baseUrlFromHeaders(req);
-    const redirectUri = `${base}/api/google/oauth/callback`;
+    const origin = baseUrlFromHeaders(req);
+    const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${origin}/api/google/oauth/callback`;
 
-    const url = new URL(req.url);
-    const returnTo =
-      url.searchParams.get("returnTo") ||
-      "/settings/account"; // default: back to account page after connect
-
+    const returnTo = new URL(req.url).searchParams.get("returnTo") || "/settings/account";
     const state = buildState(returnTo);
     const authUrl = googleAuthUrl({ clientId, redirectUri, state });
 
-    return NextResponse.redirect(authUrl);
+    // set httpOnly state cookie for callback validation (10 min)
+    const res = NextResponse.redirect(authUrl);
+    cookies().set("g_oauth_state", state, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 600,
+    });
+    return res;
   } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message || "OAuth start error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: e?.message || "OAuth start error" }, { status: 500 });
   }
 }
 
