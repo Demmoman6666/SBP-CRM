@@ -38,12 +38,22 @@ function vendorSpendCsvHref({
   vendors: string[];
 }) {
   const qs = new URLSearchParams();
-  if (start) qs.set("start", start);
-  if (end) qs.set("end", end);
+  if (start) { qs.set("start", start); qs.set("from", start); }  // send both names
+  if (end)   { qs.set("end", end);     qs.set("to", end); }
   if (reps?.length) qs.set("reps", reps.join(","));
   if (vendors?.length) qs.set("vendors", vendors.join(","));
   qs.set("format", "csv");
   return `/api/reports/vendor-spend?${qs.toString()}`;
+}
+
+/** Normalize /api/vendors responses to a simple string[] of vendor names. */
+function normalizeVendorNames(json: any): string[] {
+  if (Array.isArray(json)) return json.map(String);
+  if (Array.isArray(json?.names)) return json.names.map(String);
+  if (Array.isArray(json?.vendors)) {
+    return json.vendors.map((v: any) => String(v?.name ?? "")).filter(Boolean);
+  }
+  return [];
 }
 
 /** Multi-select with a prominent “All N” pill summary */
@@ -191,7 +201,7 @@ function MultiSelect({
 export default function GapAnalysisPage() {
   /* ---------- filters ---------- */
   const [start, setStart] = useState<string | null>(null); // yyyy-mm-dd
-  const [end, setEnd] = useState<string | null>(null); // yyyy-mm-dd
+  const [end, setEnd] = useState<string | null>(null);     // yyyy-mm-dd
 
   const [reps, setReps] = useState<Rep[]>([]);
   const [repSel, setRepSel] = useState<string[]>([]);
@@ -208,11 +218,18 @@ export default function GapAnalysisPage() {
     (async () => {
       try {
         const [repsRes, vendorsRes] = await Promise.all([
-          fetch("/api/sales-reps", { cache: "no-store" }).then((r) => r.json()).catch(() => []),
-          fetch("/api/stocked-brands", { cache: "no-store" }).then((r) => r.json()).catch(() => ({ vendors: [] })),
+          fetch("/api/sales-reps?ts=" + Date.now(), { cache: "no-store", credentials: "include" })
+            .then((r) => r.json())
+            .catch(() => []),
+          // ✅ use the vendors endpoint and normalize
+          fetch("/api/vendors?ts=" + Date.now(), { cache: "no-store", credentials: "include" })
+            .then((r) => r.json())
+            .then(normalizeVendorNames)
+            .catch(() => []),
         ]);
+
         const repsList: Rep[] = Array.isArray(repsRes) ? repsRes : [];
-        const vendorsList: string[] = Array.isArray(vendorsRes?.vendors) ? vendorsRes.vendors : [];
+        const vendorsList: string[] = Array.isArray(vendorsRes) ? vendorsRes : [];
 
         setReps(repsList);
         setRepSel(repsList.map((r) => r.name)); // default: all reps
@@ -273,12 +290,15 @@ export default function GapAnalysisPage() {
     setLoading(true);
     try {
       const qs = new URLSearchParams();
-      if (start) qs.set("start", start);
-      if (end) qs.set("end", end);
+      if (start) { qs.set("start", start); qs.set("from", start); }
+      if (end)   { qs.set("end", end);     qs.set("to", end); }
       if (repSel.length) qs.set("reps", repSel.join(","));
       if (vendorSel.length) qs.set("vendors", vendorSel.join(","));
 
-      const res = await fetch(`/api/reports/vendor-spend?${qs.toString()}`, { cache: "no-store" });
+      const res = await fetch(`/api/reports/vendor-spend?${qs.toString()}`, {
+        cache: "no-store",
+        credentials: "include",
+      });
       const json = (await res.json()) as VendorSpendResp;
       setData(json);
     } finally {
@@ -333,21 +353,11 @@ export default function GapAnalysisPage() {
 
           <div className="row small" style={{ gap: 8, flexWrap: "wrap" }}>
             <span className="muted">Quick ranges:</span>
-            <button type="button" className="chip" onClick={() => setRange("wtd")}>
-              Week to date
-            </button>
-            <button type="button" className="chip" onClick={() => setRange("lw")}>
-              Last week
-            </button>
-            <button type="button" className="chip" onClick={() => setRange("mtd")}>
-              Month to date
-            </button>
-            <button type="button" className="chip" onClick={() => setRange("ytd")}>
-              Year to date
-            </button>
-            <button type="button" className="chip" onClick={() => setRange("clear")}>
-              Clear
-            </button>
+            <button type="button" className="chip" onClick={() => setRange("wtd")}>Week to date</button>
+            <button type="button" className="chip" onClick={() => setRange("lw")}>Last week</button>
+            <button type="button" className="chip" onClick={() => setRange("mtd")}>Month to date</button>
+            <button type="button" className="chip" onClick={() => setRange("ytd")}>Year to date</button>
+            <button type="button" className="chip" onClick={() => setRange("clear")}>Clear</button>
           </div>
         </div>
 
@@ -442,6 +452,7 @@ export default function GapAnalysisPage() {
             ))}
 
             {/* totals */}
+            {/* eslint-disable react/jsx-key */}
             {totals && (
               <div
                 className="small"
