@@ -11,14 +11,15 @@ type ScoreRow = {
   orders: number;
   customers: number;
   aov: number;
+  prevRevenue: number;
+  growthPct: number | null; // null when previous period is 0
 };
 
-function parseDate(s?: string | null) {
+function parseYMD(s?: string | null) {
   if (!s) return null;
   const d = new Date(s);
   return isNaN(+d) ? null : d;
 }
-
 function startOfDay(d: Date) {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
@@ -30,22 +31,24 @@ function addDays(d: Date, n: number) {
   return x;
 }
 
-/**
- * GET /api/reports/vendor-scorecard?start=yyyy-mm-dd&end=yyyy-mm-dd&vendors=a,b,c
- * - If vendors omitted, uses all StockedBrand names.
- * - Date range is inclusive of start, exclusive of end+1 (i.e. [start, end]).
- */
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const startStr = url.searchParams.get("start");
   const endStr = url.searchParams.get("end");
   const vendorsParam = url.searchParams.get("vendors");
+  const repsParam = url.searchParams.get("reps");
 
-  // Dates: default last 90 days
-  const end = endStr ? addDays(startOfDay(new Date(endStr)), 1) : addDays(startOfDay(new Date()), 1);
-  const start = startStr ? startOfDay(new Date(startStr)) : addDays(end, -90);
+  // Dates (default: last 90 days)
+  const endInclusive = parseYMD(endStr) ?? new Date();
+  const end = addDays(startOfDay(endInclusive), 1); // exclusive
+  const start = startOfDay(parseYMD(startStr) ?? addDays(end, -90));
 
-  // Vendors list (canonical)
+  // Previous period [startPrev, endPrev)
+  const msRange = +end - +start;
+  const startPrev = new Date(+start - msRange);
+  const endPrev = new Date(+start);
+
+  // Vendors
   let vendorNames: string[] = [];
   if (vendorsParam) {
     vendorNames = vendorsParam
@@ -53,93 +56,126 @@ export async function GET(req: Request) {
       .map((s) => s.trim())
       .filter(Boolean);
   } else {
-    // All StockedBrand names
-    const brands = await prisma.stockedBrand.findMany({ select: { name: true }, orderBy: { name: "asc" } });
+    const brands = await prisma.stockedBrand.findMany({
+      select: { name: true },
+      orderBy: { name: "asc" },
+    });
     vendorNames = brands.map((b) => b.name);
   }
 
-  // If nothing, return early
-  if (!vendorNames.length) {
+  // Reps (filter by Customer.salesRep)
+  const reps = repsParam
+    ? repsParam.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+
+  if (vendorNames.length === 0) {
     return NextResponse.json({
-      params: { start: startStr, end: endStr, vendors: [] as string[] },
+      params: { start: startStr, end: endStr, vendors: [] as string[], reps: [] as string[] },
       summary: { revenue: 0, orders: 0, customers: 0 },
       byVendor: [] as ScoreRow[],
       timeseries: [] as { period: string; vendor: string; revenue: number }[],
     });
   }
 
-  // 1) Revenue per vendor (sum of OrderLineItem.total)
-  //    We use a groupBy on OrderLineItem, filtered by Order.processedAt range and vendor IN list
-  const perVendor = await prisma.orderLineItem.groupBy({
-    by: ["productVendor"],
-    where: {
-      productVendor: { in: vendorNames },
-      order: {
-        is: {
-          processedAt: { gte: start, lt: end },
-        },
-      },
-    },
-    _sum: { total: true },
-  });
+  const repClause =
+    reps.length > 0
+      ? Prisma.sql`AND c."salesRep" IN (${Prisma.join(reps)})`
+      : Prisma.sql``;
 
-  // Helper to count distinct orders & customers per vendor
-  async function vendorCounts(vendor: string) {
-    const ordersDistinct = await prisma.order.findMany({
-      where: {
-        processedAt: { gte: start, lt: end },
-        lineItems: { some: { productVendor: vendor } },
-      },
-      select: { id: true, customerId: true },
-    });
-    const orderIds = new Set(ordersDistinct.map((o) => o.id));
-    const customerIds = new Set(ordersDistinct.map((o) => o.customerId).filter(Boolean));
-    return { orders: orderIds.size, customers: customerIds.size };
-  }
-
-  // Assemble rows for requested vendors only (including vendors with zero revenue)
-  const rows: ScoreRow[] = [];
-  let grandRevenue = 0;
-  let grandOrders = 0;
-  let grandCustomers = 0;
-
-  // Map revenue sums for quick lookup
-  const revenueMap = new Map<string, number>();
-  for (const g of perVendor) {
-    const v = g.productVendor ?? "";
-    const sum = (g._sum.total as unknown as Prisma.Decimal | null) ?? null;
-    const num = sum ? Number(sum) : 0;
-    if (v) revenueMap.set(v, num);
-  }
-
-  for (const name of vendorNames) {
-    const revenue = revenueMap.get(name) ?? 0;
-    const { orders, customers } = await vendorCounts(name);
-    const aov = orders > 0 ? revenue / orders : 0;
-    grandRevenue += revenue;
-    grandOrders += orders;
-    grandCustomers += customers;
-    rows.push({ vendor: name, revenue, orders, customers, aov });
-  }
-
-  rows.sort((a, b) => b.revenue - a.revenue);
-
-  // 2) Timeseries: revenue by month per vendor
-  //    Use a raw query for efficiency (date_trunc + join)
-  const ts = await prisma.$queryRaw<
-    { period: string; vendor: string; revenue: string }[]
+  // ---------- Current period (revenue, orders, customers) ----------
+  const currRows = await prisma.$queryRaw<
+    { vendor: string; revenue: string; orders: bigint; customers: bigint }[]
   >`
-    SELECT to_char(date_trunc('month', o."processedAt"), 'YYYY-MM') AS period,
-           oli."productVendor" AS vendor,
-           COALESCE(SUM(oli.total), 0)::text AS revenue
+    SELECT
+      oli."productVendor" AS vendor,
+      COALESCE(SUM(oli.total), 0)::text AS revenue,
+      COUNT(DISTINCT o.id) AS orders,
+      COUNT(DISTINCT o."customerId") AS customers
     FROM "OrderLineItem" oli
     JOIN "Order" o ON o.id = oli."orderId"
+    LEFT JOIN "Customer" c ON c.id = o."customerId"
     WHERE o."processedAt" >= ${start}
       AND o."processedAt" < ${end}
       AND oli."productVendor" IN (${Prisma.join(vendorNames)})
+      ${repClause}
+    GROUP BY oli."productVendor"
+  `;
+
+  // ---------- Previous period (revenue only) ----------
+  const prevRows = await prisma.$queryRaw<
+    { vendor: string; revenue: string }[]
+  >`
+    SELECT
+      oli."productVendor" AS vendor,
+      COALESCE(SUM(oli.total), 0)::text AS revenue
+    FROM "OrderLineItem" oli
+    JOIN "Order" o ON o.id = oli."orderId"
+    LEFT JOIN "Customer" c ON c.id = o."customerId"
+    WHERE o."processedAt" >= ${startPrev}
+      AND o."processedAt" < ${endPrev}
+      AND oli."productVendor" IN (${Prisma.join(vendorNames)})
+      ${repClause}
+    GROUP BY oli."productVendor"
+  `;
+
+  // ---------- Timeseries (monthly, filtered by reps if any) ----------
+  const ts = await prisma.$queryRaw<
+    { period: string; vendor: string; revenue: string }[]
+  >`
+    SELECT
+      to_char(date_trunc('month', o."processedAt"), 'YYYY-MM') AS period,
+      oli."productVendor" AS vendor,
+      COALESCE(SUM(oli.total), 0)::text AS revenue
+    FROM "OrderLineItem" oli
+    JOIN "Order" o ON o.id = oli."orderId"
+    LEFT JOIN "Customer" c ON c.id = o."customerId"
+    WHERE o."processedAt" >= ${start}
+      AND o."processedAt" < ${end}
+      AND oli."productVendor" IN (${Prisma.join(vendorNames)})
+      ${repClause}
     GROUP BY 1, 2
     ORDER BY 1 ASC, 2 ASC
   `;
+
+  // ---------- Assemble score rows (include vendors with zeroes) ----------
+  const currMap = new Map<string, { revenue: number; orders: number; customers: number }>();
+  for (const r of currRows) {
+    currMap.set(r.vendor, {
+      revenue: parseFloat(r.revenue || "0"),
+      orders: Number(r.orders || 0),
+      customers: Number(r.customers || 0),
+    });
+  }
+  const prevMap = new Map<string, number>();
+  for (const r of prevRows) prevMap.set(r.vendor, parseFloat(r.revenue || "0"));
+
+  let totalRevenue = 0;
+  let totalOrders = 0;
+  let totalCustomers = 0;
+
+  const byVendor: ScoreRow[] = vendorNames.map((name) => {
+    const cur = currMap.get(name) || { revenue: 0, orders: 0, customers: 0 };
+    const prevRevenue = prevMap.get(name) ?? 0;
+    const aov = cur.orders > 0 ? cur.revenue / cur.orders : 0;
+    const growthPct =
+      prevRevenue > 0 ? ((cur.revenue - prevRevenue) / prevRevenue) * 100 : (cur.revenue > 0 ? null : 0);
+
+    totalRevenue += cur.revenue;
+    totalOrders += cur.orders;
+    totalCustomers += cur.customers;
+
+    return {
+      vendor: name,
+      revenue: cur.revenue,
+      orders: cur.orders,
+      customers: cur.customers,
+      aov,
+      prevRevenue,
+      growthPct,
+    };
+  });
+
+  byVendor.sort((a, b) => b.revenue - a.revenue);
 
   const timeseries = ts.map((r) => ({
     period: r.period,
@@ -148,9 +184,18 @@ export async function GET(req: Request) {
   }));
 
   return NextResponse.json({
-    params: { start: startStr, end: endStr, vendors: vendorNames },
-    summary: { revenue: grandRevenue, orders: grandOrders, customers: grandCustomers },
-    byVendor: rows,
+    params: {
+      start: startStr,
+      end: endStr,
+      vendors: vendorNames,
+      reps,
+      prevRange: {
+        start: startPrev.toISOString(),
+        end: endPrev.toISOString(),
+      },
+    },
+    summary: { revenue: totalRevenue, orders: totalOrders, customers: totalCustomers },
+    byVendor,
     timeseries,
   });
 }
