@@ -27,6 +27,19 @@ enum Permission {
   VIEW_SETTINGS
 }
 
+/* ---------- NEW: Targets enums ---------- */
+enum TargetScope {
+  COMPANY
+  REP
+  VENDOR
+}
+
+enum TargetMetric {
+  REVENUE
+  ORDERS
+  NEW_CUSTOMERS
+}
+
 model User {
   id           String           @id @default(cuid())
   createdAt    DateTime         @default(now())
@@ -293,6 +306,36 @@ model WebhookLog {
   createdAt DateTime @default(now())
 
   @@index([topic, createdAt])
+}
+
+/* ---------- NEW: Targets model ---------- */
+model Target {
+  id           String        @id @default(cuid())
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  scope        TargetScope
+  metric       TargetMetric
+
+  periodStart  DateTime
+  periodEnd    DateTime
+
+  amount       Decimal       @db.Decimal(12, 2)
+  currency     String?       @default("GBP")
+
+  // Optional dimensions per scope
+  repId        String?
+  rep          SalesRep?     @relation(fields: [repId], references: [id], onDelete: SetNull)
+
+  vendorId     String?
+  vendor       StockedBrand? @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+
+  notes        String?
+
+  @@index([scope, metric, periodStart, periodEnd])
+  @@index([repId])
+  @@index([vendorId])
+  @@unique([scope, metric, periodStart, periodEnd, repId, vendorId], name: "scope_metric_periodStart_periodEnd_repId_vendorId")
 }
 
 // ---------------- Many-to-many join tables for CallLog x Brands ----------------
