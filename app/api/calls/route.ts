@@ -1,6 +1,96 @@
 // app/api/calls/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { cookies } from "next/headers";
+import crypto from "crypto";
+import { createGoogleCalendarEvent } from "@/lib/google";
+
+export const dynamic = "force-dynamic";
+
+/* ---------------- google helper ---------------- */
+const COOKIE_NAME = "sbp_session";
+type TokenPayload = { userId: string; exp: number };
+
+function verifyToken(token?: string | null): TokenPayload | null {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [p, sig] = parts;
+
+  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
+  const expected = crypto.createHmac("sha256", secret).update(p).digest("base64url");
+  if (expected !== sig) return null;
+
+  try {
+    const json = JSON.parse(Buffer.from(p, "base64url").toString()) as TokenPayload;
+    if (!json?.userId || typeof json.exp !== "number") return null;
+    if (json.exp < Math.floor(Date.now() / 1000)) return null;
+    return json;
+  } catch {
+    return null;
+  }
+}
+
+async function currentUserIdFromCookie() {
+  const tok = cookies().get(COOKIE_NAME)?.value;
+  const s = verifyToken(tok);
+  return s?.userId ?? null;
+}
+
+async function maybeCreateFollowUpEvent(saved: {
+  id: string;
+  summary: string | null;
+  customerName: string | null;
+  followUpRequired: boolean;
+  followUpAt: Date | null;
+}) {
+  try {
+    if (!saved.followUpRequired || !saved.followUpAt) return;
+
+    const userId = await currentUserIdFromCookie();
+    if (!userId) return;
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        googleAccessToken: true,
+        googleRefreshToken: true,
+        googleTokenExpiresAt: true,
+        googleCalendarId: true,
+      },
+    });
+    if (!user?.googleAccessToken) return; // user hasn't connected Google
+
+    const start = new Date(saved.followUpAt);
+    const end = new Date(start.getTime() + 30 * 60 * 1000); // 30 minutes
+    const summary =
+      saved.summary?.trim() || `Follow-up: ${saved.customerName ?? "Customer"}`;
+    const description =
+      `CRM follow-up for ${saved.customerName ?? "customer"}` +
+      (saved.summary ? `\n\nNotes: ${saved.summary}` : "");
+
+    const evt = await createGoogleCalendarEvent({
+      userId: user.id,
+      calendarId: user.googleCalendarId || "primary",
+      summary,
+      description,
+      start,
+      end,
+      attendees: user.email
+        ? [{ email: user.email, displayName: user.fullName || undefined }]
+        : [],
+    });
+
+    // If you later add a googleEventId column to CallLog, persist it:
+    // await prisma.callLog.update({ where: { id: saved.id }, data: { googleEventId: evt.id } });
+  } catch (err) {
+    // Never block the request if Calendar fails — just log.
+    console.error("Calendar event create failed (non-fatal):", err);
+  }
+}
 
 /* ---------------- helpers ---------------- */
 async function readBody(req: Request) {
@@ -163,6 +253,15 @@ export async function POST(req: Request) {
           : {}),
       },
       select: { id: true, customerId: true },
+    });
+
+    // 🔔 After-save: try to create the Google Calendar event if applicable
+    await maybeCreateFollowUpEvent({
+      id: created.id,
+      summary,
+      customerName,
+      followUpRequired: !!followUpAt,
+      followUpAt,
     });
 
     return NextResponse.json(
