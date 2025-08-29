@@ -7,8 +7,7 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/* ---------------- Settings & Permissions ---------------- */
-
+// ---------------- Settings & Permissions ----------------
 enum Role {
   ADMIN
   MANAGER
@@ -27,8 +26,7 @@ enum Permission {
   VIEW_SETTINGS
 }
 
-/* NEW: Targets enums */
-
+// NEW: Targets enums
 enum TargetScope {
   COMPANY
   REP
@@ -59,13 +57,6 @@ model User {
   // back-relation for AuditLog.user
   auditLogs    AuditLog[]
 
-  // --- Google Calendar integration ---
-  googleEmail          String?
-  googleAccessToken    String?
-  googleRefreshToken   String?
-  googleTokenExpiresAt DateTime?
-  googleCalendarId     String?       @default("primary")
-
   @@index([role])
 }
 
@@ -89,8 +80,7 @@ model AuditLog {
   details   Json?
 }
 
-/* ---------------- Existing CRM models ---------------- */
-
+// ---------------- Existing CRM models ----------------
 model Customer {
   id                   String    @id @default(cuid())
   createdAt            DateTime  @default(now())
@@ -169,7 +159,7 @@ model SalesRep {
 
   tagRules  SalesRepTagRule[]
 
-  // back-relation for Target.rep
+  // NEW: back-relation for Target.rep
   targets   Target[]  @relation("TargetRep")
 }
 
@@ -232,7 +222,7 @@ model StockedBrand {
   // back-relation for CallLogStockedBrand.brand
   callLinks        CallLogStockedBrand[]
 
-  // back-relation for Target.vendor
+  // NEW: back-relation for Target.vendor
   targets          Target[]  @relation("TargetVendor")
 }
 
@@ -322,8 +312,7 @@ model WebhookLog {
   @@index([topic, createdAt])
 }
 
-/* NEW: Targets model */
-
+// NEW: Targets model
 model Target {
   id           String        @id @default(cuid())
   createdAt    DateTime      @default(now())
@@ -350,11 +339,10 @@ model Target {
   @@index([scope, metric, periodStart, periodEnd])
   @@index([repId])
   @@index([vendorId])
-  @@unique([scope, metric, periodStart, periodEnd, repId, vendorId], name: "scope_metric_periodStart_periodEnd_repId_vendorId")
+  @@unique([scope, metric, periodStart, periodEnd, repId, vendorId], map: "scope_metric_periodStart_periodEnd_repId_vendorId")
 }
 
-/* ---------------- Many-to-many join tables for CallLog x Brands ---------------- */
-
+// ---------------- Many-to-many join tables for CallLog x Brands ----------------
 model CallLogStockedBrand {
   id        String       @id @default(cuid())
   callLogId String
