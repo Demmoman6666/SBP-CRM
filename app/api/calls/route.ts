@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { cookies } from "next/headers";
 import crypto from "crypto";
-import { createCalendarEvent } from "@/lib/google"; // expects (userId, { ... })
+import { createCalendarEvent } from "@/lib/google";
 
 export const dynamic = "force-dynamic";
 
@@ -59,6 +59,7 @@ async function maybeCreateFollowUpEvent(saved: {
         googleAccessToken: true,
         googleRefreshToken: true,
         googleTokenExpiresAt: true,
+        // googleCalendarId is optional in DB but not required by createCalendarEvent
         googleCalendarId: true,
       },
     });
@@ -72,20 +73,18 @@ async function maybeCreateFollowUpEvent(saved: {
       `CRM follow-up for ${saved.customerName ?? "customer"}` +
       (saved.summary ? `\n\nNotes: ${saved.summary}` : "");
 
-    // ✅ call with (userId, options)
-    const _evt = await createCalendarEvent(user.id, {
-      calendarId: user.googleCalendarId || "primary",
+    // ✅ call with (userId, options) — NO calendarId in options
+    await createCalendarEvent(user.id, {
       summary,
       description,
-      start,
-      end,
+      startIso: start.toISOString(),
+      endIso: end.toISOString(),
       attendees: user.email
         ? [{ email: user.email, displayName: user.fullName || undefined }]
         : [],
     });
 
-    // If you later add a googleEventId column to CallLog, persist it:
-    // await prisma.callLog.update({ where: { id: saved.id }, data: { googleEventId: _evt.id } });
+    // If you later add a googleEventId column to CallLog, persist it here with the returned event id.
   } catch (err) {
     // Never block the request if Calendar fails — just log.
     console.error("Calendar event create failed (non-fatal):", err);
@@ -201,10 +200,7 @@ export async function POST(req: Request) {
     // if existing, we need a valid customerId (cuid)
     let customerId: string | null = null;
     if (isExisting) {
-      const candidate = String(
-        body.customerId ?? body.customer ?? ""
-      ).trim();
-
+      const candidate = String(body.customerId ?? body.customer ?? "").trim();
       if (!candidate || !isCuid(candidate)) {
         return NextResponse.json(
           {
