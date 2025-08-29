@@ -32,9 +32,7 @@ export default function SettingsMenu() {
           setOpen(false);
           setMsg(null);
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
     document.addEventListener("click", onDocClick);
     return () => document.removeEventListener("click", onDocClick);
@@ -136,10 +134,10 @@ export default function SettingsMenu() {
           <div className="grid" style={{ gap: 10 }}>
             {/* Navigation */}
             <div className="small muted" style={{ padding: "2px 2px 0" }}>Navigation</div>
-            <Link href="/settings" style={itemStyle} onClick={() => setOpen(false)}>
-              <span>⚙️</span>
-              <span>Settings Home</span>
-            </Link>
+
+            {/* 🔻 Removed Settings Home link */}
+            {/* <Link href="/settings" ...>Settings Home</Link> */}
+
             <Link href="/settings/account" style={itemStyle} onClick={() => setOpen(false)}>
               <span>👤</span>
               <span>Account Settings</span>
