@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { cookies } from "next/headers";
 import crypto from "crypto";
-import { createGoogleCalendarEvent } from "@/lib/google";
+import { createCalendarEvent } from "@/lib/google"; // ✅ correct import
 
 export const dynamic = "force-dynamic";
 
@@ -72,7 +72,7 @@ async function maybeCreateFollowUpEvent(saved: {
       `CRM follow-up for ${saved.customerName ?? "customer"}` +
       (saved.summary ? `\n\nNotes: ${saved.summary}` : "");
 
-    const evt = await createGoogleCalendarEvent({
+    const evt = await createCalendarEvent({
       userId: user.id,
       calendarId: user.googleCalendarId || "primary",
       summary,
