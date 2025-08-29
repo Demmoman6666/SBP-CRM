@@ -9,20 +9,28 @@ export async function GET() {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  // Pull only the Google fields we need to determine connection (tokens are NOT returned)
+  // Only read what's needed. Never return tokens to the client.
   const g = await prisma.user.findUnique({
     where: { id: me.id },
     select: {
       googleEmail: true,
       googleAccessToken: true,
-      googleRefreshToken: true,      // used only to decide connected state
+      googleRefreshToken: true,
       googleTokenExpiresAt: true,
       googleCalendarId: true,
     },
   });
 
-  // Consider the account "connected" if we have a refresh token (access token may be expired)
-  const googleConnected = Boolean(g?.googleRefreshToken);
+  const now = new Date();
+  const hasAccess = Boolean(g?.googleAccessToken);
+  const hasRefresh = Boolean(g?.googleRefreshToken);
+  const isExpired =
+    g?.googleTokenExpiresAt ? g.googleTokenExpiresAt.getTime() <= now.getTime() : false;
+
+  // Treat as connected if:
+  //  - we have a refresh token (best), OR
+  //  - we have a non-expired access token (still usable)
+  const googleConnected = hasRefresh || (hasAccess && !isExpired);
 
   const res = NextResponse.json({
     id: me.id,
@@ -34,10 +42,15 @@ export async function GET() {
     createdAt: me.createdAt,
     updatedAt: me.updatedAt,
 
-    // Fields used by Account page / GoogleCalendarConnect
+    // for UI
     googleConnected,
     googleEmail: g?.googleEmail ?? null,
     googleCalendarId: g?.googleCalendarId ?? "primary",
+
+    // safe diagnostics (no secrets)
+    googleHasAccessToken: hasAccess,
+    googleHasRefreshToken: hasRefresh,
+    googleTokenExpired: isExpired,
   });
 
   res.headers.set("Cache-Control", "no-store");
