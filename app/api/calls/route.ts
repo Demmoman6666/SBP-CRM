@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { cookies } from "next/headers";
 import crypto from "crypto";
-import { createCalendarEvent } from "@/lib/google"; // ✅ correct import
+import { createCalendarEvent } from "@/lib/google"; // expects (userId, { ... })
 
 export const dynamic = "force-dynamic";
 
@@ -72,8 +72,8 @@ async function maybeCreateFollowUpEvent(saved: {
       `CRM follow-up for ${saved.customerName ?? "customer"}` +
       (saved.summary ? `\n\nNotes: ${saved.summary}` : "");
 
-    const evt = await createCalendarEvent({
-      userId: user.id,
+    // ✅ call with (userId, options)
+    const _evt = await createCalendarEvent(user.id, {
       calendarId: user.googleCalendarId || "primary",
       summary,
       description,
@@ -85,7 +85,7 @@ async function maybeCreateFollowUpEvent(saved: {
     });
 
     // If you later add a googleEventId column to CallLog, persist it:
-    // await prisma.callLog.update({ where: { id: saved.id }, data: { googleEventId: evt.id } });
+    // await prisma.callLog.update({ where: { id: saved.id }, data: { googleEventId: _evt.id } });
   } catch (err) {
     // Never block the request if Calendar fails — just log.
     console.error("Calendar event create failed (non-fatal):", err);
