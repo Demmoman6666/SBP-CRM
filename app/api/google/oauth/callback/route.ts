@@ -4,7 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { exchangeCodeForTokens, getOAuthClient } from "@/lib/google";
+import { exchangeCodeForTokens } from "@/lib/google";
 import { prisma } from "@/lib/prisma";
 import jwtDecode from "jwt-decode";
 
@@ -23,6 +23,7 @@ export async function GET(req: NextRequest) {
   const clear = (res: NextResponse) => {
     res.cookies.set("gc_oauth_state", "", { path: "/", maxAge: 0 });
     res.cookies.set("gc_user", "", { path: "/", maxAge: 0 });
+    res.headers.set("Cache-Control", "no-store");
   };
 
   if (err) {
@@ -38,9 +39,28 @@ export async function GET(req: NextRequest) {
 
   try {
     const tokens = await exchangeCodeForTokens(req.nextUrl.origin, code);
-    const access = tokens.access_token!;
-    const refresh = tokens.refresh_token || null; // may be null if user already granted; that’s ok
-    const expiry = tokens.expiry_date ? new Date(tokens.expiry_date) : new Date(Date.now() + 3500_000);
+
+    // Ensure we actually got an access token
+    const access = tokens.access_token;
+    if (!access) {
+      const res = NextResponse.redirect(new URL("/settings/account?gc=error", req.url));
+      clear(res);
+      return res;
+    }
+
+    // May be missing on subsequent consents; keep existing if undefined
+    const refresh = tokens.refresh_token ?? null;
+
+    // expiry_date is ms epoch when using googleapis; fall back to expires_in if present
+    let expiry: Date;
+    if (tokens.expiry_date) {
+      expiry = new Date(tokens.expiry_date);
+    } else if ((tokens as any).expires_in) {
+      const sec = Number((tokens as any).expires_in) || 3600;
+      expiry = new Date(Date.now() + (sec - 60) * 1000); // minus 60s safety
+    } else {
+      expiry = new Date(Date.now() + 3500_000);
+    }
 
     // Get email from id_token if present
     let googleEmail: string | undefined;
@@ -48,7 +68,9 @@ export async function GET(req: NextRequest) {
       try {
         const idt = jwtDecode<IdToken>(tokens.id_token);
         if (idt?.email) googleEmail = idt.email;
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
 
     await prisma.user.update({
@@ -56,7 +78,7 @@ export async function GET(req: NextRequest) {
       data: {
         googleEmail: googleEmail || undefined,
         googleAccessToken: access,
-        googleRefreshToken: refresh ?? undefined,
+        ...(refresh ? { googleRefreshToken: refresh } : {}), // preserve existing when Google returns none
         googleTokenExpiresAt: expiry,
         googleCalendarId: "primary",
       },
@@ -65,7 +87,7 @@ export async function GET(req: NextRequest) {
     const res = NextResponse.redirect(new URL("/settings/account?gc=ok", req.url));
     clear(res);
     return res;
-  } catch (e: any) {
+  } catch (_e) {
     const res = NextResponse.redirect(new URL("/settings/account?gc=error", req.url));
     clear(res);
     return res;
