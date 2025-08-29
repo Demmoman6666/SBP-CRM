@@ -47,6 +47,7 @@ async function verifyToken(token: string | undefined | null): Promise<{ userId: 
 /**
  * Public routes (exact paths)
  * - keep login/logout open
+ * - Google OAuth start/callback
  * - favicon and common root files
  */
 const PUBLIC_PATHS = [
@@ -54,6 +55,8 @@ const PUBLIC_PATHS = [
   "/api/login",
   "/api/auth/login",
   "/api/auth/logout",
+  "/api/google/oauth/start",
+  "/api/google/oauth/callback",
   "/favicon.ico",
   "/robots.txt",
   "/site.webmanifest",
@@ -67,16 +70,16 @@ const PUBLIC_FILES = /\.(?:png|jpg|jpeg|svg|gif|webp|avif|ico|txt|xml|css|js|map
  * Treat these prefixes as public so webhooks, Google OAuth & debug utilities are not blocked by auth.
  */
 function isPublicPath(pathname: string) {
-  if (PUBLIC_FILES.test(pathname)) return true;            // any /public* file
-  if (PUBLIC_PATHS.includes(pathname)) return true;        // exact matches
-  if (pathname.startsWith("/_next/")) return true;         // Next internals
-  if (pathname.startsWith("/assets/")) return true;        // your static
+  if (PUBLIC_FILES.test(pathname)) return true;
+  if (PUBLIC_PATHS.includes(pathname)) return true;
+  if (pathname.startsWith("/_next/")) return true;
+  if (pathname.startsWith("/assets/")) return true;
   if (pathname.startsWith("/images/")) return true;
 
   // Shopify webhooks unauthenticated
   if (pathname.startsWith("/api/shopify/webhooks")) return true;
 
-  // Google OAuth start/callback must be public (callback especially)
+  // Google OAuth (prefix allow)
   if (pathname.startsWith("/api/google/oauth")) return true;
 
   // Debug tools (optional; remove if you want them protected)
