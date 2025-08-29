@@ -3,21 +3,42 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type ScoreRow = { vendor: string; revenue: number; orders: number; customers: number; aov: number };
+type ScoreRow = {
+  vendor: string;
+  revenue: number;
+  orders: number;
+  customers: number;
+  aov: number;
+  prevRevenue: number;
+  growthPct: number | null;
+};
 type ApiResp = {
-  params: { start: string | null; end: string | null; vendors: string[] };
+  params: {
+    start: string | null;
+    end: string | null;
+    vendors: string[];
+    reps: string[];
+    prevRange?: { start: string; end: string };
+  };
   summary: { revenue: number; orders: number; customers: number };
   byVendor: ScoreRow[];
   timeseries: { period: string; vendor: string; revenue: number }[];
 };
 
-function fmt(n: number, c = "GBP") {
+type Rep = { id: string; name: string };
+
+function fmtMoney(n: number, c = "GBP") {
   if (!Number.isFinite(n)) n = 0;
   try {
     return new Intl.NumberFormat(undefined, { style: "currency", currency: c, maximumFractionDigits: 2 }).format(n);
   } catch {
     return `${c} ${n.toFixed(2)}`;
   }
+}
+function fmtPct(p: number | null) {
+  if (p === null || !Number.isFinite(p)) return "—";
+  const sign = p > 0 ? "+" : "";
+  return `${sign}${p.toFixed(1)}%`;
 }
 
 function MultiSelect({
@@ -84,12 +105,8 @@ function MultiSelect({
         >
           <div className="row" style={{ gap: 8, marginBottom: 8 }}>
             <input className="input" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />
-            <button className="chip" onClick={() => onChange(options)}>
-              All
-            </button>
-            <button className="chip" onClick={() => onChange([])}>
-              None
-            </button>
+            <button className="chip" onClick={() => onChange(options)}>All</button>
+            <button className="chip" onClick={() => onChange([])}>None</button>
           </div>
           <div className="grid" style={{ gap: 6 }}>
             {filtered.map((opt) => {
@@ -116,37 +133,57 @@ export default function VendorScorecardPage() {
   // Filters
   const [start, setStart] = useState<string | null>(null);
   const [end, setEnd] = useState<string | null>(null);
+
   const [vendorOptions, setVendorOptions] = useState<string[]>([]);
   const [vendorSel, setVendorSel] = useState<string[]>([]);
+
+  const [repOptions, setRepOptions] = useState<string[]>([]);
+  const [repSel, setRepSel] = useState<string[]>([]);
 
   // Data
   const [loading, setLoading] = useState(false);
   const [resp, setResp] = useState<ApiResp | null>(null);
 
-  // Bootstrap: load vendors from /api/vendors (supports both {names:[]} and {vendors:[{name}]})
+  // Bootstrap: vendors + reps
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("/api/vendors", { cache: "no-store" });
-        const j = await r.json();
-        const names: string[] = Array.isArray(j?.names)
-          ? j.names
-          : Array.isArray(j?.vendors)
-          ? j.vendors.map((v: any) => v?.name).filter(Boolean)
+        const [vendorsRes, repsRes] = await Promise.all([
+          fetch("/api/vendors", { cache: "no-store" }).then((r) => r.json()).catch(() => ({ names: [] })),
+          fetch("/api/sales-reps", { cache: "no-store" }).then((r) => r.json()).catch(() => [] as Rep[]),
+        ]);
+
+        const vendorNames: string[] = Array.isArray(vendorsRes?.names)
+          ? vendorsRes.names
+          : Array.isArray(vendorsRes)
+          ? vendorsRes
+          : Array.isArray(vendorsRes?.vendors)
+          ? vendorsRes.vendors.map((v: any) => v?.name).filter(Boolean)
           : [];
-        names.sort((a, b) => a.localeCompare(b));
-        setVendorOptions(names);
-        setVendorSel(names); // default: all vendors
+
+        const reps: Rep[] = Array.isArray(repsRes) ? repsRes : [];
+        const repNames = reps.map((r) => r.name).filter(Boolean);
+
+        vendorNames.sort((a, b) => a.localeCompare(b));
+        repNames.sort((a, b) => a.localeCompare(b));
+
+        setVendorOptions(vendorNames);
+        setVendorSel(vendorNames); // default: all vendors
+        setRepOptions(repNames);
+        setRepSel(repNames); // default: all reps
       } catch {
         setVendorOptions([]);
         setVendorSel([]);
+        setRepOptions([]);
+        setRepSel([]);
       }
     })();
   }, []);
 
   function quick(kind: "wtd" | "mtd" | "ytd" | "clear") {
     const now = new Date();
-    const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const ymd = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     if (kind === "clear") {
       setStart(null);
       setEnd(null);
@@ -174,6 +211,7 @@ export default function VendorScorecardPage() {
       if (start) qs.set("start", start);
       if (end) qs.set("end", end);
       if (vendorSel.length) qs.set("vendors", vendorSel.join(","));
+      if (repSel.length) qs.set("reps", repSel.join(","));
       const r = await fetch(`/api/reports/vendor-scorecard?${qs.toString()}`, { cache: "no-store" });
       const j = (await r.json()) as ApiResp;
       setResp(j);
@@ -188,7 +226,7 @@ export default function VendorScorecardPage() {
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
         <h1>Vendor Scorecard</h1>
-        <p className="small">Revenue, orders, customers and AOV per vendor, with a monthly trend.</p>
+        <p className="small">Filter by date, vendor(s), and sales rep(s). Growth compares to the previous equal-length period.</p>
       </section>
 
       {/* Filters */}
@@ -220,6 +258,13 @@ export default function VendorScorecardPage() {
             onChange={setVendorSel}
             placeholder="All vendors"
           />
+          <MultiSelect
+            label="Sales Reps"
+            options={repOptions}
+            value={repSel}
+            onChange={setRepSel}
+            placeholder="All reps"
+          />
         </div>
 
         <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -239,7 +284,7 @@ export default function VendorScorecardPage() {
             </div>
             <div className="card" style={{ padding: 12 }}>
               <div className="small muted">Revenue</div>
-              <b style={{ fontSize: 18 }}>{fmt(resp.summary.revenue)}</b>
+              <b style={{ fontSize: 18 }}>{fmtMoney(resp.summary.revenue)}</b>
             </div>
             <div className="card" style={{ padding: 12 }}>
               <div className="small muted">Orders</div>
@@ -260,7 +305,7 @@ export default function VendorScorecardPage() {
             className="small"
             style={{
               display: "grid",
-              gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr",
+              gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr 1fr",
               columnGap: 12,
               fontWeight: 600,
               paddingBottom: 8,
@@ -272,31 +317,38 @@ export default function VendorScorecardPage() {
             <div>Orders</div>
             <div>Customers</div>
             <div>AOV</div>
+            <div>Growth</div>
           </div>
 
-          {resp.byVendor.map((r) => (
-            <div
-              key={r.vendor}
-              className="small"
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr",
-                columnGap: 12,
-                padding: "8px 0",
-                borderBottom: "1px solid var(--border)",
-              }}
-            >
-              <div>{r.vendor}</div>
-              <div>{fmt(r.revenue)}</div>
-              <div>{r.orders.toLocaleString()}</div>
-              <div>{r.customers.toLocaleString()}</div>
-              <div>{fmt(r.aov)}</div>
-            </div>
-          ))}
+          {resp.byVendor.map((r) => {
+            const growth = r.growthPct;
+            const color =
+              growth === null ? undefined : growth > 0 ? "#15803d" : growth < 0 ? "#b91c1c" : undefined;
+            return (
+              <div
+                key={r.vendor}
+                className="small"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr 1fr",
+                  columnGap: 12,
+                  padding: "8px 0",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
+                <div>{r.vendor}</div>
+                <div>{fmtMoney(r.revenue)}</div>
+                <div>{r.orders.toLocaleString()}</div>
+                <div>{r.customers.toLocaleString()}</div>
+                <div>{fmtMoney(r.aov)}</div>
+                <div style={{ color }}>{fmtPct(growth)}</div>
+              </div>
+            );
+          })}
         </section>
       )}
 
-      {/* Trend (simple monthly matrix) */}
+      {/* Trend */}
       {resp && resp.timeseries.length > 0 && (
         <section className="card" style={{ overflowX: "auto" }}>
           <h3 className="small" style={{ marginBottom: 8 }}>Monthly Trend</h3>
@@ -338,7 +390,7 @@ export default function VendorScorecardPage() {
                   >
                     <div>{v}</div>
                     {periods.map((p) => (
-                      <div key={p}>{fmt(map.get(`${v}|${p}`) || 0)}</div>
+                      <div key={p}>{fmtMoney(map.get(`${v}|${p}`) || 0)}</div>
                     ))}
                   </div>
                 ))}
