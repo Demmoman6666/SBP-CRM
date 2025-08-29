@@ -26,6 +26,11 @@ export default function ReportsHub() {
           <div className="action-title">Vendor Scorecard</div>
           <div className="action-sub">Revenue, orders, customers &amp; growth</div>
         </Link>
+
+        <Link href="/reports/targets" className="action-tile">
+  <div className="action-title">Targets &amp; Scorecards</div>
+  <div className="action-sub">Monthly goals &amp; performance</div>
+</Link>
       </section>
     </div>
   );
