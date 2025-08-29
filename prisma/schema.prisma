@@ -160,6 +160,9 @@ model SalesRep {
   createdAt DateTime @default(now())
 
   tagRules  SalesRepTagRule[]
+
+  // NEW: back-relation for Target.rep
+  targets   Target[]  @relation("TargetRep")
 }
 
 model Brand {
@@ -220,6 +223,9 @@ model StockedBrand {
 
   // back-relation for CallLogStockedBrand.brand
   callLinks        CallLogStockedBrand[]
+
+  // NEW: back-relation for Target.vendor
+  targets          Target[]  @relation("TargetVendor")
 }
 
 model Order {
@@ -325,10 +331,10 @@ model Target {
 
   // Optional dimensions per scope
   repId        String?
-  rep          SalesRep?     @relation(fields: [repId], references: [id], onDelete: SetNull)
+  rep          SalesRep?     @relation("TargetRep", fields: [repId], references: [id], onDelete: SetNull)
 
   vendorId     String?
-  vendor       StockedBrand? @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  vendor       StockedBrand? @relation("TargetVendor", fields: [vendorId], references: [id], onDelete: SetNull)
 
   notes        String?
 
