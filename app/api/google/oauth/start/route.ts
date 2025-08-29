@@ -1,6 +1,9 @@
 // app/api/google/oauth/start/route.ts
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { getCurrentUser } from "@/lib/auth";
 
 function baseUrlFromHeaders(req: NextRequest) {
   const proto = req.headers.get("x-forwarded-proto") || "https";
@@ -36,6 +39,14 @@ function googleAuthUrl(opts: { clientId: string; redirectUri: string; state: str
 
 async function handle(req: NextRequest) {
   try {
+    // must be logged in so we know who to attach tokens to
+    const me = await getCurrentUser();
+    if (!me) {
+      const login = new URL("/login", req.url);
+      login.searchParams.set("next", "/settings/account");
+      return NextResponse.redirect(login);
+    }
+
     const clientId = process.env.GOOGLE_CLIENT_ID;
     if (!clientId) {
       return NextResponse.json({ error: "GOOGLE_CLIENT_ID is not set" }, { status: 500 });
@@ -48,15 +59,23 @@ async function handle(req: NextRequest) {
     const state = buildState(returnTo);
     const authUrl = googleAuthUrl({ clientId, redirectUri, state });
 
-    // set httpOnly state cookie for callback validation (10 min)
+    // set httpOnly cookies the callback will verify
     const res = NextResponse.redirect(authUrl);
-    cookies().set("g_oauth_state", state, {
+    res.cookies.set("gc_oauth_state", state, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 600, // 10 minutes
+    });
+    res.cookies.set("gc_user", me.id, {
       httpOnly: true,
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
       path: "/",
       maxAge: 600,
     });
+    res.headers.set("Cache-Control", "no-store");
     return res;
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "OAuth start error" }, { status: 500 });
