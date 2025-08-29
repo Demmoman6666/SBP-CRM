@@ -12,17 +12,20 @@
   "dependencies": {
     "@prisma/client": "5.22.0",
     "bcryptjs": "^2.4.3",
+    "googleapis": "^131.0.0",
+    "jwt-decode": "3.1.2",
     "next": "14.2.5",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
   "devDependencies": {
-    "prisma": "5.22.0",
-    "typescript": "5.5.4",
+    "@types/bcryptjs": "^2.4.2",
+    "@types/jwt-decode": "^3.1.1",
+    "@types/node": "^20.12.12",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@types/node": "^20.12.12",
-    "@types/bcryptjs": "^2.4.2"
+    "prisma": "5.22.0",
+    "typescript": "5.5.4"
   },
   "engines": {
     "node": ">=18.18.0"
