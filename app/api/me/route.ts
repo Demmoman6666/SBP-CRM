@@ -9,21 +9,20 @@ export async function GET() {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  // Pull Google fields (tokens never sent to client)
+  // Pull only the Google fields we need to determine connection (tokens are NOT returned)
   const g = await prisma.user.findUnique({
     where: { id: me.id },
     select: {
       googleEmail: true,
       googleAccessToken: true,
+      googleRefreshToken: true,      // used only to decide connected state
       googleTokenExpiresAt: true,
       googleCalendarId: true,
     },
   });
 
-  const now = new Date();
-  const googleConnected =
-    Boolean(g?.googleAccessToken) &&
-    (!g?.googleTokenExpiresAt || g.googleTokenExpiresAt > now);
+  // Consider the account "connected" if we have a refresh token (access token may be expired)
+  const googleConnected = Boolean(g?.googleRefreshToken);
 
   const res = NextResponse.json({
     id: me.id,
@@ -35,10 +34,10 @@ export async function GET() {
     createdAt: me.createdAt,
     updatedAt: me.updatedAt,
 
-    // 👇 what the Account page & GoogleCalendarConnect need
+    // Fields used by Account page / GoogleCalendarConnect
     googleConnected,
     googleEmail: g?.googleEmail ?? null,
-    googleCalendarId: g?.googleCalendarId ?? null,
+    googleCalendarId: g?.googleCalendarId ?? "primary",
   });
 
   res.headers.set("Cache-Control", "no-store");
