@@ -57,6 +57,7 @@ model User {
   googleAccessToken    String?
   googleRefreshToken   String?
   googleTokenExpiresAt DateTime?
+  googleCalendarId     String?  @default("primary")
 
   // fine-grained overrides in addition to role
   overrides    UserPermission[]
