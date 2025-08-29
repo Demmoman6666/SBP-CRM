@@ -27,7 +27,7 @@ enum Permission {
   VIEW_SETTINGS
 }
 
-/* ---------- NEW: Targets enums ---------- */
+// NEW: Targets enums
 enum TargetScope {
   COMPANY
   REP
@@ -308,7 +308,7 @@ model WebhookLog {
   @@index([topic, createdAt])
 }
 
-/* ---------- NEW: Targets model ---------- */
+// NEW: Targets model
 model Target {
   id           String        @id @default(cuid())
   createdAt    DateTime      @default(now())
