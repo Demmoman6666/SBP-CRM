@@ -1,4 +1,3 @@
-// middleware.ts
 import { NextResponse, NextRequest } from "next/server";
 
 /** Edge-safe verification (Web Crypto). Must mirror the server logic from lib/auth. */
@@ -58,27 +57,29 @@ const PUBLIC_PATHS = [
   "/favicon.ico",
   "/robots.txt",
   "/site.webmanifest",
-  "/logo.svg", // handy explicit allow (also covered by file matcher below)
+  "/logo.svg",
 ];
 
 /** Any /public file extensions you want to serve without auth */
 const PUBLIC_FILES = /\.(?:png|jpg|jpeg|svg|gif|webp|avif|ico|txt|xml|css|js|map|woff2?|ttf|eot)$/i;
 
 /**
- * Treat these prefixes as public so webhooks & debug utilities are not blocked by auth.
- * Adjust if your webhook/debug paths differ.
+ * Treat these prefixes as public so webhooks, Google OAuth & debug utilities are not blocked by auth.
  */
 function isPublicPath(pathname: string) {
-  if (PUBLIC_FILES.test(pathname)) return true;           // any /public* file
-  if (PUBLIC_PATHS.includes(pathname)) return true;       // exact matches
-  if (pathname.startsWith("/_next/")) return true;        // Next internals
-  if (pathname.startsWith("/assets/")) return true;       // your static
+  if (PUBLIC_FILES.test(pathname)) return true;            // any /public* file
+  if (PUBLIC_PATHS.includes(pathname)) return true;        // exact matches
+  if (pathname.startsWith("/_next/")) return true;         // Next internals
+  if (pathname.startsWith("/assets/")) return true;        // your static
   if (pathname.startsWith("/images/")) return true;
 
-  // ✅ Keep Shopify webhooks unauthenticated
+  // Shopify webhooks unauthenticated
   if (pathname.startsWith("/api/shopify/webhooks")) return true;
 
-  // ✅ Keep debug tools open (optional; remove if you want them protected)
+  // Google OAuth start/callback must be public (callback especially)
+  if (pathname.startsWith("/api/google/oauth")) return true;
+
+  // Debug tools (optional; remove if you want them protected)
   if (pathname.startsWith("/api/debug/")) return true;
 
   return false;
@@ -118,7 +119,6 @@ export async function middleware(req: NextRequest) {
 
 /**
  * Protect everything by default; exclude Next internals and any file with an extension (public assets)
- * This ensures things like /logo.svg, /fonts/*.woff2, etc. bypass the middleware entirely.
  */
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)"],
