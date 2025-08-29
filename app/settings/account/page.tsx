@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import GoogleCalendarConnect from "@/components/GoogleCalendarConnect";
 
 export const dynamic = "force-dynamic";
 
@@ -134,94 +135,105 @@ export default function AccountSettingsPage() {
           </div>
         </section>
       ) : (
-        <section className="card">
-          <form onSubmit={onSave} className="grid" style={{ gap: 12, maxWidth: 720 }}>
-            <div className="grid grid-2" style={{ gap: 12 }}>
-              <div className="field">
-                <label>Full Name</label>
-                <input
-                  className="input"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Your name"
-                  required
-                />
+        <>
+          <section className="card">
+            <form onSubmit={onSave} className="grid" style={{ gap: 12, maxWidth: 720 }}>
+              <div className="grid grid-2" style={{ gap: 12 }}>
+                <div className="field">
+                  <label>Full Name</label>
+                  <input
+                    className="input"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="Your name"
+                    required
+                  />
+                </div>
+                <div className="field">
+                  <label>Phone</label>
+                  <input
+                    className="input"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="+44…"
+                  />
+                </div>
               </div>
-              <div className="field">
-                <label>Phone</label>
-                <input
-                  className="input"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="+44…"
-                />
-              </div>
-            </div>
 
-            <div className="grid grid-2" style={{ gap: 12 }}>
-              <div className="field">
-                <label>Email</label>
-                <input
-                  type="email"
-                  className="input"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  required
-                />
+              <div className="grid grid-2" style={{ gap: 12 }}>
+                <div className="field">
+                  <label>Email</label>
+                  <input
+                    type="email"
+                    className="input"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    required
+                  />
+                </div>
+                <div className="field">
+                  <label>Role</label>
+                  <input className="input" value={me.role} disabled />
+                  <div className="form-hint">Role is managed by an administrator.</div>
+                </div>
               </div>
-              <div className="field">
-                <label>Role</label>
-                <input className="input" value={me.role} disabled />
-                <div className="form-hint">Role is managed by an administrator.</div>
-              </div>
-            </div>
 
-            <div style={{ height: 1, background: "var(--border)", margin: "6px 0 2px" }} />
+              <div style={{ height: 1, background: "var(--border)", margin: "6px 0 2px" }} />
 
-            <h3 style={{ margin: 0 }}>Change Password</h3>
-            <div className="grid grid-3" style={{ gap: 12 }}>
-              <div className="field">
-                <label>Current Password</label>
-                <input
-                  type="password"
-                  className="input"
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  placeholder="••••••••"
-                />
+              <h3 style={{ margin: 0 }}>Change Password</h3>
+              <div className="grid grid-3" style={{ gap: 12 }}>
+                <div className="field">
+                  <label>Current Password</label>
+                  <input
+                    type="password"
+                    className="input"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="••••••••"
+                  />
+                </div>
+                <div className="field">
+                  <label>New Password</label>
+                  <input
+                    type="password"
+                    className="input"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="At least 8 characters"
+                  />
+                </div>
+                <div className="field">
+                  <label>Confirm New Password</label>
+                  <input
+                    type="password"
+                    className="input"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Repeat new password"
+                  />
+                </div>
               </div>
-              <div className="field">
-                <label>New Password</label>
-                <input
-                  type="password"
-                  className="input"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="At least 8 characters"
-                />
-              </div>
-              <div className="field">
-                <label>Confirm New Password</label>
-                <input
-                  type="password"
-                  className="input"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Repeat new password"
-                />
-              </div>
-            </div>
 
-            <div className="row" style={{ gap: 8, alignItems: "center" }}>
-              <button className="primary" type="submit" disabled={saving}>
-                {saving ? "Saving…" : "Save Changes"}
-              </button>
-              {msgOK && <span className="small" style={{ color: "#15803d" }}>{msgOK}</span>}
-              {msgErr && <span className="small" style={{ color: "#b91c1c" }}>{msgErr}</span>}
-            </div>
-          </form>
-        </section>
+              <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                <button className="primary" type="submit" disabled={saving}>
+                  {saving ? "Saving…" : "Save Changes"}
+                </button>
+                {msgOK && <span className="small" style={{ color: "#15803d" }}>{msgOK}</span>}
+                {msgErr && <span className="small" style={{ color: "#b91c1c" }}>{msgErr}</span>}
+              </div>
+            </form>
+          </section>
+
+          {/* Google Calendar connect */}
+          <section className="card">
+            <h2 style={{ marginTop: 0 }}>Google Calendar</h2>
+            <p className="small" style={{ marginTop: 2 }}>
+              Connect your Google account to automatically add follow-up appointments to your calendar.
+            </p>
+            <GoogleCalendarConnect />
+          </section>
+        </>
       )}
     </div>
   );
