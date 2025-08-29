@@ -52,6 +52,12 @@ model User {
   role         Role             @default(REP)
   isActive     Boolean          @default(true)
 
+  // Google OAuth / Calendar
+  googleEmail          String?  @unique
+  googleAccessToken    String?
+  googleRefreshToken   String?
+  googleTokenExpiresAt DateTime?
+
   // fine-grained overrides in addition to role
   overrides    UserPermission[]
   // back-relation for AuditLog.user
@@ -159,7 +165,7 @@ model SalesRep {
 
   tagRules  SalesRepTagRule[]
 
-  // NEW: back-relation for Target.rep
+  // back-relation for Target.rep
   targets   Target[]  @relation("TargetRep")
 }
 
@@ -222,7 +228,7 @@ model StockedBrand {
   // back-relation for CallLogStockedBrand.brand
   callLinks        CallLogStockedBrand[]
 
-  // NEW: back-relation for Target.vendor
+  // back-relation for Target.vendor
   targets          Target[]  @relation("TargetVendor")
 }
 
