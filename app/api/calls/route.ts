@@ -94,51 +94,83 @@ function parseFollowUp(val: unknown): Date | null {
   return null;
 }
 
-/** Build followUp Date from lots of common field names */
-function extractFollowUpFromBody(body: any): Date | null {
-  // 1) direct single field (your original names)
-  const direct = parseFollowUp(body.followUpAt ?? body.followUp ?? body.followupAt);
-  if (direct) return direct;
+function normalizeTimeString(s: string | null | undefined): string | null {
+  if (!s) return null;
+  const raw = String(s).trim();
+  const m = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  let hh = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+  if (isNaN(hh) || isNaN(mm) || hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  const hh2 = hh.toString().padStart(2, "0");
+  const mm2 = mm.toString().padStart(2, "0");
+  return `${hh2}:${mm2}`;
+}
 
-  // 2) split date / time fields (many likely variants)
-  const dateKeys = [
+/** Build followUp Date from many field names, and merge split date/time */
+function extractFollowUpFromBody(body: any): { when: Date | null; merged: boolean; keys: string[] } {
+  const keys = Object.keys(body).filter(k => k.toLowerCase().includes("follow"));
+
+  // common time keys
+  const timeCandidates = [
+    "followUpTime","followupTime","follow_up_time","follow-up-time","followUp_time","followUpAtTime"
+  ];
+  const timeRaw = timeCandidates.map(k => body[k]).find(Boolean);
+  const timeStr = normalizeTimeString(timeRaw);
+
+  // 1) direct single field
+  const directRaw = body.followUpAt ?? body.followUp ?? body.followupAt;
+  let direct = parseFollowUp(directRaw);
+  let merged = false;
+
+  // If direct is just a date (00:00) and a separate time exists, merge it
+  if (direct && timeStr) {
+    const hh = parseInt(timeStr.slice(0, 2), 10);
+    const mm = parseInt(timeStr.slice(3, 5), 10);
+    // Only merge if direct looks like midnight (so we don't overwrite a real time)
+    if (direct.getUTCHours() === 0 && direct.getUTCMinutes() === 0) {
+      const d = new Date(direct);
+      // Use local time for intention, then ISO later
+      d.setHours(hh, mm, 0, 0);
+      direct = d;
+      merged = true;
+    }
+  }
+  if (direct) return { when: direct, merged, keys };
+
+  // 2) split date/time fields
+  const dateCandidates = [
     "followUpDate","followupDate","follow_up_date","follow-up-date",
     "followUpOn","followup_on","follow-up-on","followUp_day","followUp_date"
   ];
-  const timeKeys = [
-    "followUpTime","followupTime","follow_up_time","follow-up-time",
-    "followUpAtTime","followup_at_time","follow-up-at-time","followUp_time"
-  ];
+  const dateRaw = dateCandidates.map(k => body[k]).find(Boolean);
+  if (!dateRaw) return { when: null, merged: false, keys };
 
-  let dateStr = "";
-  for (const k of dateKeys) {
-    if (body[k]) { dateStr = String(body[k]).trim(); break; }
-  }
-  let timeStr = "";
-  for (const k of timeKeys) {
-    if (body[k]) { timeStr = String(body[k]).trim(); break; }
-  }
-
-  if (!dateStr) return null;
+  const dateStr = String(dateRaw).trim();
+  let when: Date | null = null;
 
   // yyyy-mm-dd
   if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-    const t = timeStr && /^\d{2}:\d{2}$/.test(timeStr) ? timeStr : "09:00";
-    const d = new Date(`${dateStr}T${t}:00`);
-    return isNaN(d.getTime()) ? null : d;
-  }
-
-  // dd/mm/yyyy or dd-mm-yyyy
-  if (/^\d{2}[\/\-]\d{2}[\/\-]\d{4}$/.test(dateStr)) {
+    const t = timeStr || "09:00";
+    when = new Date(`${dateStr}T${t}:00`);
+  } else if (/^\d{2}[\/\-]\d{2}[\/\-]\d{4}$/.test(dateStr)) {
+    // dd/mm/yyyy or dd-mm-yyyy
     const [dd, mm, yyyy] = dateStr.split(/[\/\-]/);
-    const t = timeStr && /^\d{2}:\d{2}$/.test(timeStr) ? timeStr : "09:00";
-    const d = new Date(`${yyyy}-${mm}-${dd}T${t}:00`);
-    return isNaN(d.getTime()) ? null : d;
+    const t = timeStr || "09:00";
+    when = new Date(`${yyyy}-${mm}-${dd}T${t}:00`);
+  } else {
+    const n = new Date(dateStr);
+    if (!isNaN(n.getTime())) {
+      if (timeStr) {
+        const hh = parseInt(timeStr.slice(0, 2), 10);
+        const mm = parseInt(timeStr.slice(3, 5), 10);
+        n.setHours(hh, mm, 0, 0);
+        merged = true;
+      }
+      when = n;
+    }
   }
-
-  // last resort
-  const native = new Date(dateStr);
-  return isNaN(native.getTime()) ? null : native;
+  return { when: when && !isNaN(when.getTime()) ? when : null, merged, keys };
 }
 
 /* ------------- calendar creation ------------- */
@@ -153,7 +185,10 @@ async function maybeCreateFollowUpEvent(saved: {
     if (!saved.followUpRequired || !saved.followUpAt) return;
 
     const userId = await currentUserIdFromCookie();
-    if (!userId) return;
+    if (!userId) {
+      console.log("[calendar] skip: no user cookie");
+      return;
+    }
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -164,13 +199,26 @@ async function maybeCreateFollowUpEvent(saved: {
         googleAccessToken: true,
         googleRefreshToken: true,
         googleTokenExpiresAt: true,
-        googleCalendarId: true, // optional; helper uses default/primary
+        googleCalendarId: true,
       },
     });
-    if (!user?.googleAccessToken) {
+
+    if (!user) {
+      console.log("[calendar] skip: user not found", { userId });
+      return;
+    }
+    const expired = !!(user.googleTokenExpiresAt && user.googleTokenExpiresAt <= new Date());
+    if (!user.googleAccessToken) {
       console.log("[calendar] skip: user has not connected Google", { userId });
       return;
     }
+    console.log("[calendar] user token state", {
+      userId: user.id,
+      hasAccess: !!user.googleAccessToken,
+      hasRefresh: !!user.googleRefreshToken,
+      expiresAt: user.googleTokenExpiresAt?.toISOString() ?? null,
+      expired,
+    });
 
     const start = new Date(saved.followUpAt);
     const end = new Date(start.getTime() + 30 * 60 * 1000); // 30 minutes
@@ -267,12 +315,14 @@ export async function POST(req: Request) {
     const callType = body.callType ? String(body.callType) : null;
     const outcome = body.outcome ? String(body.outcome) : null;
 
-    // ✅ robust follow-up parsing
-    const followUpAt = extractFollowUpFromBody(body);
+    // ✅ robust follow-up parsing + merge
+    const fu = extractFollowUpFromBody(body);
     console.log("[calls] parsed followUpAt", {
-      rawKeys: Object.keys(body).filter(k => k.toLowerCase().includes("follow")),
-      parsed: followUpAt ? followUpAt.toISOString() : null
+      rawKeys: fu.keys,
+      parsed: fu.when ? fu.when.toISOString() : null,
+      mergedTimeFromSeparateField: fu.merged,
     });
+    const followUpAt = fu.when;
 
     // allow client timestamp (not required)
     const clientLoggedAt = body.clientLoggedAt ? new Date(String(body.clientLoggedAt)) : null;
