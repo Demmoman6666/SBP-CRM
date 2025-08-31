@@ -1,12 +1,12 @@
-
 // app/api/calls/route.ts
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { cookies } from "next/headers";
 import crypto from "crypto";
 import { createCalendarEvent } from "@/lib/google";
-
-export const dynamic = "force-dynamic";
 
 /* ---------------- google helper ---------------- */
 const COOKIE_NAME = "sbp_session";
@@ -60,11 +60,13 @@ async function maybeCreateFollowUpEvent(saved: {
         googleAccessToken: true,
         googleRefreshToken: true,
         googleTokenExpiresAt: true,
-        // googleCalendarId is optional in DB but not required by createCalendarEvent
-        googleCalendarId: true,
+        googleCalendarId: true, // optional; helper uses user's default/primary
       },
     });
-    if (!user?.googleAccessToken) return; // user hasn't connected Google
+    if (!user?.googleAccessToken) {
+      console.log("[calendar] skip: user has not connected Google", { userId });
+      return;
+    }
 
     const start = new Date(saved.followUpAt);
     const end = new Date(start.getTime() + 30 * 60 * 1000); // 30 minutes
@@ -74,7 +76,14 @@ async function maybeCreateFollowUpEvent(saved: {
       `CRM follow-up for ${saved.customerName ?? "customer"}` +
       (saved.summary ? `\n\nNotes: ${saved.summary}` : "");
 
-    // ✅ call with (userId, options) — NO calendarId in options
+    console.log("[calendar] creating event", {
+      userId: user.id,
+      startIso: start.toISOString(),
+      endIso: end.toISOString(),
+      title: summary,
+    });
+
+    // ✅ Correct helper signature: (userId, { startIso, endIso, ... })
     await createCalendarEvent(user.id, {
       summary,
       description,
@@ -85,9 +94,9 @@ async function maybeCreateFollowUpEvent(saved: {
         : [],
     });
 
-    // If you later add a googleEventId column to CallLog, persist it here with the returned event id.
+    console.log("[calendar] event created for call", saved.id);
+    // If you later add a googleEventId column to CallLog, persist it here.
   } catch (err) {
-    // Never block the request if Calendar fails — just log.
     console.error("Calendar event create failed (non-fatal):", err);
   }
 }
@@ -123,7 +132,7 @@ const toBool = (v: unknown) => {
 
 const isCuid = (s: string) => /^c[a-z0-9]{24,}$/i.test(s);
 
-/** Accepts:
+/** Accepts common inputs:
  *  - 2025-08-29T21:02
  *  - 29/08/2025 21:02
  *  - 29/08/2025, 21:02
@@ -138,9 +147,7 @@ function parseFollowUp(val: unknown): Date | null {
   if (!isNaN(d1.getTime())) return d1;
 
   // try dd/mm/yyyy hh:mm
-  const m = raw.match(
-    /^(\d{2})[\/\-](\d{2})[\/\-](\d{4})(?:[ ,T]+(\d{2}):(\d{2}))?$/
-  );
+  const m = raw.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})(?:[ ,T]+(\d{2}):(\d{2}))?$/);
   if (m) {
     const [, dd, mm, yyyy, hh = "00", min = "00"] = m;
     const iso = `${yyyy}-${mm}-${dd}T${hh}:${min}:00`;
@@ -153,7 +160,6 @@ function parseFollowUp(val: unknown): Date | null {
 /* date filter helpers for GET */
 function parseDateStart(raw?: string | null): Date | null {
   if (!raw) return null;
-  // if just yyyy-mm-dd, anchor to 00:00
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(`${raw}T00:00:00`);
   const d = new Date(raw);
   return isNaN(d.getTime()) ? null : d;
@@ -204,10 +210,7 @@ export async function POST(req: Request) {
       const candidate = String(body.customerId ?? body.customer ?? "").trim();
       if (!candidate || !isCuid(candidate)) {
         return NextResponse.json(
-          {
-            error:
-              "Pick a customer from the list (don’t type free text) so we can attach the call to the account.",
-          },
+          { error: "Pick a customer from the list (don’t type free text) so we can attach the call to the account." },
           { status: 400 }
         );
       }
@@ -280,16 +283,6 @@ export async function POST(req: Request) {
 }
 
 /* --------------- GET /api/calls (filterable) --------------- */
-/**
- * Query params:
- *  - from=yyyy-mm-dd (or ISO)
- *  - to=yyyy-mm-dd   (or ISO)
- *  - callType=Cold Call|Booked Call|Booked Demo
- *  - outcome=Sale|No Sale|Appointment booked|Demo Booked
- *  - staff=<rep name>
- *  - customerId=<cuid> (optional)
- *  - limit=number (default 100, max 200)
- */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
