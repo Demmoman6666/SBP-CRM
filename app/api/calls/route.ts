@@ -4,39 +4,8 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { cookies } from "next/headers";
-import crypto from "crypto";
 import { createCalendarEvent } from "@/lib/google";
-
-/* ---------------- google helper ---------------- */
-const COOKIE_NAME = "sbp_session";
-type TokenPayload = { userId: string; exp: number };
-
-function verifyToken(token?: string | null): TokenPayload | null {
-  if (!token) return null;
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-  const [p, sig] = parts;
-
-  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-  const expected = crypto.createHmac("sha256", secret).update(p).digest("base64url");
-  if (expected !== sig) return null;
-
-  try {
-    const json = JSON.parse(Buffer.from(p, "base64url").toString()) as TokenPayload;
-    if (!json?.userId || typeof json.exp !== "number") return null;
-    if (json.exp < Math.floor(Date.now() / 1000)) return null;
-    return json;
-  } catch {
-    return null;
-  }
-}
-
-async function currentUserIdFromCookie() {
-  const tok = cookies().get(COOKIE_NAME)?.value;
-  const s = verifyToken(tok);
-  return s?.userId ?? null;
-}
+import { getCurrentUser } from "@/lib/auth";
 
 /* ---------------- helpers ---------------- */
 async function readBody(req: Request) {
@@ -127,11 +96,9 @@ function extractFollowUpFromBody(body: any): { when: Date | null; merged: boolea
   if (direct && timeStr) {
     const hh = parseInt(timeStr.slice(0, 2), 10);
     const mm = parseInt(timeStr.slice(3, 5), 10);
-    // Only merge if direct looks like midnight (so we don't overwrite a real time)
     if (direct.getUTCHours() === 0 && direct.getUTCMinutes() === 0) {
       const d = new Date(direct);
-      // Use local time for intention, then ISO later
-      d.setHours(hh, mm, 0, 0);
+      d.setHours(hh, mm, 0, 0); // local time — user intent
       direct = d;
       merged = true;
     }
@@ -184,14 +151,15 @@ async function maybeCreateFollowUpEvent(saved: {
   try {
     if (!saved.followUpRequired || !saved.followUpAt) return;
 
-    const userId = await currentUserIdFromCookie();
-    if (!userId) {
-      console.log("[calendar] skip: no user cookie");
+    // ✅ Resolve the user via your existing auth helper
+    const me = await getCurrentUser();
+    if (!me) {
+      console.log("[calendar] skip: no session user");
       return;
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: me.id },
       select: {
         id: true,
         fullName: true,
@@ -204,12 +172,12 @@ async function maybeCreateFollowUpEvent(saved: {
     });
 
     if (!user) {
-      console.log("[calendar] skip: user not found", { userId });
+      console.log("[calendar] skip: user not found", { userId: me.id });
       return;
     }
     const expired = !!(user.googleTokenExpiresAt && user.googleTokenExpiresAt <= new Date());
     if (!user.googleAccessToken) {
-      console.log("[calendar] skip: user has not connected Google", { userId });
+      console.log("[calendar] skip: user has not connected Google", { userId: me.id });
       return;
     }
     console.log("[calendar] user token state", {
@@ -315,7 +283,7 @@ export async function POST(req: Request) {
     const callType = body.callType ? String(body.callType) : null;
     const outcome = body.outcome ? String(body.outcome) : null;
 
-    // ✅ robust follow-up parsing + merge
+    // robust follow-up parsing + merge
     const fu = extractFollowUpFromBody(body);
     console.log("[calls] parsed followUpAt", {
       rawKeys: fu.keys,
