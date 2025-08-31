@@ -4,40 +4,10 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { cookies } from "next/headers";
-import crypto from "crypto";
 import { createCalendarEvent } from "@/lib/google";
+import { getCurrentUser } from "@/lib/auth";
 
-/* ---------------- google helper ---------------- */
-const COOKIE_NAME = "sbp_session";
-type TokenPayload = { userId: string; exp: number };
-
-function verifyToken(token?: string | null): TokenPayload | null {
-  if (!token) return null;
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-  const [p, sig] = parts;
-
-  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-  const expected = crypto.createHmac("sha256", secret).update(p).digest("base64url");
-  if (expected !== sig) return null;
-
-  try {
-    const json = JSON.parse(Buffer.from(p, "base64url").toString()) as TokenPayload;
-    if (!json?.userId || typeof json.exp !== "number") return null;
-    if (json.exp < Math.floor(Date.now() / 1000)) return null;
-    return json;
-  } catch {
-    return null;
-  }
-}
-
-async function currentUserIdFromCookie() {
-  const tok = cookies().get(COOKIE_NAME)?.value;
-  const s = verifyToken(tok);
-  return s?.userId ?? null;
-}
-
+/* ---------------- calendar helper ---------------- */
 async function maybeCreateFollowUpEvent(saved: {
   id: string;
   summary: string | null;        // notes from the call
@@ -48,14 +18,14 @@ async function maybeCreateFollowUpEvent(saved: {
   try {
     if (!saved.followUpRequired || !saved.followUpAt) return;
 
-    const userId = await currentUserIdFromCookie();
-    if (!userId) {
-      console.log("[calendar] skip: no user cookie");
+    const me = await getCurrentUser();
+    if (!me) {
+      console.log("[calendar] skip: no authenticated user");
       return;
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: me.id },
       select: {
         id: true,
         fullName: true,
@@ -67,27 +37,26 @@ async function maybeCreateFollowUpEvent(saved: {
       },
     });
     if (!user?.googleAccessToken) {
-      console.log("[calendar] skip: user has not connected Google", { userId });
+      console.log("[calendar] skip: user has not connected Google", { userId: me.id });
       return;
     }
 
     const start = new Date(saved.followUpAt);
     const end = new Date(start.getTime() + 30 * 60 * 1000); // 30 minutes
 
-    // ✅ Title = customer name; Notes go into description
     const title = `Follow-up: ${saved.customerName ?? "Customer"}`;
     const description =
       (saved.customerName ? `Customer: ${saved.customerName}\n` : "") +
       (saved.summary ? `\nNotes:\n${saved.summary}` : "");
 
     console.log("[calendar] creating event", {
-      userId: user.id,
+      userId: me.id,
       startIso: start.toISOString(),
       endIso: end.toISOString(),
       title,
     });
 
-    await createCalendarEvent(user.id, {
+    await createCalendarEvent(me.id, {
       summary: title,
       description,
       startIso: start.toISOString(),
@@ -233,7 +202,7 @@ export async function POST(req: Request) {
     const leadCustomerName =
       !isExisting && body.customerName ? String(body.customerName) : null;
 
-    // ✅ For existing customers, look up a display name
+    // For existing customers, look up a display name to use as event title
     let displayCustomerName: string | null = leadCustomerName;
     if (isExisting && customerId) {
       const cust = await prisma.customer.findUnique({
@@ -263,7 +232,7 @@ export async function POST(req: Request) {
       select: { id: true, customerId: true },
     });
 
-    // 🔔 After-save: create the Google Calendar event if applicable
+    // After-save: try to create the Google Calendar event if applicable
     await maybeCreateFollowUpEvent({
       id: created.id,
       summary, // notes
