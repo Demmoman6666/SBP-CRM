@@ -3,12 +3,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-/* -------------------------------- helpers -------------------------------- */
+/* ----------------------- tiny safe fetch helper ----------------------- */
 async function safeGetArray<T = any>(url: string): Promise<T[]> {
   try {
     const r = await fetch(url, {
       cache: "no-store",
-      credentials: "include", // ensure cookie goes with same-origin calls
+      credentials: "include",
       headers: { Accept: "application/json" },
     });
     if (!r.ok) throw new Error(String(r.status));
@@ -16,12 +16,12 @@ async function safeGetArray<T = any>(url: string): Promise<T[]> {
     return Array.isArray(j) ? (j as T[]) : [];
   } catch (e) {
     console.error(`[fetch] ${url} failed`, e);
-    return []; // never let the UI crash because of a bad response
+    return [];
   }
 }
 
-/* --------------------------------- types --------------------------------- */
-type Rep = { id: string; name: string };
+/* ------------------------------- types ------------------------------- */
+type Rep   = { id: string; name: string };
 type Brand = { id: string; name: string };
 type DayKey = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
 
@@ -71,22 +71,33 @@ const COUNTRIES = [
 export default function NewCustomerPage() {
   /* data sources */
   const [reps, setReps] = useState<Rep[]>([]);
-  const [brands, setBrands] = useState<Brand[]>([]);
+  // competitor brands shown as checkboxes
+  const [competitorBrands, setCompetitorBrands] = useState<Brand[]>([]);
+  // selected “brands used” – we’ll submit this as a comma-separated string
+  const [brandsUsed, setBrandsUsed] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [r, b] = await Promise.all([
+      const [repsArr, compArr] = await Promise.all([
         safeGetArray<Rep>("/api/sales-reps"),
-        safeGetArray<Brand>("/api/brands"),
+        // This route already exists in your project and powers the call log checkboxes
+        safeGetArray<Brand>("/api/settings/visible-competitor-brands"),
       ]);
       if (!cancelled) {
-        setReps(r);
-        setBrands(b);
+        setReps(repsArr);
+        setCompetitorBrands(compArr);
       }
     })();
     return () => { cancelled = true; };
   }, []);
+
+  /* toggle checkbox */
+  function toggleBrand(name: string) {
+    setBrandsUsed(prev =>
+      prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]
+    );
+  }
 
   /* opening hours state */
   const [oh, setOh] = useState<Record<DayKey, DayState>>(
@@ -120,6 +131,8 @@ export default function NewCustomerPage() {
 
       <form method="POST" action="/api/customers" className="card grid" style={{ gap: 16 }}>
         <input type="hidden" name="openingHours" value={openingHoursJSON} />
+        {/* Submit selected brands as a single string to match your current Prisma field (String?) */}
+        <input type="hidden" name="brandsInterestedIn" value={brandsUsed.join(", ")} />
 
         <div className="grid grid-2">
           <div className="field">
@@ -153,14 +166,33 @@ export default function NewCustomerPage() {
             <label>Town</label>
             <input name="town" />
           </div>
+
+          {/* ⬇️ Brands Used (checkboxes from Competitor Brands) */}
           <div className="field">
             <label>Brands Used</label>
-            <select name="brandsInterestedIn" defaultValue="">
-              <option value="">— Select a brand —</option>
-              {(brands ?? []).map(b => (
-                <option key={b.id} value={b.name}>{b.name}</option>
-              ))}
-            </select>
+            {competitorBrands.length === 0 ? (
+              <div className="small muted">No competitor brands configured.</div>
+            ) : (
+              <div
+                className="grid"
+                style={{ gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}
+              >
+                {competitorBrands.map(b => {
+                  const checked = brandsUsed.includes(b.name);
+                  return (
+                    <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleBrand(b.name)}
+                      />
+                      <span>{b.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <div className="form-hint">Pick all brands the salon currently uses.</div>
           </div>
 
           <div className="field">
