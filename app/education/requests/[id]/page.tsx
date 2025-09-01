@@ -116,8 +116,7 @@ export default async function EducationRequestReviewPage({
       brands: true,            // string[]
       educationTypes: true,    // enum[]
       customerId: true,
-      // snapshot (only keep what exists on your model)
-      contactName: true,
+      contactName: true,       // snapshot if present
 
       customer: {
         select: {
@@ -157,33 +156,33 @@ export default async function EducationRequestReviewPage({
     const location = String(formData.get("location") || "");
     const internalNotes = String(formData.get("internalNotes") || "");
 
-    const scheduledDate = toDateAtLocal(dateStr || undefined, timeStr || undefined);
+    const scheduledStart = toDateAtLocal(dateStr || undefined, timeStr || undefined);
 
-    // Persist booking
+    // Create booking using ONLY fields that exist on your model
     await prisma.educationBooking.create({
       data: {
         requestId: req.id,
         customerId: req.customerId,
-        scheduledDate,               // Date | null
-        scheduledTime: timeStr || null,
-        educator: educator || null,
-        location: location || null,
+        // If your model includes educator/location, you can keep these lines.
+        // If not, comment them out to match your schema.
+        // educator: educator || null,
+        // location: location || null,
         notes: internalNotes || null,
-        brands: req.brands,                     // carry over
-        educationTypes: req.educationTypes,     // carry over
+        brands: req.brands,
+        educationTypes: req.educationTypes,
       },
       select: { id: true },
     });
 
-    // Mark the request as BOOKED so it disappears from "Requested"
+    // Move request to BOOKED so it drops out of the Requests list
     await prisma.educationRequest.update({
       where: { id: req.id },
       data: { status: "BOOKED" },
     });
 
-    // Calendar (optional): only if date/time provided
+    // Optional: create a calendar event if date/time provided
     await maybeCreateCalendarBooking({
-      start: scheduledDate,
+      start: scheduledStart,
       customerName: req.customer?.customerName || req.contactName || null,
       salonName: req.customer?.salonName || null,
       location,
@@ -192,7 +191,6 @@ export default async function EducationRequestReviewPage({
       notes: [req.notes, internalNotes].filter(Boolean).join("\n\n").trim() || null,
     });
 
-    // Send them to the "Education Booked" list
     redirect("/education/booked");
   }
 
@@ -201,11 +199,9 @@ export default async function EducationRequestReviewPage({
   const phone = req.customer?.customerTelephone || "—";
   const email = req.customer?.customerEmailAddress || "—";
 
-  const locationLine = [
-    req.customer?.town,
-    req.customer?.county,
-    req.customer?.postCode,
-  ].filter(Boolean).join(", ");
+  const locationLine = [req.customer?.town, req.customer?.county, req.customer?.postCode]
+    .filter(Boolean)
+    .join(", ");
 
   return (
     <div className="grid" style={{ gap: 16 }}>
