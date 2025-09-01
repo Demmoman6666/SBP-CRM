@@ -3,7 +3,24 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-/* ------------ types ------------ */
+/* -------------------------------- helpers -------------------------------- */
+async function safeGetArray<T = any>(url: string): Promise<T[]> {
+  try {
+    const r = await fetch(url, {
+      cache: "no-store",
+      credentials: "include", // ensure cookie goes with same-origin calls
+      headers: { Accept: "application/json" },
+    });
+    if (!r.ok) throw new Error(String(r.status));
+    const j = await r.json().catch(() => []);
+    return Array.isArray(j) ? (j as T[]) : [];
+  } catch (e) {
+    console.error(`[fetch] ${url} failed`, e);
+    return []; // never let the UI crash because of a bad response
+  }
+}
+
+/* --------------------------------- types --------------------------------- */
 type Rep = { id: string; name: string };
 type Brand = { id: string; name: string };
 type DayKey = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
@@ -57,8 +74,18 @@ export default function NewCustomerPage() {
   const [brands, setBrands] = useState<Brand[]>([]);
 
   useEffect(() => {
-    fetch("/api/sales-reps").then(r => r.json()).then(setReps).catch(() => setReps([]));
-    fetch("/api/brands").then(r => r.json()).then(setBrands).catch(() => setBrands([]));
+    let cancelled = false;
+    (async () => {
+      const [r, b] = await Promise.all([
+        safeGetArray<Rep>("/api/sales-reps"),
+        safeGetArray<Brand>("/api/brands"),
+      ]);
+      if (!cancelled) {
+        setReps(r);
+        setBrands(b);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   /* opening hours state */
@@ -130,7 +157,7 @@ export default function NewCustomerPage() {
             <label>Brands Used</label>
             <select name="brandsInterestedIn" defaultValue="">
               <option value="">— Select a brand —</option>
-              {brands.map(b => (
+              {(brands ?? []).map(b => (
                 <option key={b.id} value={b.name}>{b.name}</option>
               ))}
             </select>
@@ -144,7 +171,7 @@ export default function NewCustomerPage() {
             <label>Sales Rep*</label>
             <select name="salesRep" required defaultValue="">
               <option value="" disabled>— Select a rep —</option>
-              {reps.map(r => (
+              {(reps ?? []).map(r => (
                 <option key={r.id} value={r.name}>{r.name}</option>
               ))}
             </select>
@@ -267,7 +294,7 @@ export default function NewCustomerPage() {
             })}
 
             <div className="form-hint" style={{ marginTop: 4 }}>
-              Tick a day, then choose open & close. Minutes step is 5.
+              Tick a day, then choose open &amp; close. Minutes step is 5.
             </div>
           </div>
         </div>
