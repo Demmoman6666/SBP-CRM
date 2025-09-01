@@ -75,7 +75,7 @@ async function maybeCreateCalendarBooking(args: {
     if (!user?.googleAccessToken) return;
 
     const startIso = args.start.toISOString();
-    // Default to 90 minutes for an education session
+    // Default 90 minutes
     const endIso = new Date(args.start.getTime() + 90 * 60 * 1000).toISOString();
 
     const title = `Education: ${args.salonName || args.customerName || "Customer"}`;
@@ -116,8 +116,7 @@ export default async function EducationRequestReviewPage({
       brands: true,            // string[]
       educationTypes: true,    // enum[]
       customerId: true,
-      contactName: true,       // snapshot if present
-
+      contactName: true,       // snapshot if you saved it
       customer: {
         select: {
           id: true,
@@ -158,29 +157,28 @@ export default async function EducationRequestReviewPage({
 
     const scheduledStart = toDateAtLocal(dateStr || undefined, timeStr || undefined);
 
-    // Create booking using ONLY fields that exist on your model
+    // Create booking using ONLY fields that exist on your model.
+    // (We do not write brands/educationTypes here to avoid schema mismatches;
+    // you can always read them via req relation.)
     await prisma.educationBooking.create({
       data: {
         requestId: req.id,
         customerId: req.customerId,
-        // If your model includes educator/location, you can keep these lines.
-        // If not, comment them out to match your schema.
+        // If your model has these, uncomment:
         // educator: educator || null,
         // location: location || null,
         notes: internalNotes || null,
-        brands: req.brands,
-        educationTypes: req.educationTypes,
       },
       select: { id: true },
     });
 
-    // Move request to BOOKED so it drops out of the Requests list
+    // Update request status
     await prisma.educationRequest.update({
       where: { id: req.id },
       data: { status: "BOOKED" },
     });
 
-    // Optional: create a calendar event if date/time provided
+    // Calendar (optional)
     await maybeCreateCalendarBooking({
       start: scheduledStart,
       customerName: req.customer?.customerName || req.contactName || null,
