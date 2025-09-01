@@ -1,24 +1,35 @@
 // app/education/requests/[id]/page.tsx
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
-import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { prisma } from "@/lib/prisma";
+import { formatDateTimeUK } from "@/lib/dates";
+import { getCurrentUser } from "@/lib/auth";
+import { createCalendarEvent } from "@/lib/google";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-/* --- helpers --- */
-function fmtDateTime(d?: Date | null) {
+/* ---------------- helpers ---------------- */
+function fmtDate(d?: Date | null) {
   if (!d) return "—";
-  const dt = new Date(d);
-  return dt.toLocaleString("en-GB", {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+  try {
+    return formatDateTimeUK(d);
+  } catch {
+    return new Date(d).toLocaleString("en-GB");
+  }
+}
+
+function toDateAtLocal(dateStr?: string | null, timeStr?: string | null): Date | null {
+  if (!dateStr) return null;
+  // Accept yyyy-mm-dd or dd/mm/yyyy
+  let isoDate = dateStr;
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
+    const [dd, mm, yyyy] = dateStr.split("/");
+    isoDate = `${yyyy}-${mm}-${dd}`;
+  }
+  const t = timeStr && /^\d{2}:\d{2}$/.test(timeStr) ? `${timeStr}:00` : "00:00:00";
+  const d = new Date(`${isoDate}T${t}`);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 const EDU_LABELS: Record<string, string> = {
@@ -28,70 +39,102 @@ const EDU_LABELS: Record<string, string> = {
   STYLING_RANGE: "Styling Range",
 };
 
-function mapEduTypes(types?: string[] | null): string[] {
-  if (!types?.length) return [];
-  return types.map((t) => EDU_LABELS[t] ?? t);
+function prettyEdu(types?: string[] | null) {
+  if (!types?.length) return "—";
+  return types.map((t) => EDU_LABELS[t] ?? t).join(", ");
 }
 
-const isCuid = (s: string) => /^c[a-z0-9]{24,}$/i.test(s);
-const isUuid = (s: string) =>
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
+/* ------------- Calendar helper (optional) ------------- */
+async function maybeCreateCalendarBooking(args: {
+  start: Date | null;
+  customerName: string | null;
+  salonName: string | null;
+  location?: string | null;
+  brands?: string[] | null;
+  educationTypes?: string[] | null;
+  notes?: string | null;
+}) {
+  try {
+    if (!args.start) return;
 
-async function resolveBrandNames(identifiers: string[] | null | undefined) {
-  const ids = (identifiers ?? []).map((x) => String(x).trim()).filter(Boolean);
-  if (!ids.length) return [] as string[];
+    const me = await getCurrentUser();
+    if (!me) return;
 
-  const idList = ids.filter((x) => isCuid(x) || isUuid(x));
-  const nameList = ids.filter((x) => !idList.includes(x));
+    const user = await prisma.user.findUnique({
+      where: { id: me.id },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        googleAccessToken: true,
+        googleRefreshToken: true,
+        googleTokenExpiresAt: true,
+        googleCalendarId: true,
+      },
+    });
+    if (!user?.googleAccessToken) return;
 
-  const rows = await prisma.brand.findMany({
-    where: {
-      OR: [
-        idList.length ? { id: { in: idList } } : undefined,
-        nameList.length ? { name: { in: nameList } } : undefined,
-      ].filter(Boolean) as any,
-    },
-    select: { id: true, name: true },
-  });
+    const startIso = args.start.toISOString();
+    // Default to 90 minutes for an education session
+    const endIso = new Date(args.start.getTime() + 90 * 60 * 1000).toISOString();
 
-  // Prefer DB names where we matched; include any raw names that didn’t match a DB row
-  const foundNames = new Set(rows.map((r) => r.name));
-  const names: string[] = [...rows.map((r) => r.name)];
-  for (const raw of nameList) {
-    if (!foundNames.has(raw)) names.push(raw);
+    const title = `Education: ${args.salonName || args.customerName || "Customer"}`;
+    const descriptionLines = [
+      args.salonName ? `Salon: ${args.salonName}` : null,
+      args.customerName ? `Contact: ${args.customerName}` : null,
+      args.location ? `Location: ${args.location}` : null,
+      args.brands?.length ? `Brands: ${args.brands.join(", ")}` : null,
+      args.educationTypes?.length ? `Education Types: ${prettyEdu(args.educationTypes)}` : null,
+      args.notes ? `\nNotes:\n${args.notes}` : null,
+    ].filter(Boolean) as string[];
+
+    await createCalendarEvent(me.id, {
+      summary: title,
+      description: descriptionLines.join("\n"),
+      startIso,
+      endIso,
+      attendees: user.email ? [{ email: user.email, displayName: user.fullName || undefined }] : [],
+    });
+  } catch (err) {
+    console.error("[education] calendar create failed (non-fatal):", err);
   }
-  return names;
 }
 
-export default async function EducationRequestDetail({
+export default async function EducationRequestReviewPage({
   params,
 }: {
   params: { id: string };
 }) {
-  // Pull only fields that exist on your model
   const req = await prisma.educationRequest.findUnique({
     where: { id: params.id },
     select: {
       id: true,
       createdAt: true,
       updatedAt: true,
-      customerId: true,
-      notes: true,
       status: true,
-      // IMPORTANT: your model uses `brands` (string[]), not `brandIds`
-      brands: true,
-      educationTypes: true, // enum[]
+      notes: true,
+      brands: true,            // string[]
+      educationTypes: true,    // enum[]
+      customerId: true,
+      // snapshot fields (if you captured them on create)
+      contactName: true,
+      contactEmail: true,
+      contactPhone: true,
+
       customer: {
         select: {
           id: true,
           salonName: true,
           customerName: true,
           salesRep: true,
-          customerTelephone: true,
-          customerEmailAddress: true,
+          addressLine1: true,
+          addressLine2: true,
           town: true,
           county: true,
           postCode: true,
+          country: true,
+          customerTelephone: true,
+          customerEmailAddress: true,
         },
       },
     },
@@ -100,65 +143,71 @@ export default async function EducationRequestDetail({
   if (!req) {
     return (
       <div className="card">
-        <h1>Education Request</h1>
-        <p className="small">Not found.</p>
-        <Link className="btn" href="/education/requests">
-          Back to requests
-        </Link>
+        <p>Request not found.</p>
+        <Link className="btn" href="/education/requests">Back</Link>
       </div>
     );
   }
 
-  // Resolve brand names
-  const brandNames = await resolveBrandNames(req.brands);
-
-  /** Create a booking using only fields that exist on EducationBooking.
-   *  Extra fields are folded into the booking `notes`.
-   */
+  /* -------- Server action: create booking + move to BOOKED -------- */
   async function createBooking(formData: FormData) {
     "use server";
 
-    const date = String(formData.get("date") || "").trim();
-    const time = String(formData.get("time") || "").trim();
-    const educatorInput = String(formData.get("educator") || "").trim();
-    const locationInput = String(formData.get("location") || "").trim();
-    const extraNotes = String(formData.get("notes") || "").trim();
+    const dateStr = String(formData.get("date") || "");
+    const timeStr = String(formData.get("time") || "");
+    const educator = String(formData.get("educator") || "");
+    const location = String(formData.get("location") || "");
+    const internalNotes = String(formData.get("internalNotes") || "");
 
-    const lines: string[] = [];
+    const scheduledDate = toDateAtLocal(dateStr || undefined, timeStr || undefined);
 
-    // From request itself
-    if (brandNames.length) lines.push(`Brands: ${brandNames.join(", ")}`);
-    const eduNice = mapEduTypes(req.educationTypes as any);
-    if (eduNice.length) lines.push(`Education Types: ${eduNice.join(", ")}`);
-    if (req.notes) lines.push(`Request Notes: ${req.notes}`);
-
-    // From booking form
-    if (date || time) lines.push(`Scheduled (requested): ${[date, time].filter(Boolean).join(" ")}`);
-    if (educatorInput) lines.push(`Educator (requested): ${educatorInput}`);
-    if (locationInput) lines.push(`Location (requested): ${locationInput}`);
-    if (extraNotes) lines.push(extraNotes);
-
-    const combinedNotes = lines.length ? lines.join("\n\n") : null;
-
-    // Only pass columns that exist on EducationBooking
-    await prisma.educationBooking.create({
+    // Persist booking
+    const booking = await prisma.educationBooking.create({
       data: {
         requestId: req.id,
         customerId: req.customerId,
-        notes: combinedNotes,
+        scheduledDate,        // Date | null
+        scheduledTime: timeStr || null,
+        educator: educator || null,
+        location: location || null,
+        notes: internalNotes || null,
+        brands: req.brands,                     // carry over
+        educationTypes: req.educationTypes,     // carry over
       },
+      select: { id: true },
     });
 
-    // Mark request as BOOKED
+    // Mark the request as BOOKED so it disappears from "Requested"
     await prisma.educationRequest.update({
       where: { id: req.id },
       data: { status: "BOOKED" },
     });
 
-    revalidatePath("/education/requests");
-    revalidatePath("/education/booked");
+    // Calendar (optional): only if date/time provided
+    await maybeCreateCalendarBooking({
+      start: scheduledDate,
+      customerName: req.customer?.customerName || req.contactName || null,
+      salonName: req.customer?.salonName || null,
+      location,
+      brands: req.brands,
+      educationTypes: req.educationTypes as unknown as string[],
+      notes: [req.notes, internalNotes].filter(Boolean).join("\n\n").trim() || null,
+    });
+
+    // Send them to the "Education Booked" list
     redirect("/education/booked");
   }
+
+  const salon = req.customer?.salonName || "—";
+  const contact = req.customer?.customerName || req.contactName || "—";
+  const phone = req.customer?.customerTelephone || req.contactPhone || "—";
+  const email = req.customer?.customerEmailAddress || req.contactEmail || "—";
+
+  const locationLine = [
+    req.customer?.town,
+    req.customer?.county,
+    req.customer?.postCode,
+  ].filter(Boolean).join(", ");
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -166,106 +215,90 @@ export default async function EducationRequestDetail({
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <h1>Education Request</h1>
-            <div className="small muted">Received: {fmtDateTime(req.createdAt)}</div>
+            <div className="small muted">Received: {fmtDate(req.createdAt)}</div>
           </div>
-          <Link className="btn" href="/education/requests">
-            Back
-          </Link>
+          <Link className="btn" href="/education/requests">Back</Link>
         </div>
       </section>
 
-      {/* Request details */}
-      <section className="card grid" style={{ gap: 10 }}>
-        <div className="grid grid-2">
+      <section className="card">
+        <div className="grid grid-2" style={{ gap: 12 }}>
           <div>
             <b>Customer</b>
-            <p className="small" style={{ marginTop: 6 }}>
-              {req.customer ? (
-                <>
-                  <Link href={`/customers/${req.customer.id}`}>
-                    {req.customer.salonName} — {req.customer.customerName}
-                  </Link>
-                  <br />
-                  Rep: {req.customer.salesRep || "—"}
-                  <br />
-                  {req.customer.customerTelephone || "—"}
-                  <br />
-                  {req.customer.customerEmailAddress || "—"}
-                </>
-              ) : (
-                "—"
-              )}
+            <p className="small" style={{ whiteSpace: "pre-line", marginTop: 6 }}>
+              {salon} — {contact}
+              {"\n"}
+              Rep: {req.customer?.salesRep || "—"}
+              {"\n"}
+              {phone}
+              {"\n"}
+              {email}
             </p>
           </div>
 
           <div>
             <b>Location</b>
-            <p className="small" style={{ marginTop: 6, whiteSpace: "pre-line" }}>
-              {[req.customer?.town, req.customer?.county, req.customer?.postCode]
-                .filter(Boolean)
-                .join(", ") || "—"}
+            <p className="small" style={{ whiteSpace: "pre-line", marginTop: 6 }}>
+              {locationLine || "—"}
             </p>
           </div>
 
           <div>
             <b>Brands Requested</b>
             <p className="small" style={{ marginTop: 6 }}>
-              {brandNames.length ? brandNames.join(", ") : "—"}
+              {req.brands?.length ? req.brands.join(", ") : "—"}
             </p>
           </div>
 
           <div>
             <b>Education Types</b>
             <p className="small" style={{ marginTop: 6 }}>
-              {mapEduTypes(req.educationTypes as any).join(", ") || "—"}
+              {prettyEdu(req.educationTypes as unknown as string[])}
             </p>
           </div>
-        </div>
 
-        {req.notes && (
-          <div>
-            <b>Request Notes</b>
-            <p className="small" style={{ marginTop: 6, whiteSpace: "pre-line" }}>
-              {req.notes}
-            </p>
-          </div>
-        )}
+          {req.notes && (
+            <div style={{ gridColumn: "1 / -1" }}>
+              <b>Request Notes</b>
+              <p className="small" style={{ marginTop: 6 }}>{req.notes}</p>
+            </div>
+          )}
+        </div>
       </section>
 
-      {/* Booking form — stores date/time/educator/location in notes */}
+      {/* ---- Create Booking ---- */}
       <section className="card">
         <h3>Create Booking</h3>
         <form action={createBooking} className="grid" style={{ gap: 10 }}>
-          <div className="grid grid-3" style={{ gap: 10 }}>
-            <div>
+          <div className="grid grid-2">
+            <div className="field">
               <label>Date (optional)</label>
               <input type="date" name="date" />
             </div>
-            <div>
+            <div className="field">
               <label>Time (optional)</label>
               <input type="time" name="time" />
             </div>
-            <div>
+          </div>
+
+          <div className="grid grid-2">
+            <div className="field">
               <label>Educator (optional)</label>
               <input name="educator" placeholder="Trainer name" />
             </div>
-          </div>
-
-          <div className="grid grid-2" style={{ gap: 10 }}>
-            <div>
+            <div className="field">
               <label>Location (optional)</label>
               <input name="location" placeholder="Salon / Venue" />
             </div>
-            <div>
-              <label>Internal Notes (optional)</label>
-              <input name="notes" placeholder="Anything else to record…" />
-            </div>
+          </div>
+
+          <div className="field">
+            <label>Internal Notes (optional)</label>
+            <input name="internalNotes" placeholder="Anything else to record…" />
           </div>
 
           <div className="right">
-            <button className="primary" type="submit">
-              Create Booking
-            </button>
+            <button className="primary" type="submit">Create Booking</button>
           </div>
         </form>
       </section>
