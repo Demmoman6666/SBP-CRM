@@ -30,12 +30,44 @@ const EDU_LABELS: Record<string, string> = {
 
 function mapEduTypes(types?: string[] | null): string[] {
   if (!types?.length) return [];
-  return types.map(t => EDU_LABELS[t] ?? t);
+  return types.map((t) => EDU_LABELS[t] ?? t);
+}
+
+const isCuid = (s: string) => /^c[a-z0-9]{24,}$/i.test(s);
+const isUuid = (s: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
+
+async function resolveBrandNames(identifiers: string[] | null | undefined) {
+  const ids = (identifiers ?? []).map((x) => String(x).trim()).filter(Boolean);
+  if (!ids.length) return [] as string[];
+
+  const idList = ids.filter((x) => isCuid(x) || isUuid(x));
+  const nameList = ids.filter((x) => !idList.includes(x));
+
+  const rows = await prisma.brand.findMany({
+    where: {
+      OR: [
+        idList.length ? { id: { in: idList } } : undefined,
+        nameList.length ? { name: { in: nameList } } : undefined,
+      ].filter(Boolean) as any,
+    },
+    select: { id: true, name: true },
+  });
+
+  // Prefer DB names where we matched; include any raw names that didn’t match a DB row
+  const foundNames = new Set(rows.map((r) => r.name));
+  const names: string[] = [...rows.map((r) => r.name)];
+  for (const raw of nameList) {
+    if (!foundNames.has(raw)) names.push(raw);
+  }
+  return names;
 }
 
 export default async function EducationRequestDetail({
   params,
-}: { params: { id: string } }) {
+}: {
+  params: { id: string };
+}) {
   // Pull only fields that exist on your model
   const req = await prisma.educationRequest.findUnique({
     where: { id: params.id },
@@ -46,8 +78,9 @@ export default async function EducationRequestDetail({
       customerId: true,
       notes: true,
       status: true,
-      brandIds: true,          // String[]
-      educationTypes: true,    // EducationType[] (enum)
+      // IMPORTANT: your model uses `brands` (string[]), not `brandIds`
+      brands: true,
+      educationTypes: true, // enum[]
       customer: {
         select: {
           id: true,
@@ -69,19 +102,15 @@ export default async function EducationRequestDetail({
       <div className="card">
         <h1>Education Request</h1>
         <p className="small">Not found.</p>
-        <Link className="btn" href="/education/requests">Back to requests</Link>
+        <Link className="btn" href="/education/requests">
+          Back to requests
+        </Link>
       </div>
     );
   }
 
-  // Resolve brand names from Brand table
-  const brandRows = req.brandIds?.length
-    ? await prisma.brand.findMany({
-        where: { id: { in: req.brandIds } },
-        select: { id: true, name: true },
-      })
-    : [];
-  const brandNames = brandRows.map(b => b.name);
+  // Resolve brand names
+  const brandNames = await resolveBrandNames(req.brands);
 
   /** Create a booking using only fields that exist on EducationBooking.
    *  Extra fields are folded into the booking `notes`.
@@ -139,7 +168,9 @@ export default async function EducationRequestDetail({
             <h1>Education Request</h1>
             <div className="small muted">Received: {fmtDateTime(req.createdAt)}</div>
           </div>
-          <Link className="btn" href="/education/requests">Back</Link>
+          <Link className="btn" href="/education/requests">
+            Back
+          </Link>
         </div>
       </section>
 
@@ -194,7 +225,9 @@ export default async function EducationRequestDetail({
         {req.notes && (
           <div>
             <b>Request Notes</b>
-            <p className="small" style={{ marginTop: 6, whiteSpace: "pre-line" }}>{req.notes}</p>
+            <p className="small" style={{ marginTop: 6, whiteSpace: "pre-line" }}>
+              {req.notes}
+            </p>
           </div>
         )}
       </section>
@@ -230,7 +263,9 @@ export default async function EducationRequestDetail({
           </div>
 
           <div className="right">
-            <button className="primary" type="submit">Create Booking</button>
+            <button className="primary" type="submit">
+              Create Booking
+            </button>
           </div>
         </form>
       </section>
