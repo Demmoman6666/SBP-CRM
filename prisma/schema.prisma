@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -39,7 +40,7 @@ enum TargetMetric {
   NEW_CUSTOMERS
 }
 
-// NEW: Customer lifecycle/stage
+// Customer lifecycle/stage
 enum CustomerStage {
   LEAD
   APPOINTMENT_BOOKED
@@ -52,10 +53,9 @@ enum EducationRequestStatus {
   REQUESTED
   BOOKED
   CANCELLED
-  COMPLETED
 }
 
-// NEW: Education types to choose from
+// NEW: Education type multi-select
 enum EducationType {
   PERMANENT_COLOUR
   SEMI_PERMANENT_COLOUR
@@ -142,7 +142,7 @@ model Customer {
   notesLog             Note[]
   callLogs             CallLog[]
 
-  // Education relations
+  // NEW: education relations
   educationRequests    EducationRequest[]
   educationBookings    EducationBooking[]
 
@@ -412,7 +412,7 @@ model CallLogCompetitorBrand {
   @@index([brandId])
 }
 
-// ---------------- NEW: Education Requests & Bookings ----------------
+// ---------------- Education Requests & Bookings ----------------
 model EducationRequest {
   id           String                 @id @default(cuid())
   createdAt    DateTime               @default(now())
@@ -435,40 +435,40 @@ model EducationRequest {
   postCode     String?
   country      String?
 
-  // Data captured from the form
-  brands          String[]        @default([])    // names of brands requested
+  // Captured from the form
+  brands          String[]        @default([])
   educationTypes  EducationType[] @default([])
 
   notes        String?
 
-  // Optional 1:1 link to a created booking
-  booking      EducationBooking?
+  // 1:1 link to a created booking
+  booking      EducationBooking?  @relation("RequestBooking")
 
   @@index([customerId, createdAt])
   @@index([status])
 }
 
 model EducationBooking {
-  id            String         @id @default(cuid())
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  id             String            @id @default(cuid())
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
 
-  // Optional link back to the originating request
-  requestId     String?
-  request       EducationRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  // 1:1 back to the request — FK must be unique
+  requestId      String?           @unique
+  request        EducationRequest? @relation("RequestBooking", fields: [requestId], references: [id], onDelete: SetNull)
 
-  customerId    String
-  customer      Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
-  title         String?
-  startAt       DateTime?
-  endAt         DateTime?
-  location      String?
+  title          String?
+  startAt        DateTime?
+  endAt          DateTime?
+  location       String?
 
-  brand         String?
-  educationTypes EducationType[] @default([])
+  brand          String?
+  educationTypes EducationType[]   @default([])
 
-  notes         String?
+  notes          String?
 
   @@index([customerId, startAt])
 }
