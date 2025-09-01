@@ -210,6 +210,19 @@ export default function NewCustomerPage() {
             <div className="form-hint">Required</div>
           </div>
 
+          {/* NEW: Customer Stage */}
+          <div className="field">
+            <label>Customer Stage</label>
+            <select name="stage" defaultValue="LEAD">
+              <option value="LEAD">Lead</option>
+              <option value="APPOINTMENT_BOOKED">Appointment booked</option>
+              <option value="SAMPLING">Sampling</option>
+              <option value="CUSTOMER">Customer</option>
+            </select>
+            <div className="form-hint">Optional – defaults to Lead if not changed.</div>
+          </div>
+          <div className="field">{/* spacer to keep grid alignment */}</div>
+
           <div className="field">
             <label>Postcode</label>
             <input name="postCode" />
