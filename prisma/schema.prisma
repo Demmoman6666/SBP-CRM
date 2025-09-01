@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -26,7 +27,7 @@ enum Permission {
   VIEW_SETTINGS
 }
 
-// NEW: Targets enums
+// Targets enums
 enum TargetScope {
   COMPANY
   REP
@@ -37,6 +38,14 @@ enum TargetMetric {
   REVENUE
   ORDERS
   NEW_CUSTOMERS
+}
+
+// NEW: Customer lifecycle/stage
+enum CustomerStage {
+  LEAD
+  APPOINTMENT_BOOKED
+  SAMPLING
+  CUSTOMER
 }
 
 model User {
@@ -111,6 +120,9 @@ model Customer {
   openingHours         String?
   numberOfChairs       Int?
 
+  // NEW: lifecycle stage
+  stage                CustomerStage @default(LEAD)
+
   visits               Visit[]
   notesLog             Note[]
   callLogs             CallLog[]
@@ -125,6 +137,7 @@ model Customer {
 
   @@index([customerEmailAddress])
   @@index([salesRep])
+  @@index([stage])
 }
 
 model Visit {
@@ -201,6 +214,9 @@ model CallLog {
   outcome              String?
   staff                String?
 
+  // NEW: stage captured at the time of the call
+  stage                CustomerStage?
+
   followUpRequired     Boolean   @default(false)
   followUpAt           DateTime?
 
@@ -215,6 +231,7 @@ model CallLog {
 
   @@index([createdAt])
   @@index([isExistingCustomer, customerId])
+  @@index([stage])
 }
 
 model StockedBrand {
@@ -319,7 +336,7 @@ model WebhookLog {
   @@index([topic, createdAt])
 }
 
-// NEW: Targets model
+// Targets model
 model Target {
   id           String        @id @default(cuid())
   createdAt    DateTime      @default(now())
