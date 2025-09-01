@@ -5,62 +5,79 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function fmt(d?: Date | null) {
-  if (!d) return "-";
-  const x = new Date(d);
-  return x.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+function fmtDate(d?: Date | null) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  return dt.toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit" });
+}
+function fmtTime(s?: string | null) {
+  return s && s.trim() ? s : "—";
 }
 
 export default async function EducationBookedPage() {
   const items = await prisma.educationBooking.findMany({
-    orderBy: [{ scheduledAt: "asc" }, { createdAt: "desc" }],
+    orderBy: [
+      // Use the fields that exist on your model
+      { scheduledDate: "asc" },
+      { createdAt: "desc" },
+    ],
     include: {
-      customer: { select: { salonName: true, customerName: true, salesRep: true } },
-      request: { select: { id: true } },
+      customer: { select: { id: true, salonName: true, customerName: true, salesRep: true } },
+      request:  { select: { id: true } },
     },
+    take: 200,
   });
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <h1>Education Booked</h1>
-            <p className="small">All scheduled/created education bookings.</p>
-          </div>
-          <Link href="/education" className="btn">Back</Link>
-        </div>
+        <h1>Education Booked</h1>
+        <p className="small">Confirmed education sessions (upcoming first).</p>
       </section>
 
       <section className="card">
         <table className="table">
           <thead>
             <tr>
-              <th>When</th>
-              <th>Salon</th>
-              <th>Contact</th>
-              <th>Rep</th>
-              <th>Educator</th>
-              <th>Types</th>
-              <th>From Request</th>
+              <th style={{ width: 140 }}>Date</th>
+              <th style={{ width: 120 }}>Time</th>
+              <th>Customer</th>
+              <th style={{ width: 160 }}>Sales Rep</th>
+              <th style={{ width: 140 }}>Created</th>
+              <th style={{ width: 120 }}>Request</th>
+              <th style={{ width: 110 }}></th>
             </tr>
           </thead>
           <tbody>
-            {items.map(b => (
-              <tr key={b.id}>
-                <td className="small">{fmt(b.scheduledAt)}</td>
-                <td className="small">{b.customer?.salonName || "-"}</td>
-                <td className="small">{b.customer?.customerName || "-"}</td>
-                <td className="small">{b.customer?.salesRep || "-"}</td>
-                <td className="small">{b.educator || "—"}</td>
-                <td className="small">{b.educationTypes?.join(", ") || "—"}</td>
+            {items.map(bk => (
+              <tr key={bk.id}>
+                <td className="small">{fmtDate(bk.scheduledDate)}</td>
+                <td className="small">{fmtTime((bk as any).scheduledTime)}</td>
                 <td className="small">
-                  {b.request?.id ? <Link className="btn" href={`/education/requests/${b.request.id}`}>View</Link> : "—"}
+                  {bk.customer ? (
+                    <Link href={`/customers/${bk.customer.id}`}>
+                      {bk.customer.salonName} — {bk.customer.customerName}
+                    </Link>
+                  ) : "—"}
+                </td>
+                <td className="small">{bk.customer?.salesRep || "—"}</td>
+                <td className="small">{fmtDate(bk.createdAt)}</td>
+                <td className="small">
+                  {bk.request ? <Link href={`/education/requests/${bk.request.id}`}>View</Link> : "—"}
+                </td>
+                <td className="small">
+                  {bk.customer && (
+                    <Link className="btn" href={`/customers/${bk.customer.id}`}>Profile</Link>
+                  )}
                 </td>
               </tr>
             ))}
             {items.length === 0 && (
-              <tr><td colSpan={7}><div className="small muted">No bookings yet.</div></td></tr>
+              <tr>
+                <td colSpan={7}>
+                  <div className="small muted">No bookings yet.</div>
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
