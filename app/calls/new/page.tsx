@@ -165,12 +165,33 @@ export default function NewCallPage() {
       setError("Summary is required.");
       return;
     }
-    // If existing customer, ensure a suggestion was actually picked
+
     const existing = fd.get("isExistingCustomer") === "true";
+
+    // If existing customer, ensure a suggestion was actually picked
     if (existing && !fd.get("customerId")) {
       setError("Please pick a customer from the suggestions.");
       return;
     }
+
+    // If NOT existing, copy the typed customer value into 'customerName'
+    if (!existing) {
+      const typed = (fd.get("customer") || "").toString().trim();
+      if (!typed) {
+        setError("Please enter a customer/lead name.");
+        return;
+      }
+      fd.set("customerName", typed);
+    }
+
+    // Combine follow-up date + time into a single ISO string
+    const fDate = (fd.get("followUpAt") || "").toString().trim();
+    const fTime = (fd.get("followUpTime") || "").toString().trim();
+    if (fDate && fTime) {
+      fd.set("followUpAt", `${fDate}T${fTime}`);
+    }
+    // The server ignores followUpTime, so we can drop it
+    fd.delete("followUpTime");
 
     try {
       setSubmitting(true);
@@ -250,7 +271,7 @@ export default function NewCallPage() {
             <label>Customer*</label>
             <input
               name="customer"
-              placeholder={isExisting ? "Type to search" : "Type to search or free-type for new lead"}
+              placeholder={isExisting ? "Type to search" : "Type a name for this lead"}
               value={custTerm}
               onChange={(e) => {
                 setCustTerm(e.target.value);
@@ -352,6 +373,19 @@ export default function NewCallPage() {
           </div>
         </div>
 
+        {/* NEW: Customer Stage */}
+        <div className="field">
+          <label>Customer Stage</label>
+          <select name="stage" defaultValue="">
+            <option value="">— Select stage —</option>
+            <option value="LEAD">Lead</option>
+            <option value="APPOINTMENT_BOOKED">Appointment booked</option>
+            <option value="SAMPLING">Sampling</option>
+            <option value="CUSTOMER">Customer</option>
+          </select>
+          <div className="form-hint">Optional. If chosen for an existing customer, their profile stage will be updated.</div>
+        </div>
+
         {/* Times & duration */}
         <div className="grid grid-2">
           <div className="field">
@@ -394,6 +428,7 @@ export default function NewCallPage() {
               <input type="date" name="followUpAt" />
               <input type="time" name="followUpTime" />
             </div>
+            <div className="form-hint">If both are set, we’ll create a 30-minute calendar event.</div>
           </div>
         </div>
 
