@@ -48,6 +48,13 @@ enum CustomerStage {
   CUSTOMER
 }
 
+/* NEW: Education request status */
+enum EducationRequestStatus {
+  REQUESTED
+  BOOKED
+  CANCELLED
+}
+
 model User {
   id           String           @id @default(cuid())
   createdAt    DateTime         @default(now())
@@ -134,6 +141,10 @@ model Customer {
 
   // Orders relationship
   orders               Order[]
+
+  // NEW: Education relationships
+  educationRequests    EducationRequest[]
+  educationBookings    EducationBooking[]
 
   @@index([customerEmailAddress])
   @@index([salesRep])
@@ -391,4 +402,70 @@ model CallLogCompetitorBrand {
 
   @@unique([callLogId, brandId])
   @@index([brandId])
+}
+
+/* ---------------- NEW: Education Requests & Bookings ---------------- */
+
+model EducationRequest {
+  id             String                  @id @default(cuid())
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  // Link to customer
+  customerId     String
+  customer       Customer                @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  // Snapshot of details at request time
+  salonName      String?
+  contactName    String?
+  email          String?
+  telephone      String?
+  addressLine1   String?
+  addressLine2   String?
+  town           String?
+  county         String?
+  postCode       String?
+  country        String?
+
+  // What was requested
+  brandIds       String[]                @default([])
+  brandNames     String[]                @default([])
+  educationTypes String[]                @default([])
+  notes          String?
+
+  status         EducationRequestStatus  @default(REQUESTED)
+
+  // Optional booking created off the back of this request
+  bookingId      String?
+  booking        EducationBooking?       @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, status, createdAt])
+}
+
+model EducationBooking {
+  id             String            @id @default(cuid())
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  // Optional origin request
+  requestId      String?
+  request        EducationRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+
+  // Always link to customer
+  customerId     String
+  customer       Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  // When/where/who
+  scheduledAt    DateTime?
+  educator       String?
+  location       String?
+
+  // Copy of brands & types
+  brandIds       String[]          @default([])
+  educationTypes String[]          @default([])
+
+  notes          String?
+  status         String?           @default("BOOKED")
+
+  @@index([customerId, scheduledAt])
 }
