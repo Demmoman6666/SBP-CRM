@@ -79,6 +79,35 @@ function normalizeCountry(input: unknown): string | null {
   return map[up] || raw; // fall back to original text if not mapped
 }
 
+/* ---- Customer Stage normalizer (accepts many human variants) ---- */
+const STAGES = ["LEAD", "APPOINTMENT_BOOKED", "SAMPLING", "CUSTOMER"] as const;
+type Stage = typeof STAGES[number];
+
+function normalizeStage(input: unknown): Stage {
+  const s = String(input ?? "").trim().toUpperCase();
+  if (!s) return "LEAD";
+
+  // direct matches
+  if ((STAGES as readonly string[]).includes(s)) return s as Stage;
+
+  // accept common human variants
+  const map: Record<string, Stage> = {
+    "APPOINTMENT BOOKED": "APPOINTMENT_BOOKED",
+    "APPOINTMENT-BOOKED": "APPOINTMENT_BOOKED",
+    "APPT BOOKED": "APPOINTMENT_BOOKED",
+    "APPT_BOOKED": "APPOINTMENT_BOOKED",
+    "APPT": "APPOINTMENT_BOOKED",
+    "SAMPLE": "SAMPLING",
+    "SAMPLING": "SAMPLING",
+    "CUSTOMER": "CUSTOMER",
+    "CLIENT": "CUSTOMER",
+    "LEAD": "LEAD",
+    "PROSPECT": "LEAD",
+  };
+
+  return map[s] || "LEAD";
+}
+
 /* ------------------ POST /api/customers ------------------ */
 export async function POST(req: Request) {
   try {
@@ -97,9 +126,9 @@ export async function POST(req: Request) {
       town:                  (body.town ?? "") || null,
       county:                (body.county ?? "") || null,
       postCode:              (body.postCode ?? "") || null,
-      country:               normalizeCountry(body.country),          // ← NEW (normalized)
+      country:               normalizeCountry(body.country),          // normalized to ISO-2
       daysOpen:              (body.daysOpen ?? "") || null,
-      brandsInterestedIn:    (body.brandsInterestedIn ?? "") || null,
+      brandsInterestedIn:    (body.brandsInterestedIn ?? "") || null, // from hidden input (comma-separated)
       notes:                 (body.notes ?? "") || null,
       salesRep:              (body.salesRep ?? "").toString().trim(), // REQUIRED
       customerNumber:        (body.customerNumber ?? "") || null,
@@ -107,6 +136,9 @@ export async function POST(req: Request) {
       customerEmailAddress:  (body.customerEmailAddress ?? "") || null,
       openingHours:          (body.openingHours ?? "") || null,
       numberOfChairs:        toInt(body.numberOfChairs),
+
+      // ✅ NEW: persist stage (defaults to LEAD if not provided)
+      stage:                 normalizeStage(body.stage),
     };
 
     if (!data.salonName || !data.customerName || !data.addressLine1) {
@@ -142,7 +174,10 @@ export async function GET(req: Request) {
   const takeParam = Number(searchParams.get("take") || 20);
   const take = Math.min(Math.max(takeParam, 1), 50);
 
-  const where = q
+  const stageFilterRaw = searchParams.get("stage");
+  const stageFilter = stageFilterRaw ? normalizeStage(stageFilterRaw) : null;
+
+  const where: any = q
     ? {
         OR: [
           { salonName:            { contains: q, mode: "insensitive" as const } },
@@ -151,10 +186,14 @@ export async function GET(req: Request) {
           { town:                 { contains: q, mode: "insensitive" as const } },
           { county:               { contains: q, mode: "insensitive" as const } },
           { postCode:             { contains: q, mode: "insensitive" as const } },
-          { country:              { contains: q, mode: "insensitive" as const } }, // ← NEW
+          { country:              { contains: q, mode: "insensitive" as const } },
         ],
       }
     : {};
+
+  if (stageFilter) {
+    where.stage = stageFilter;
+  }
 
   const customers = await prisma.customer.findMany({
     where,
@@ -169,11 +208,12 @@ export async function GET(req: Request) {
       town: true,
       county: true,
       postCode: true,
-      country: true, // ← NEW
+      country: true,
       customerEmailAddress: true,
       customerNumber: true,
       customerTelephone: true,
       salesRep: true,
+      stage: true, // ✅ expose stage to the UI/autocomplete
     },
   });
 
