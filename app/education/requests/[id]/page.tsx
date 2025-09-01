@@ -25,7 +25,17 @@ export default async function EducationRequestDetail({
 }: { params: { id: string } }) {
   const req = await prisma.educationRequest.findUnique({
     where: { id: params.id },
-    include: {
+    select: {
+      id: true,
+      createdAt: true,
+      updatedAt: true,
+      customerId: true,
+      notes: true,
+      status: true,
+      // ⬇️ Ensure these are present for TS
+      brandNames: true,
+      educationTypes: true,
+      // relation
       customer: {
         select: {
           id: true,
@@ -52,7 +62,7 @@ export default async function EducationRequestDetail({
     );
   }
 
-  /** Create a booking using only fields that exist on your model.
+  /** Create a booking using only fields that exist on EducationBooking.
    *  Extra fields are folded into the booking `notes`.
    */
   async function createBooking(formData: FormData) {
@@ -63,7 +73,6 @@ export default async function EducationRequestDetail({
     const locationInput = String(formData.get("location") || "").trim();
     const extraNotes = String(formData.get("notes") || "").trim();
 
-    // Preserve request data in the booking notes too
     const lines: string[] = [];
 
     // From request itself
