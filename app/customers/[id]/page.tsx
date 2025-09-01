@@ -7,13 +7,7 @@ import RecentOrders from "./RecentOrders";
 import { formatDateTimeUK } from "@/lib/dates";
 
 const DOW: Array<"Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"> = [
-  "Mon",
-  "Tue",
-  "Wed",
-  "Thu",
-  "Fri",
-  "Sat",
-  "Sun",
+  "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
 ];
 
 type OpeningForDay = { open?: boolean; from?: string | null; to?: string | null };
@@ -140,7 +134,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     revalidatePath(`/customers/${customer.id}`);
   }
 
-  // Contact number: prefer telephone, fallback to "customerNumber" if that’s what you used historically
+  // Contact number: prefer telephone, fallback to "customerNumber"
   const contactNumber = customer.customerTelephone || customer.customerNumber || "-";
   const stageStyle = stageColor(customer.stage);
 
@@ -194,6 +188,16 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             >
               Edit
             </Link>
+
+            {/* NEW: Request Education button */}
+            <Link
+              href={`/education/requests/new?customerId=${customer.id}`}
+              className="btn"
+              style={{ padding: "6px 10px", borderRadius: 10, background: "#f3f4f6" }}
+            >
+              Request Education
+            </Link>
+
             <DeleteCustomerButton id={customer.id} />
           </div>
         </div>
@@ -219,7 +223,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             </p>
           </div>
 
-          {/* Salon meta + stage (also shown in pill above) */}
+          {/* Salon meta + stage */}
           <div>
             <b>Salon Information</b>
             <p className="small" style={{ marginTop: 6 }}>
