@@ -19,7 +19,7 @@ const DOW: Array<"Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"> = [
 type OpeningForDay = { open?: boolean; from?: string | null; to?: string | null };
 type OpeningHoursObj = Record<string, OpeningForDay>;
 
-/* Helpers */
+/* ---------------- helpers ---------------- */
 function addressLines(c: any): string[] {
   return [c.addressLine1, c.addressLine2, c.town, c.county, c.postCode].filter(Boolean);
 }
@@ -73,11 +73,43 @@ function renderOpeningHours(openingHours?: string | null) {
   );
 }
 
+/* ---------- stage helpers (label + color + normalization) ---------- */
+type Stage = "LEAD" | "APPOINTMENT_BOOKED" | "SAMPLING" | "CUSTOMER";
+
+function stageLabel(s?: string | null) {
+  switch ((s || "").toUpperCase()) {
+    case "APPOINTMENT_BOOKED": return "Appointment booked";
+    case "SAMPLING":           return "Sampling";
+    case "CUSTOMER":           return "Customer";
+    case "LEAD":
+    default:                   return "Lead";
+  }
+}
+function stageColor(s?: string | null) {
+  switch ((s || "").toUpperCase()) {
+    case "APPOINTMENT_BOOKED": return { bg: "#e0f2fe", fg: "#075985" }; // sky
+    case "SAMPLING":           return { bg: "#fef9c3", fg: "#854d0e" }; // amber
+    case "CUSTOMER":           return { bg: "#dcfce7", fg: "#065f46" }; // green
+    case "LEAD":
+    default:                   return { bg: "#f1f5f9", fg: "#334155" }; // slate
+  }
+}
+function normalizeStage(input: FormDataEntryValue | null): Stage {
+  const s = String(input ?? "").trim().toUpperCase();
+  if (!s) return "LEAD";
+  if (s === "LEAD") return "LEAD";
+  if (s === "CUSTOMER" || s === "CLIENT") return "CUSTOMER";
+  if (s === "SAMPLING" || s === "SAMPLE") return "SAMPLING";
+  if (s === "APPOINTMENT_BOOKED" || s === "APPOINTMENT BOOKED" || s === "APPT" || s === "APPT_BOOKED")
+    return "APPOINTMENT_BOOKED";
+  return "LEAD";
+}
+
 export default async function CustomerDetail({ params }: { params: { id: string } }) {
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
     include: {
-      visits: { orderBy: { date: "desc" } },                // kept for data consistency
+      visits: { orderBy: { date: "desc" } },
       notesLog: { orderBy: { createdAt: "desc" } },
       callLogs: { orderBy: { createdAt: "desc" } },
     },
@@ -85,7 +117,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
 
   if (!customer) return <div className="card">Not found.</div>;
 
-  /* Server action: Add Note */
+  /* -------- server action: Add Note -------- */
   async function addNote(formData: FormData) {
     "use server";
     const text = String(formData.get("text") || "");
@@ -97,8 +129,20 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     revalidatePath(`/customers/${customer.id}`);
   }
 
+  /* -------- server action: Update Stage -------- */
+  async function updateStage(formData: FormData) {
+    "use server";
+    const stage = normalizeStage(formData.get("stage"));
+    await prisma.customer.update({
+      where: { id: customer.id },
+      data: { stage },
+    });
+    revalidatePath(`/customers/${customer.id}`);
+  }
+
   // Contact number: prefer telephone, fallback to "customerNumber" if that’s what you used historically
   const contactNumber = customer.customerTelephone || customer.customerNumber || "-";
+  const stageStyle = stageColor(customer.stage);
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -106,9 +150,42 @@ export default async function CustomerDetail({ params }: { params: { id: string 
       <div className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
-            <h2>{customer.salonName}</h2>
-            {/* Removed contact name from under the title per request */}
+            <h2 style={{ marginBottom: 6 }}>{customer.salonName}</h2>
+
+            {/* Stage pill + quick updater */}
+            <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <span
+                className="small"
+                style={{
+                  background: stageStyle.bg,
+                  color: stageStyle.fg,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  fontWeight: 600,
+                }}
+              >
+                {stageLabel(customer.stage)}
+              </span>
+
+              <form action={updateStage} className="row" style={{ gap: 6, alignItems: "center" }}>
+                <select
+                  name="stage"
+                  defaultValue={(customer.stage as Stage) || "LEAD"}
+                  className="input"
+                  style={{ height: 30, padding: "2px 8px" }}
+                >
+                  <option value="LEAD">Lead</option>
+                  <option value="APPOINTMENT_BOOKED">Appointment booked</option>
+                  <option value="SAMPLING">Sampling</option>
+                  <option value="CUSTOMER">Customer</option>
+                </select>
+                <button className="btn" type="submit" style={{ height: 30 }}>
+                  Update
+                </button>
+              </form>
+            </div>
           </div>
+
           <div className="row" style={{ gap: 8 }}>
             <Link
               href={`/customers/${customer.id}/edit`}
@@ -142,10 +219,12 @@ export default async function CustomerDetail({ params }: { params: { id: string 
             </p>
           </div>
 
-          {/* Salon meta (renamed) */}
+          {/* Salon meta + stage (also shown in pill above) */}
           <div>
             <b>Salon Information</b>
             <p className="small" style={{ marginTop: 6 }}>
+              Stage: {stageLabel(customer.stage)}
+              <br />
               Chairs: {customer.numberOfChairs ?? "-"}
               <br />
               Brands Used: {customer.brandsInterestedIn || "-"}
