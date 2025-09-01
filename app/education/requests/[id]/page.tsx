@@ -52,46 +52,44 @@ export default async function EducationRequestDetail({
     );
   }
 
-  /* ---------- server action: create booking (no scheduledAt) ---------- */
+  /** Create a booking without fields that don't exist in your Prisma model.
+   * We fold date/time/educator/location into `notes` so nothing is lost.
+   */
   async function createBooking(formData: FormData) {
     "use server";
-    const educator = String(formData.get("educator") || "").trim() || null;
-    const location = String(formData.get("location") || "").trim() || null;
-
-    // Optional date/time inputs — we’ll stash these inside notes
     const date = String(formData.get("date") || "").trim();
     const time = String(formData.get("time") || "").trim();
+    const educatorInput = String(formData.get("educator") || "").trim();
+    const locationInput = String(formData.get("location") || "").trim();
     const extraNotes = String(formData.get("notes") || "").trim();
 
-    const scheduledSnippet =
-      date || time ? `Scheduled (requested): ${date || "—"} ${time || ""}`.trim() : "";
+    const lines: string[] = [];
+    if (date || time) lines.push(`Scheduled (requested): ${date || "—"} ${time || ""}`.trim());
+    if (educatorInput) lines.push(`Educator (requested): ${educatorInput}`);
+    if (locationInput) lines.push(`Location (requested): ${locationInput}`);
+    if (extraNotes) lines.push(extraNotes);
 
-    const combinedNotes = [req.notes || "", scheduledSnippet, extraNotes]
-      .filter(Boolean)
-      .join("\n\n");
+    const combinedNotes = [req.notes || "", ...lines].filter(Boolean).join("\n\n") || null;
 
-    // Create a booking WITHOUT scheduledAt (your model doesn’t have it yet)
+    // Create the booking with fields that DO exist
     await prisma.educationBooking.create({
       data: {
         requestId: req.id,
         customerId: req.customerId,
-        educator,
-        location,
-        // Arrays come across from the request
         brandIds: req.brandIds,
         brandNames: req.brandNames,
         educationTypes: req.educationTypes,
-        notes: combinedNotes || null,
+        notes: combinedNotes,
       },
     });
 
-    // Mark request as booked
+    // Update request status → BOOKED
     await prisma.educationRequest.update({
       where: { id: req.id },
       data: { status: "BOOKED" },
     });
 
-    // Refresh lists and go to Booked
+    // Refresh lists and redirect to Booked
     revalidatePath("/education/requests");
     revalidatePath("/education/booked");
     redirect("/education/booked");
@@ -165,7 +163,7 @@ export default async function EducationRequestDetail({
         )}
       </section>
 
-      {/* Booking form (no scheduledAt; date/time are saved into notes) */}
+      {/* Booking form — stores date/time/educator/location in notes */}
       <section className="card">
         <h3>Create Booking</h3>
         <form action={createBooking} className="grid" style={{ gap: 10 }}>
