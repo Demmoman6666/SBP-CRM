@@ -7,6 +7,27 @@ import { prisma } from "@/lib/prisma";
 import { createCalendarEvent } from "@/lib/google";
 import { getCurrentUser } from "@/lib/auth";
 
+// Accepted stage literals (must match Prisma enum)
+type Stage = "LEAD" | "APPOINTMENT_BOOKED" | "SAMPLING" | "CUSTOMER";
+
+function normalizeStage(input: unknown): Stage | null {
+  if (!input) return null;
+  const s = String(input).trim().toLowerCase().replace(/[_-]+/g, " ");
+  switch (s) {
+    case "lead":
+      return "LEAD";
+    case "appointment booked":
+    case "appointmentbooked":
+      return "APPOINTMENT_BOOKED";
+    case "sampling":
+      return "SAMPLING";
+    case "customer":
+      return "CUSTOMER";
+    default:
+      return null;
+  }
+}
+
 /* ---------------- calendar helper ---------------- */
 async function maybeCreateFollowUpEvent(saved: {
   id: string;
@@ -175,6 +196,9 @@ export async function POST(req: Request) {
       );
     }
 
+    // stage (optional, but validated)
+    const stageProvided = normalizeStage(body.stage ?? body.customerStage ?? body.stageValue);
+
     // if existing, we need a valid customerId (cuid)
     let customerId: string | null = null;
     if (isExisting) {
@@ -216,13 +240,14 @@ export async function POST(req: Request) {
       data: {
         isExistingCustomer: !!isExisting,
         customerId,
-        customerName: leadCustomerName,
+        customerName: leadCustomerName, // stores typed name for non-existing
         contactPhone: !isExisting && body.contactPhone ? String(body.contactPhone) : null,
         contactEmail: !isExisting && body.contactEmail ? String(body.contactEmail) : null,
         callType,
         summary,
         outcome,
         staff,
+        stage: stageProvided ?? undefined, // NEW: capture stage on the call
         followUpRequired: !!followUpAt,
         followUpAt,
         ...(clientLoggedAt && !isNaN(clientLoggedAt.getTime())
@@ -231,6 +256,14 @@ export async function POST(req: Request) {
       },
       select: { id: true, customerId: true },
     });
+
+    // If a stage was provided and this is an existing customer, update their current stage
+    if (stageProvided && customerId) {
+      await prisma.customer.update({
+        where: { id: customerId },
+        data: { stage: stageProvided },
+      });
+    }
 
     // After-save: try to create the Google Calendar event if applicable
     await maybeCreateFollowUpEvent({
@@ -271,6 +304,10 @@ export async function GET(req: Request) {
   const staff    = searchParams.get("staff") || undefined;
   const customerId = searchParams.get("customerId") || undefined;
 
+  // NEW: filter by stage if provided (accepts human or enum forms)
+  const stageParam = searchParams.get("stage");
+  const stageFilter = stageParam ? normalizeStage(stageParam) : null;
+
   const limit = Math.min(Math.max(Number(searchParams.get("limit") || 100), 1), 200);
 
   const where: any = { ...(customerId ? { customerId } : {}) };
@@ -283,6 +320,7 @@ export async function GET(req: Request) {
   if (callType) where.callType = callType;
   if (outcome)  where.outcome  = outcome;
   if (staff)    where.staff    = staff;
+  if (stageFilter) where.stage = stageFilter;
 
   const calls = await prisma.callLog.findMany({
     where,
