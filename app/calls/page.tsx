@@ -13,6 +13,8 @@ type CallRecord = {
   isExistingCustomer: boolean;
   customerId: string | null;
   summary: string | null;
+  /** ⬇️ include typed name for non-existing customers */
+  customerName: string | null;
   customer?: { salonName: string; customerName: string } | null;
 };
 
@@ -173,9 +175,9 @@ export default function CallsListPage() {
                 <td className="small">{dt(c.createdAt)}</td>
                 <td className="small">{c.staff || "—"}</td>
                 <td className="small">
-                  {c.isExistingCustomer && c.customer
-                    ? `${c.customer.salonName} — ${c.customer.customerName}`
-                    : "Lead"}
+                  {c.isExistingCustomer
+                    ? (c.customer?.salonName || c.customer?.customerName || "—")
+                    : (c.customerName || "Lead")}
                 </td>
                 <td className="small">{c.callType || "—"}</td>
                 <td className="small">{c.outcome || "—"}</td>
