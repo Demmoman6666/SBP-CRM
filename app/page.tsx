@@ -8,8 +8,10 @@ export default async function Home() {
   const role = me?.role ?? null;
 
   // Decide which tiles to show (adjust if you want stricter gating)
-  const canSeeSalesHub = true; // everyone
-  const canSeeReports = true;  // everyone (change to role !== "VIEWER" if you want)
+  const canSeeSalesHub   = true;              // everyone
+  const canSeeReports    = true;              // everyone (set to role !== "VIEWER" if you want)
+  const canSeeMarketing  = true;              // tweak to roles if needed
+  const canSeeEducation  = true;              // tweak to roles if needed
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -30,6 +32,22 @@ export default async function Home() {
           <Link href="/reports" className="action-tile">
             <div className="action-title">Reporting</div>
             <div className="action-sub">Call &amp; customer reporting</div>
+          </Link>
+        )}
+
+        {/* NEW: Marketing */}
+        {canSeeMarketing && (
+          <Link href="/marketing" className="action-tile">
+            <div className="action-title">Marketing</div>
+            <div className="action-sub">Campaigns, assets &amp; outreach</div>
+          </Link>
+        )}
+
+        {/* NEW: Education */}
+        {canSeeEducation && (
+          <Link href="/education" className="action-tile">
+            <div className="action-title">Education</div>
+            <div className="action-sub">Training, resources &amp; events</div>
           </Link>
         )}
       </section>
