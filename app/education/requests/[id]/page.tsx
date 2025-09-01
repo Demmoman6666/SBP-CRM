@@ -52,8 +52,8 @@ export default async function EducationRequestDetail({
     );
   }
 
-  /** Create a booking without fields that don't exist in your Prisma model.
-   * We fold date/time/educator/location into `notes` so nothing is lost.
+  /** Create a booking using only fields that exist on your model.
+   *  Extra fields are folded into the booking `notes`.
    */
   async function createBooking(formData: FormData) {
     "use server";
@@ -63,33 +63,37 @@ export default async function EducationRequestDetail({
     const locationInput = String(formData.get("location") || "").trim();
     const extraNotes = String(formData.get("notes") || "").trim();
 
+    // Preserve request data in the booking notes too
     const lines: string[] = [];
-    if (date || time) lines.push(`Scheduled (requested): ${date || "—"} ${time || ""}`.trim());
+
+    // From request itself
+    if (req.brandNames?.length) lines.push(`Brands: ${req.brandNames.join(", ")}`);
+    if (req.educationTypes?.length) lines.push(`Education Types: ${req.educationTypes.join(", ")}`);
+    if (req.notes) lines.push(`Request Notes: ${req.notes}`);
+
+    // From booking form
+    if (date || time) lines.push(`Scheduled (requested): ${[date, time].filter(Boolean).join(" ")}`);
     if (educatorInput) lines.push(`Educator (requested): ${educatorInput}`);
     if (locationInput) lines.push(`Location (requested): ${locationInput}`);
     if (extraNotes) lines.push(extraNotes);
 
-    const combinedNotes = [req.notes || "", ...lines].filter(Boolean).join("\n\n") || null;
+    const combinedNotes = lines.length ? lines.join("\n\n") : null;
 
-    // Create the booking with fields that DO exist
+    // ✅ Only pass columns that exist on EducationBooking
     await prisma.educationBooking.create({
       data: {
         requestId: req.id,
         customerId: req.customerId,
-        brandIds: req.brandIds,
-        brandNames: req.brandNames,
-        educationTypes: req.educationTypes,
         notes: combinedNotes,
       },
     });
 
-    // Update request status → BOOKED
+    // Mark request as BOOKED
     await prisma.educationRequest.update({
       where: { id: req.id },
       data: { status: "BOOKED" },
     });
 
-    // Refresh lists and redirect to Booked
     revalidatePath("/education/requests");
     revalidatePath("/education/booked");
     redirect("/education/booked");
