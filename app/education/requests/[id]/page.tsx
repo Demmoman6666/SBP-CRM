@@ -7,6 +7,7 @@ import { redirect } from "next/navigation";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+/* --- helpers --- */
 function fmtDateTime(d?: Date | null) {
   if (!d) return "—";
   const dt = new Date(d);
@@ -20,9 +21,22 @@ function fmtDateTime(d?: Date | null) {
   });
 }
 
+const EDU_LABELS: Record<string, string> = {
+  PERMANENT_COLOR: "Permanent colour",
+  SEMI_PERMANENT_COLOR: "Semi permanent hair colour",
+  CARE_RANGE: "Care Range",
+  STYLING_RANGE: "Styling Range",
+};
+
+function mapEduTypes(types?: string[] | null): string[] {
+  if (!types?.length) return [];
+  return types.map(t => EDU_LABELS[t] ?? t);
+}
+
 export default async function EducationRequestDetail({
   params,
 }: { params: { id: string } }) {
+  // Pull only fields that exist on your model
   const req = await prisma.educationRequest.findUnique({
     where: { id: params.id },
     select: {
@@ -32,10 +46,8 @@ export default async function EducationRequestDetail({
       customerId: true,
       notes: true,
       status: true,
-      // ⬇️ Ensure these are present for TS
-      brandNames: true,
-      educationTypes: true,
-      // relation
+      brandIds: true,          // String[]
+      educationTypes: true,    // EducationType[] (enum)
       customer: {
         select: {
           id: true,
@@ -62,11 +74,21 @@ export default async function EducationRequestDetail({
     );
   }
 
+  // Resolve brand names from Brand table
+  const brandRows = req.brandIds?.length
+    ? await prisma.brand.findMany({
+        where: { id: { in: req.brandIds } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const brandNames = brandRows.map(b => b.name);
+
   /** Create a booking using only fields that exist on EducationBooking.
    *  Extra fields are folded into the booking `notes`.
    */
   async function createBooking(formData: FormData) {
     "use server";
+
     const date = String(formData.get("date") || "").trim();
     const time = String(formData.get("time") || "").trim();
     const educatorInput = String(formData.get("educator") || "").trim();
@@ -76,8 +98,9 @@ export default async function EducationRequestDetail({
     const lines: string[] = [];
 
     // From request itself
-    if (req.brandNames?.length) lines.push(`Brands: ${req.brandNames.join(", ")}`);
-    if (req.educationTypes?.length) lines.push(`Education Types: ${req.educationTypes.join(", ")}`);
+    if (brandNames.length) lines.push(`Brands: ${brandNames.join(", ")}`);
+    const eduNice = mapEduTypes(req.educationTypes as any);
+    if (eduNice.length) lines.push(`Education Types: ${eduNice.join(", ")}`);
     if (req.notes) lines.push(`Request Notes: ${req.notes}`);
 
     // From booking form
@@ -88,7 +111,7 @@ export default async function EducationRequestDetail({
 
     const combinedNotes = lines.length ? lines.join("\n\n") : null;
 
-    // ✅ Only pass columns that exist on EducationBooking
+    // Only pass columns that exist on EducationBooking
     await prisma.educationBooking.create({
       data: {
         requestId: req.id,
@@ -156,14 +179,14 @@ export default async function EducationRequestDetail({
           <div>
             <b>Brands Requested</b>
             <p className="small" style={{ marginTop: 6 }}>
-              {req.brandNames?.length ? req.brandNames.join(", ") : "—"}
+              {brandNames.length ? brandNames.join(", ") : "—"}
             </p>
           </div>
 
           <div>
             <b>Education Types</b>
             <p className="small" style={{ marginTop: 6 }}>
-              {req.educationTypes?.length ? req.educationTypes.join(", ") : "—"}
+              {mapEduTypes(req.educationTypes as any).join(", ") || "—"}
             </p>
           </div>
         </div>
