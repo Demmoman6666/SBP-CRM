@@ -116,10 +116,8 @@ export default async function EducationRequestReviewPage({
       brands: true,            // string[]
       educationTypes: true,    // enum[]
       customerId: true,
-      // snapshot fields (if you captured them on create)
+      // snapshot (only keep what exists on your model)
       contactName: true,
-      contactEmail: true,
-      contactPhone: true,
 
       customer: {
         select: {
@@ -162,11 +160,11 @@ export default async function EducationRequestReviewPage({
     const scheduledDate = toDateAtLocal(dateStr || undefined, timeStr || undefined);
 
     // Persist booking
-    const booking = await prisma.educationBooking.create({
+    await prisma.educationBooking.create({
       data: {
         requestId: req.id,
         customerId: req.customerId,
-        scheduledDate,        // Date | null
+        scheduledDate,               // Date | null
         scheduledTime: timeStr || null,
         educator: educator || null,
         location: location || null,
@@ -200,8 +198,8 @@ export default async function EducationRequestReviewPage({
 
   const salon = req.customer?.salonName || "—";
   const contact = req.customer?.customerName || req.contactName || "—";
-  const phone = req.customer?.customerTelephone || req.contactPhone || "—";
-  const email = req.customer?.customerEmailAddress || req.contactEmail || "—";
+  const phone = req.customer?.customerTelephone || "—";
+  const email = req.customer?.customerEmailAddress || "—";
 
   const locationLine = [
     req.customer?.town,
