@@ -222,9 +222,9 @@ export async function POST(req: Request) {
     // allow client timestamp (not required)
     const clientLoggedAt = body.clientLoggedAt ? new Date(String(body.clientLoggedAt)) : null;
 
-    // if NOT existing, keep a small lead snapshot (optional)
+    // ✅ If NOT existing, capture the free-typed customer name from the "customer" input
     const leadCustomerName =
-      !isExisting && body.customerName ? String(body.customerName) : null;
+      !isExisting ? (String(body.customer ?? "").trim() || null) : null; // <-- FIXED
 
     // For existing customers, look up a display name to use as event title
     let displayCustomerName: string | null = leadCustomerName;
@@ -247,7 +247,7 @@ export async function POST(req: Request) {
         summary,
         outcome,
         staff,
-        stage: stageProvided ?? undefined, // NEW: capture stage on the call
+        stage: stageProvided ?? undefined, // capture stage on the call
         followUpRequired: !!followUpAt,
         followUpAt,
         ...(clientLoggedAt && !isNaN(clientLoggedAt.getTime())
@@ -304,7 +304,7 @@ export async function GET(req: Request) {
   const staff    = searchParams.get("staff") || undefined;
   const customerId = searchParams.get("customerId") || undefined;
 
-  // NEW: filter by stage if provided (accepts human or enum forms)
+  // filter by stage if provided (accepts human or enum forms)
   const stageParam = searchParams.get("stage");
   const stageFilter = stageParam ? normalizeStage(stageParam) : null;
 
