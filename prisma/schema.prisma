@@ -1,4 +1,3 @@
-// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -48,11 +47,20 @@ enum CustomerStage {
   CUSTOMER
 }
 
-/* NEW: Education request status */
+// NEW: Education request status
 enum EducationRequestStatus {
   REQUESTED
   BOOKED
   CANCELLED
+  COMPLETED
+}
+
+// NEW: Education types to choose from
+enum EducationType {
+  PERMANENT_COLOUR
+  SEMI_PERMANENT_COLOUR
+  CARE_RANGE
+  STYLING_RANGE
 }
 
 model User {
@@ -127,12 +135,16 @@ model Customer {
   openingHours         String?
   numberOfChairs       Int?
 
-  // NEW: lifecycle stage
+  // lifecycle stage
   stage                CustomerStage @default(LEAD)
 
   visits               Visit[]
   notesLog             Note[]
   callLogs             CallLog[]
+
+  // Education relations
+  educationRequests    EducationRequest[]
+  educationBookings    EducationBooking[]
 
   // Shopify sync fields
   shopifyCustomerId    String?   @unique
@@ -141,10 +153,6 @@ model Customer {
 
   // Orders relationship
   orders               Order[]
-
-  // NEW: Education relationships
-  educationRequests    EducationRequest[]
-  educationBookings    EducationBooking[]
 
   @@index([customerEmailAddress])
   @@index([salesRep])
@@ -225,7 +233,7 @@ model CallLog {
   outcome              String?
   staff                String?
 
-  // NEW: stage captured at the time of the call
+  // stage captured at the time of the call
   stage                CustomerStage?
 
   followUpRequired     Boolean   @default(false)
@@ -404,68 +412,63 @@ model CallLogCompetitorBrand {
   @@index([brandId])
 }
 
-/* ---------------- NEW: Education Requests & Bookings ---------------- */
-
+// ---------------- NEW: Education Requests & Bookings ----------------
 model EducationRequest {
-  id             String                  @id @default(cuid())
-  createdAt      DateTime                @default(now())
-  updatedAt      DateTime                @updatedAt
+  id           String                 @id @default(cuid())
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
 
-  // Link to customer
-  customerId     String
-  customer       Customer                @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId   String
+  customer     Customer               @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
-  // Snapshot of details at request time
-  salonName      String?
-  contactName    String?
-  email          String?
-  telephone      String?
-  addressLine1   String?
-  addressLine2   String?
-  town           String?
-  county         String?
-  postCode       String?
-  country        String?
+  status       EducationRequestStatus @default(REQUESTED)
 
-  // What was requested
-  brandIds       String[]                @default([])
-  brandNames     String[]                @default([])
-  educationTypes String[]                @default([])
-  notes          String?
+  // Snapshot of contact/location details at the time of request
+  salonName    String?
+  contactName  String?
+  phone        String?
+  email        String?
+  addressLine1 String?
+  addressLine2 String?
+  town         String?
+  county       String?
+  postCode     String?
+  country      String?
 
-  status         EducationRequestStatus  @default(REQUESTED)
+  // Data captured from the form
+  brands          String[]        @default([])    // names of brands requested
+  educationTypes  EducationType[] @default([])
 
-  // Optional booking created off the back of this request
-  bookingId      String?
-  booking        EducationBooking?       @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  notes        String?
 
-  @@index([customerId, status, createdAt])
+  // Optional 1:1 link to a created booking
+  booking      EducationBooking?
+
+  @@index([customerId, createdAt])
+  @@index([status])
 }
 
 model EducationBooking {
-  id             String            @id @default(cuid())
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  id            String         @id @default(cuid())
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
-  // Optional origin request
-  requestId      String?
-  request        EducationRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  // Optional link back to the originating request
+  requestId     String?
+  request       EducationRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
 
-  // Always link to customer
-  customerId     String
-  customer       Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId    String
+  customer      Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
-  // When/where/who
-  scheduledAt    DateTime?
-  educator       String?
-  location       String?
+  title         String?
+  startAt       DateTime?
+  endAt         DateTime?
+  location      String?
 
-  // Copy of brands & types
-  brandIds       String[]          @default([])
-  educationTypes String[]          @default([])
+  brand         String?
+  educationTypes EducationType[] @default([])
 
-  notes          String?
-  status         String?           @default("BOOKED")
+  notes         String?
 
-  @@index([customerId, scheduledAt])
+  @@index([customerId, startAt])
 }
