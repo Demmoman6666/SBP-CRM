@@ -5,34 +5,57 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function fmt(d?: Date | null) {
-  if (!d) return "-";
-  const x = new Date(d);
-  return x.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+/* --- helpers --- */
+function fmtDateTime(d?: Date | null) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  return dt.toLocaleString("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
-export default async function EducationRequestedPage({
-  searchParams,
-}: {
-  searchParams?: { rep?: string };
-}) {
-  const rep = (searchParams?.rep || "").trim();
+// Map your enum values to human labels (adjust if your enum differs)
+const EDU_LABELS: Record<string, string> = {
+  PERMANENT_COLOR: "Permanent colour",
+  SEMI_PERMANENT_COLOR: "Semi permanent hair colour",
+  CARE_RANGE: "Care Range",
+  STYLING_RANGE: "Styling Range",
+};
 
-  const requests = await prisma.educationRequest.findMany({
-    where: {
-      status: "REQUESTED",
-      ...(rep ? { customer: { salesRep: rep } } : {}),
-    },
+function prettyEdu(types?: string[] | null) {
+  if (!types?.length) return "—";
+  return types.map((t) => EDU_LABELS[t] ?? t).join(", ");
+}
+
+export default async function EducationRequestsPage() {
+  const rows = await prisma.educationRequest.findMany({
+    where: { status: "REQUESTED" }, // only requests that need review
     orderBy: { createdAt: "desc" },
-    include: {
-      customer: { select: { salonName: true, customerName: true, salesRep: true } },
+    select: {
+      id: true,
+      createdAt: true,
+      status: true,
+      notes: true,
+      // IMPORTANT: your model uses `brands` (string[])
+      brands: true,
+      // enum[] on your model
+      educationTypes: true,
+      // snapshot contact fields (optional on your model)
+      contactName: true,
+      // relation
+      customer: {
+        select: {
+          salonName: true,
+          customerName: true,
+          salesRep: true,
+        },
+      },
     },
-  });
-
-  // fetch reps for filter
-  const reps = await prisma.salesRep.findMany({
-    orderBy: { name: "asc" },
-    select: { id: true, name: true },
   });
 
   return (
@@ -41,62 +64,55 @@ export default async function EducationRequestedPage({
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <h1>Education Requested</h1>
-            <p className="small">Review incoming education requests and convert to bookings.</p>
+            <p className="small">Leads asking for training.</p>
           </div>
-          <Link href="/education" className="btn">Back</Link>
+          <Link className="btn" href="/education">
+            Back
+          </Link>
         </div>
-      </section>
-
-      {/* Filter by Sales Rep */}
-      <section className="card">
-        <form className="row" style={{ gap: 10, alignItems: "end" }}>
-          <div>
-            <label className="small">Sales Rep</label>
-            <select
-              name="rep"
-              defaultValue={rep}
-              onChange={(e) => {
-                const v = e.currentTarget.value;
-                const qs = new URLSearchParams(v ? { rep: v } : {});
-                window.location.search = qs.toString();
-              }}
-            >
-              <option value="">— Any —</option>
-              {reps.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
-            </select>
-          </div>
-        </form>
       </section>
 
       <section className="card">
         <table className="table">
           <thead>
             <tr>
-              <th>Requested</th>
+              <th style={{ width: 160 }}>Created</th>
               <th>Salon</th>
-              <th>Contact</th>
-              <th>Sales Rep</th>
+              <th style={{ width: 180 }}>Contact</th>
+              <th style={{ width: 160 }}>Sales Rep</th>
               <th>Brands</th>
-              <th>Types</th>
-              <th></th>
+              <th style={{ width: 220 }}>Education Types</th>
+              <th style={{ width: 120 }}></th>
             </tr>
           </thead>
           <tbody>
-            {requests.map((r) => (
+            {rows.map((r) => (
               <tr key={r.id}>
-                <td className="small">{fmt(r.createdAt)}</td>
-                <td className="small">{r.customer?.salonName || r.salonName || "-"}</td>
-                <td className="small">{r.customer?.customerName || r.contactName || "-"}</td>
-                <td className="small">{r.customer?.salesRep || "-"}</td>
-                <td className="small">{(r.brandNames?.length ? r.brandNames : r.brandIds)?.join(", ") || "—"}</td>
-                <td className="small">{r.educationTypes?.join(", ") || "—"}</td>
+                <td className="small">{fmtDateTime(r.createdAt)}</td>
+                <td className="small">
+                  {r.customer ? r.customer.salonName : "—"}
+                </td>
+                <td className="small">
+                  {r.customer?.customerName || r.contactName || "—"}
+                </td>
+                <td className="small">{r.customer?.salesRep || "—"}</td>
+                <td className="small">
+                  {r.brands?.length ? r.brands.join(", ") : "—"}
+                </td>
+                <td className="small">{prettyEdu(r.educationTypes)}</td>
                 <td className="right">
-                  <Link className="btn" href={`/education/requests/${r.id}`}>Review</Link>
+                  <Link className="btn" href={`/education/requests/${r.id}`}>
+                    Review
+                  </Link>
                 </td>
               </tr>
             ))}
-            {requests.length === 0 && (
-              <tr><td colSpan={7}><div className="small muted">No requests found.</div></td></tr>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={7}>
+                  <div className="small muted">No requests right now.</div>
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
