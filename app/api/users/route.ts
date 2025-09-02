@@ -1,89 +1,42 @@
 // app/api/users/route.ts
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Role, Permission } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import crypto from "crypto";
-import { cookies } from "next/headers";
+import { getCurrentUser } from "@/lib/auth";
 
-export const dynamic = "force-dynamic";
-
-const COOKIE_NAME = "sbp_session";
-type TokenPayload = { userId: string; exp: number };
-
-// ---------- token helpers (mirror middleware) ----------
-type BadReason = "NoCookie" | "BadFormat" | "BadToken" | "Expired";
-type TokenCheck =
-  | { ok: true; payload: TokenPayload }
-  | { ok: false; reason: BadReason };
-
-function verifyTokenVerbose(token?: string | null): TokenCheck {
-  if (!token) return { ok: false, reason: "NoCookie" };
-
-  const parts = token.split(".");
-  if (parts.length !== 2) return { ok: false, reason: "BadFormat" };
-  const [payloadB64url, sigB64url] = parts;
-
-  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(payloadB64url)
-    .digest("base64url");
-
-  if (expected !== sigB64url) return { ok: false, reason: "BadToken" };
-
-  try {
-    const payload = JSON.parse(
-      Buffer.from(payloadB64url, "base64url").toString()
-    ) as TokenPayload;
-
-    if (!payload?.userId || typeof payload.exp !== "number") {
-      return { ok: false, reason: "BadToken" };
-    }
-    if (payload.exp < Math.floor(Date.now() / 1000)) {
-      return { ok: false, reason: "Expired" };
-    }
-    return { ok: true, payload };
-  } catch {
-    return { ok: false, reason: "BadToken" };
-  }
-}
-
+/* ----------------------- helpers ----------------------- */
 async function requireAdmin() {
-  const tok = cookies().get(COOKIE_NAME)?.value;
-  const v = verifyTokenVerbose(tok);
-  if (!v.ok) {
-    const reason = "reason" in v ? v.reason : "BadToken";
-    return { error: NextResponse.json({ error: "Unauthorized", reason }, { status: 401 }) };
+  const me = await getCurrentUser();
+  if (!me) {
+    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   }
-
-  const me = await prisma.user.findUnique({
-    where: { id: v.payload.userId },
-    select: { role: true, isActive: true },
+  // Re-check from DB to ensure active + role
+  const dbUser = await prisma.user.findUnique({
+    where: { id: me.id },
+    select: { id: true, role: true, isActive: true },
   });
 
-  if (!me || !me.isActive || me.role !== "ADMIN") {
+  if (!dbUser || !dbUser.isActive || dbUser.role !== "ADMIN") {
     return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
   }
-  return { adminId: v.payload.userId };
+  return { adminId: dbUser.id };
 }
 
-// ---------- body helper ----------
 async function readBody(req: Request) {
-  const ct = req.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return await req.json();
+  const ct = (req.headers.get("content-type") || "").toLowerCase();
+  if (ct.includes("application/json")) return req.json();
   if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
     const fd = await req.formData();
     return Object.fromEntries(fd.entries());
   }
-  try {
-    return await req.json();
-  } catch {
-    return {};
-  }
+  try { return await req.json(); } catch { return {}; }
 }
 
-// ---------- GET /api/users (list) ----------
+/* ----------------------- GET /api/users ----------------------- */
 export async function GET() {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
@@ -106,7 +59,7 @@ export async function GET() {
   return NextResponse.json({ users });
 }
 
-// ---------- POST /api/users (create) ----------
+/* ----------------------- POST /api/users ----------------------- */
 export async function POST(req: Request) {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
@@ -131,7 +84,7 @@ export async function POST(req: Request) {
   };
   const role: Role = roleMap[roleInput] ?? Role.VIEWER;
 
-  // Optional permission overrides: accept `permissions` or `overrides` arrays of enum names.
+  // Optional permission overrides
   const rawPerms: any[] = Array.isArray(body.permissions)
     ? body.permissions
     : Array.isArray(body.overrides)
@@ -146,10 +99,16 @@ export async function POST(req: Request) {
   ) as Permission[];
 
   if (!fullName || !email || !password) {
-    return NextResponse.json({ error: "fullName, email and password are required" }, { status: 400 });
+    return NextResponse.json(
+      { error: "fullName, email and password are required" },
+      { status: 400 }
+    );
   }
   if (password.length < 8) {
-    return NextResponse.json({ error: "Password must be at least 8 characters" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Password must be at least 8 characters" },
+      { status: 400 }
+    );
   }
   if (typeof confirm === "string" && confirm !== password) {
     return NextResponse.json({ error: "Passwords do not match" }, { status: 400 });
