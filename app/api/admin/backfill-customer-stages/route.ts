@@ -4,60 +4,23 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import crypto from "crypto";
-import { cookies } from "next/headers";
-
-const COOKIE_NAME = "sbp_session";
-type TokenPayload = { userId: string; exp: number };
-
-/* ---- auth (same pattern you use in /api/users) ---- */
-type BadReason = "NoCookie" | "BadFormat" | "BadToken" | "Expired";
-type TokenCheck =
-  | { ok: true; payload: TokenPayload }
-  | { ok: false; reason: BadReason };
-
-function verifyTokenVerbose(token?: string | null): TokenCheck {
-  if (!token) return { ok: false, reason: "NoCookie" };
-
-  const parts = token.split(".");
-  if (parts.length !== 2) return { ok: false, reason: "BadFormat" };
-  const [payloadB64url, sigB64url] = parts;
-
-  const secret = process.env.AUTH_SECRET || "dev-insecure-secret-change-me";
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(payloadB64url)
-    .digest("base64url");
-  if (expected !== sigB64url) return { ok: false, reason: "BadToken" };
-
-  try {
-    const payload = JSON.parse(Buffer.from(payloadB64url, "base64url").toString()) as TokenPayload;
-    if (!payload?.userId || typeof payload.exp !== "number") return { ok: false, reason: "BadToken" };
-    if (payload.exp < Math.floor(Date.now() / 1000)) return { ok: false, reason: "Expired" };
-    return { ok: true, payload };
-  } catch {
-    return { ok: false, reason: "BadToken" };
-  }
-}
+import { getCurrentUser } from "@/lib/auth";
 
 async function requireAdmin() {
-  const tok = cookies().get(COOKIE_NAME)?.value;
-  const v = verifyTokenVerbose(tok);
-  if (!v.ok) {
-    const reason = "reason" in v ? v.reason : "BadToken";
-    return { error: NextResponse.json({ error: "Unauthorized", reason }, { status: 401 }) };
-  }
-  const me = await prisma.user.findUnique({
-    where: { id: v.payload.userId },
+  const me = await getCurrentUser();
+  if (!me) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+
+  const user = await prisma.user.findUnique({
+    where: { id: me.id },
     select: { role: true, isActive: true },
   });
-  if (!me || !me.isActive || me.role !== "ADMIN") {
+  if (!user?.isActive || user.role !== "ADMIN") {
     return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
   }
-  return { adminId: v.payload.userId };
+  return { adminId: me.id };
 }
 
-/* ---- GET = preview count (how many would be updated) ---- */
+/** GET = preview how many would change */
 export async function GET() {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
@@ -73,11 +36,10 @@ export async function GET() {
       )
   `);
 
-  const count = rows?.[0]?.count ?? 0;
-  return NextResponse.json({ wouldUpdate: count });
+  return NextResponse.json({ wouldUpdate: rows?.[0]?.count ?? 0 });
 }
 
-/* ---- POST = perform the backfill ---- */
+/** POST = perform the backfill */
 export async function POST() {
   const guard = await requireAdmin();
   if ("error" in guard) return guard.error;
