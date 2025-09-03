@@ -15,7 +15,10 @@ function fmt(d?: Date | null) {
     return new Date(d).toLocaleString("en-GB");
   }
 }
-
+function fmtTime(d?: Date | null) {
+  if (!d) return "—";
+  return new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
 function minsFrom(log: { durationMinutes?: number | null; startTime?: Date | null; endTime?: Date | null }) {
   if (typeof log.durationMinutes === "number" && !isNaN(log.durationMinutes)) {
     return Math.max(0, Math.round(log.durationMinutes));
@@ -30,7 +33,9 @@ function minsFrom(log: { durationMinutes?: number | null; startTime?: Date | nul
 export default async function CallLogViewPage({ params }: { params: { id: string } }) {
   const call = await prisma.callLog.findUnique({
     where: { id: params.id },
-    // No select: return all scalar fields we might have; relations aren’t needed for read-only
+    include: {
+      customer: { select: { salonName: true, customerName: true } }, // ← bring customer name(s)
+    },
   });
 
   if (!call) {
@@ -44,13 +49,24 @@ export default async function CallLogViewPage({ params }: { params: { id: string
 
   const duration = minsFrom(call as any);
 
+  // Derive booked like the report (works even if appointmentBooked flag wasn't set)
+  const apptBooked =
+    !!(call as any).appointmentBooked ||
+    (call as any).outcome === "Appointment booked" ||
+    (call as any).callType === "Booked Call" ||
+    (call as any).stage === "APPOINTMENT_BOOKED";
+
+  const customerLabel = call.isExistingCustomer
+    ? (call.customer?.salonName ?? call.customer?.customerName ?? "—")
+    : (call.customerName ?? "—");
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <h1 style={{ margin: 0 }}>Call</h1>
-            <div className="small muted">Logged: {fmt((call as any).createdAt)}</div>
+            <div className="small muted">Logged: {fmt(call.createdAt)}</div>
           </div>
           <Link href="/calls" className="btn">Back</Link>
         </div>
@@ -60,56 +76,48 @@ export default async function CallLogViewPage({ params }: { params: { id: string
         <div className="grid grid-2" style={{ gap: 12 }}>
           <div>
             <b>Sales Rep</b>
-            <p className="small" style={{ marginTop: 6 }}>{(call as any).staff || "—"}</p>
+            <p className="small" style={{ marginTop: 6 }}>{call.staff || "—"}</p>
           </div>
 
           <div>
             <b>Customer</b>
-            <p className="small" style={{ marginTop: 6 }}>
-              {(call as any).customerName || (call as any).salonName || "—"}
-            </p>
+            <p className="small" style={{ marginTop: 6 }}>{customerLabel}</p>
           </div>
 
           <div>
             <b>Type</b>
-            <p className="small" style={{ marginTop: 6 }}>{(call as any).callType || "—"}</p>
+            <p className="small" style={{ marginTop: 6 }}>{call.callType || "—"}</p>
           </div>
 
           <div>
             <b>Outcome</b>
-            <p className="small" style={{ marginTop: 6 }}>{(call as any).outcome || "—"}</p>
+            <p className="small" style={{ marginTop: 6 }}>{call.outcome || "—"}</p>
           </div>
 
-          {"stage" in call && (
-            <div>
-              <b>Stage</b>
-              <p className="small" style={{ marginTop: 6 }}>{(call as any).stage || "—"}</p>
-            </div>
-          )}
+          <div>
+            <b>Stage</b>
+            <p className="small" style={{ marginTop: 6 }}>{(call as any).stage || "—"}</p>
+          </div>
 
-          {"appointmentBooked" in call && (
-            <div>
-              <b>Appointment Booked</b>
-              <p className="small" style={{ marginTop: 6 }}>
-                {(call as any).appointmentBooked ? "Yes" : "No"}
-              </p>
-            </div>
-          )}
+          <div>
+            <b>Appointment Booked</b>
+            <p className="small" style={{ marginTop: 6 }}>{apptBooked ? "Yes" : "No"}</p>
+          </div>
 
           <div>
             <b>Start Time</b>
-            <p className="small" style={{ marginTop: 6 }}>{fmt((call as any).startTime)}</p>
+            <p className="small" style={{ marginTop: 6 }}>{fmtTime((call as any).startTime)}</p>
           </div>
 
           <div>
             <b>End Time</b>
-            <p className="small" style={{ marginTop: 6 }}>{fmt((call as any).endTime)}</p>
+            <p className="small" style={{ marginTop: 6 }}>{fmtTime((call as any).endTime)}</p>
           </div>
 
           <div>
             <b>Duration (mins)</b>
             <p className="small" style={{ marginTop: 6 }}>
-              {duration ?? ((call as any).durationMinutes ?? "—")}
+              {duration ?? (call as any).durationMinutes ?? "—"}
             </p>
           </div>
 
