@@ -192,9 +192,16 @@ export async function POST(req: Request) {
       customerId = candidate;
     }
 
+    // optional fields
     const callType = body.callType ? String(body.callType) : null;
     const outcome  = body.outcome ? String(body.outcome) : null;
     const followUpAt = parseFollowUp(body.followUpAt ?? body.followUp ?? body.followupAt);
+
+    // ✅ derive a consistent appointment flag for reports & the View page
+    const appointmentBooked =
+      outcome === "Appointment booked" ||
+      callType === "Booked Call" ||
+      stageProvided === "APPOINTMENT_BOOKED";
 
     // Use client-provided logged time as the anchor day if present, else now.
     const clientLoggedAtRaw = body.clientLoggedAt ? new Date(String(body.clientLoggedAt)) : null;
@@ -236,11 +243,13 @@ export async function POST(req: Request) {
         stage: stageProvided ?? undefined,
         followUpRequired: !!followUpAt,
         followUpAt,
-        // persist times as DateTime (matches Prisma)
+
+        // ✅ persist times & derived metrics
         startTime,
         endTime,
-        // and keep computed duration for reports
         durationMinutes,
+        appointmentBooked,
+
         ...(hasClientLoggedAt ? { createdAt: anchor } : {}),
       },
       select: { id: true, customerId: true },
