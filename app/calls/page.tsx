@@ -167,6 +167,8 @@ export default function CallsListPage() {
               <th style={{ width: 150 }}>Type</th>
               <th style={{ width: 190 }}>Outcome</th>
               <th>Summary</th>
+              {/* NEW: Actions column */}
+              <th style={{ width: 90, textAlign: "right" }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -182,10 +184,19 @@ export default function CallsListPage() {
                 <td className="small">{c.callType || "—"}</td>
                 <td className="small">{c.outcome || "—"}</td>
                 <td className="small">{c.summary || "—"}</td>
+                {/* NEW: View button */}
+                <td className="right">
+                  <Link href={`/calls/${c.id}`} className="btn">View</Link>
+                </td>
               </tr>
             ))}
             {calls.length === 0 && (
-              <tr><td colSpan={6}><div className="small muted">No results.</div></td></tr>
+              <tr>
+                {/* bumped colSpan by 1 to include Actions column */}
+                <td colSpan={7}>
+                  <div className="small muted">No results.</div>
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
