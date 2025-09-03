@@ -69,9 +69,9 @@ export default function CallReportPage() {
   const [repFilter, setRepFilter] = useState<string>(""); // "" = All reps
 
   useEffect(() => {
-    fetch("/api/sales-reps", { cache: "no-store" })
-      .then(r => r.json())
-      .then((list: Rep[]) => setReps(list ?? []))
+    fetch("/api/sales-reps", { cache: "no-store", credentials: "include" })
+      .then(r => (r.ok ? r.json() : []))
+      .then((list: Rep[]) => setReps(Array.isArray(list) ? list : []))
       .catch(() => setReps([]));
   }, []);
 
@@ -85,7 +85,10 @@ export default function CallReportPage() {
     try {
       const qs = new URLSearchParams({ from: f, to: t });
       if (staff) qs.set("staff", staff);
-      const res = await fetch(`/api/reports/calls?${qs.toString()}`, { cache: "no-store" });
+      const res = await fetch(`/api/reports/calls?${qs.toString()}`, {
+        cache: "no-store",
+        credentials: "include", // <-- ensure cookies go with the request
+      });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to load report");
       setData(json as Report);
@@ -137,7 +140,7 @@ export default function CallReportPage() {
 
   async function downloadCsv() {
     try {
-      const res = await fetch(csvHref, { cache: "no-store" });
+      const res = await fetch(csvHref, { cache: "no-store", credentials: "include" });
       const text = await res.text();
       const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
       const url = URL.createObjectURL(blob);
