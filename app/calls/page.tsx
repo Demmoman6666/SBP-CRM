@@ -16,6 +16,11 @@ type CallRecord = {
   /** ⬇️ include typed name for non-existing customers */
   customerName: string | null;
   customer?: { salonName: string; customerName: string } | null;
+
+  /** ⬇️ for duration column */
+  durationMinutes?: number | null;
+  startTime?: string | null;
+  endTime?: string | null;
 };
 
 type SalesRepLite = { id: string; name: string };
@@ -28,6 +33,21 @@ function dt(d: string | Date) {
 
 const CALL_TYPES = ["Cold Call", "Booked Call", "Booked Demo"] as const;
 const OUTCOMES   = ["Sale", "No Sale", "Appointment booked", "Demo Booked"] as const;
+
+// derive duration in minutes
+function minutesFor(c: CallRecord): number | null {
+  if (typeof c.durationMinutes === "number" && isFinite(c.durationMinutes)) {
+    return Math.max(0, Math.round(c.durationMinutes));
+  }
+  if (c.startTime && c.endTime) {
+    const s = new Date(c.startTime).getTime();
+    const e = new Date(c.endTime).getTime();
+    if (isFinite(s) && isFinite(e) && e > s) {
+      return Math.round((e - s) / 60000);
+    }
+  }
+  return null;
+}
 
 export default function CallsListPage() {
   const [calls, setCalls] = useState<CallRecord[]>([]);
@@ -166,37 +186,46 @@ export default function CallsListPage() {
               <th>Customer</th>
               <th style={{ width: 150 }}>Type</th>
               <th style={{ width: 190 }}>Outcome</th>
+              {/* NEW: Duration column */}
+              <th style={{ width: 140 }}>Duration (mins)</th>
               <th>Summary</th>
-              {/* NEW: Actions column */}
-              <th style={{ width: 90, textAlign: "right" }}>Actions</th>
+              {/* Symmetric Actions header */}
+              <th style={{ width: 110, textAlign: "right" }}>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {calls.map((c) => (
-              <tr key={c.id}>
-                <td className="small">{dt(c.createdAt)}</td>
-                <td className="small">{c.staff || "—"}</td>
-                <td className="small">
-                  {c.isExistingCustomer
-                    ? (c.customer?.salonName || c.customer?.customerName || "—")
-                    : (c.customerName || "Lead")}
-                </td>
-                <td className="small">{c.callType || "—"}</td>
-                <td className="small">{c.outcome || "—"}</td>
-                <td className="small">{c.summary || "—"}</td>
-                {/* NEW: View button */}
-                <td className="right">
-                  <Link href={`/calls/${c.id}`} className="btn">View</Link>
-                </td>
-              </tr>
-            ))}
+            {calls.map((c) => {
+              const dur = minutesFor(c);
+              return (
+                <tr key={c.id}>
+                  <td className="small">{dt(c.createdAt)}</td>
+                  <td className="small">{c.staff || "—"}</td>
+                  <td className="small">
+                    {c.isExistingCustomer
+                      ? (c.customer?.salonName || c.customer?.customerName || "—")
+                      : (c.customerName || "Lead")}
+                  </td>
+                  <td className="small">{c.callType || "—"}</td>
+                  <td className="small">{c.outcome || "—"}</td>
+                  {/* NEW: Duration value */}
+                  <td className="small">{dur ?? "—"}</td>
+                  <td className="small">{c.summary || "—"}</td>
+                  {/* Symmetric Actions cell */}
+                  <td style={{ width: 110, textAlign: "right" }}>
+                    <Link
+                      href={`/calls/${c.id}`}
+                      className="btn"
+                      style={{ padding: "4px 10px", height: 28, lineHeight: "20px", borderRadius: 999 }}
+                    >
+                      View
+                    </Link>
+                  </td>
+                </tr>
+              );
+            })}
             {calls.length === 0 && (
-              <tr>
-                {/* bumped colSpan by 1 to include Actions column */}
-                <td colSpan={7}>
-                  <div className="small muted">No results.</div>
-                </td>
-              </tr>
+              // colSpan updated for the new Duration + Actions columns (now 8 columns total)
+              <tr><td colSpan={8}><div className="small muted">No results.</div></td></tr>
             )}
           </tbody>
         </table>
