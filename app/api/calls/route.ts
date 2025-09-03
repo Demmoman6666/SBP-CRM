@@ -7,7 +7,6 @@ import { prisma } from "@/lib/prisma";
 import { createCalendarEvent } from "@/lib/google";
 import { getCurrentUser } from "@/lib/auth";
 
-// Accepted stage literals (must match Prisma enum)
 type Stage = "LEAD" | "APPOINTMENT_BOOKED" | "SAMPLING" | "CUSTOMER";
 
 function normalizeStage(input: unknown): Stage | null {
@@ -35,27 +34,17 @@ async function maybeCreateFollowUpEvent(saved: {
     if (!saved.followUpRequired || !saved.followUpAt) return;
 
     const me = await getCurrentUser();
-    if (!me) {
-      console.log("[calendar] skip: no authenticated user");
-      return;
-    }
+    if (!me) return;
 
     const user = await prisma.user.findUnique({
       where: { id: me.id },
       select: {
-        id: true,
-        fullName: true,
-        email: true,
-        googleAccessToken: true,
-        googleRefreshToken: true,
-        googleTokenExpiresAt: true,
-        googleCalendarId: true,
+        id: true, fullName: true, email: true,
+        googleAccessToken: true, googleRefreshToken: true,
+        googleTokenExpiresAt: true, googleCalendarId: true,
       },
     });
-    if (!user?.googleAccessToken) {
-      console.log("[calendar] skip: user has not connected Google", { userId: me.id });
-      return;
-    }
+    if (!user?.googleAccessToken) return;
 
     const start = new Date(saved.followUpAt);
     const end = new Date(start.getTime() + 30 * 60 * 1000);
@@ -65,24 +54,13 @@ async function maybeCreateFollowUpEvent(saved: {
       (saved.customerName ? `Customer: ${saved.customerName}\n` : "") +
       (saved.summary ? `\nNotes:\n${saved.summary}` : "");
 
-    console.log("[calendar] creating event", {
-      userId: me.id,
-      startIso: start.toISOString(),
-      endIso: end.toISOString(),
-      title,
-    });
-
     await createCalendarEvent(me.id, {
       summary: title,
       description,
       startIso: start.toISOString(),
       endIso: end.toISOString(),
-      attendees: user.email
-        ? [{ email: user.email, displayName: user.fullName || undefined }]
-        : [],
+      attendees: user.email ? [{ email: user.email, displayName: user.fullName || undefined }] : [],
     });
-
-    console.log("[calendar] event created for call", saved.id);
   } catch (err) {
     console.error("Calendar event create failed (non-fatal):", err);
   }
@@ -91,7 +69,6 @@ async function maybeCreateFollowUpEvent(saved: {
 /* ---------------- helpers ---------------- */
 async function readBody(req: Request) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
-
   if (ct.includes("application/json")) return req.json();
   if (ct.includes("multipart/form-data")) {
     const fd = await req.formData();
@@ -101,12 +78,8 @@ async function readBody(req: Request) {
     const text = await req.text();
     return Object.fromEntries(new URLSearchParams(text));
   }
-
   try { return await req.json(); } catch {}
-  try {
-    const text = await req.text();
-    return Object.fromEntries(new URLSearchParams(text));
-  } catch {}
+  try { const text = await req.text(); return Object.fromEntries(new URLSearchParams(text)); } catch {}
   return {};
 }
 
@@ -118,7 +91,7 @@ const toBool = (v: unknown) => {
 
 const isCuid = (s: string) => /^c[a-z0-9]{24,}$/i.test(s);
 
-/** Accepts common inputs:
+/** Accepts:
  *  - 2025-08-29T21:02
  *  - 29/08/2025 21:02
  *  - 29/08/2025, 21:02
@@ -127,10 +100,8 @@ const isCuid = (s: string) => /^c[a-z0-9]{24,}$/i.test(s);
 function parseFollowUp(val: unknown): Date | null {
   if (!val) return null;
   const raw = String(val).trim();
-
   const d1 = new Date(raw);
   if (!isNaN(d1.getTime())) return d1;
-
   const m = raw.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})(?:[ ,T]+(\d{2}):(\d{2}))?$/);
   if (m) {
     const [, dd, mm, yyyy, hh = "00", min = "00"] = m;
@@ -141,7 +112,6 @@ function parseFollowUp(val: unknown): Date | null {
   return null;
 }
 
-/* date filter helpers for GET */
 function parseDateStart(raw?: string | null): Date | null {
   if (!raw) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(`${raw}T00:00:00`);
@@ -164,65 +134,52 @@ function hhmmToMinutes(v: unknown): number {
   if (!Number.isFinite(h) || !Number.isFinite(min)) return NaN;
   return h * 60 + min;
 }
+/* Combine an anchor date with HH:mm to a Date */
+function combineDateTime(anchor: Date, hhmm: string): Date {
+  const [hh, mm] = hhmm.split(":").map((n) => Number(n));
+  const d = new Date(anchor);
+  d.setHours(hh || 0, mm || 0, 0, 0);
+  return d;
+}
 
 /* --------------- POST /api/calls --------------- */
 export async function POST(req: Request) {
   try {
     const body: any = await readBody(req);
 
-    // required: existing? (yes/no)
-    const isExisting =
-      toBool(body.isExistingCustomer ?? body.existingCustomer ?? body.existing);
+    const isExisting = toBool(body.isExistingCustomer ?? body.existingCustomer ?? body.existing);
     if (isExisting === null) {
-      return NextResponse.json(
-        { error: "Please choose if this is an existing customer." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Please choose if this is an existing customer." }, { status: 400 });
     }
 
-    // required: sales rep (staff)
     const staff = String(body.salesRep ?? body.staff ?? "").trim();
     if (!staff) {
-      return NextResponse.json(
-        { error: "Sales Rep is required." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Sales Rep is required." }, { status: 400 });
     }
 
-    // required: summary (notes)
     const summary = String(body.summary ?? "").trim();
     if (!summary) {
-      return NextResponse.json(
-        { error: "Summary is required." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Summary is required." }, { status: 400 });
     }
 
     // required times + compute duration (allow across midnight)
     const startHHMM = String(body.startTime ?? body.start ?? "").trim();
     const endHHMM   = String(body.endTime ?? body.finishTime ?? body.finish ?? "").trim();
     if (!startHHMM || !endHHMM) {
-      return NextResponse.json(
-        { error: "Start Time and Finish Time are required." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Start Time and Finish Time are required." }, { status: 400 });
     }
     const sMin = hhmmToMinutes(startHHMM);
     const eMin = hhmmToMinutes(endHHMM);
     if (!Number.isFinite(sMin) || !Number.isFinite(eMin)) {
-      return NextResponse.json(
-        { error: "Invalid Start/Finish time." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Invalid Start/Finish time." }, { status: 400 });
     }
     let durationMinutes = eMin - sMin;
     if (durationMinutes <= 0) durationMinutes += 24 * 60; // wrap past midnight
     durationMinutes = Math.max(1, Math.round(durationMinutes));
 
-    // stage (optional, but validated)
     const stageProvided = normalizeStage(body.stage ?? body.customerStage ?? body.stageValue);
 
-    // if existing, we need a valid customerId (cuid)
+    // existing customer must have valid id
     let customerId: string | null = null;
     if (isExisting) {
       const candidate = String(body.customerId ?? body.customer ?? "").trim();
@@ -235,21 +192,27 @@ export async function POST(req: Request) {
       customerId = candidate;
     }
 
-    // optional fields
     const callType = body.callType ? String(body.callType) : null;
-    const outcome = body.outcome ? String(body.outcome) : null;
-    const followUpAt = parseFollowUp(
-      body.followUpAt ?? body.followUp ?? body.followupAt
-    );
+    const outcome  = body.outcome ? String(body.outcome) : null;
+    const followUpAt = parseFollowUp(body.followUpAt ?? body.followUp ?? body.followupAt);
 
-    // allow client timestamp (not required)
-    const clientLoggedAt = body.clientLoggedAt ? new Date(String(body.clientLoggedAt)) : null;
+    // Use client-provided logged time as the anchor day if present, else now.
+    const clientLoggedAtRaw = body.clientLoggedAt ? new Date(String(body.clientLoggedAt)) : null;
+    const hasClientLoggedAt = !!(clientLoggedAtRaw && !isNaN(clientLoggedAtRaw.getTime()));
+    const anchor = hasClientLoggedAt ? clientLoggedAtRaw! : new Date();
 
-    // If NOT existing, capture the free-typed customer name from "customer"
-    const leadCustomerName =
-      !isExisting ? (String(body.customer ?? "").trim() || null) : null;
+    // Build DateTime values for start/end from HH:mm + anchor day
+    const startTime = combineDateTime(anchor, startHHMM);
+    let endTime = combineDateTime(anchor, endHHMM);
+    if (endTime <= startTime) {
+      // across midnight -> next day
+      endTime = new Date(endTime.getTime() + 24 * 60 * 60 * 1000);
+    }
 
-    // For existing customers, look up a display name to use as event title
+    // For non-existing, capture the free-typed customer name
+    const leadCustomerName = !isExisting ? (String(body.customer ?? "").trim() || null) : null;
+
+    // Lookup display name for existing customer (nice for calendar)
     let displayCustomerName: string | null = leadCustomerName;
     if (isExisting && customerId) {
       const cust = await prisma.customer.findUnique({
@@ -273,19 +236,16 @@ export async function POST(req: Request) {
         stage: stageProvided ?? undefined,
         followUpRequired: !!followUpAt,
         followUpAt,
-        // ✅ persist times so the View page can show them
-        startTime: startHHMM,
-        endTime: endHHMM,
-        // ✅ and persist computed duration for reports
+        // persist times as DateTime (matches Prisma)
+        startTime,
+        endTime,
+        // and keep computed duration for reports
         durationMinutes,
-        ...(clientLoggedAt && !isNaN(clientLoggedAt.getTime())
-          ? { createdAt: clientLoggedAt }
-          : {}),
+        ...(hasClientLoggedAt ? { createdAt: anchor } : {}),
       },
       select: { id: true, customerId: true },
     });
 
-    // If a stage was provided and this is an existing customer, update their current stage
     if (stageProvided && customerId) {
       await prisma.customer.update({
         where: { id: customerId },
@@ -293,7 +253,6 @@ export async function POST(req: Request) {
       });
     }
 
-    // After-save: try to create the Google Calendar event if applicable
     await maybeCreateFollowUpEvent({
       id: created.id,
       summary,
@@ -313,10 +272,7 @@ export async function POST(req: Request) {
     );
   } catch (err: any) {
     console.error("Create call error:", err);
-    return NextResponse.json(
-      { error: err?.message ?? "Internal error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err?.message ?? "Internal error" }, { status: 500 });
   }
 }
 
@@ -327,36 +283,34 @@ export async function GET(req: Request) {
   const from = parseDateStart(searchParams.get("from"));
   const to   = parseDateEnd(searchParams.get("to"));
 
-  const callType = searchParams.get("callType") || undefined;
-  const outcome  = searchParams.get("outcome") || undefined;
-  const staff    = searchParams.get("staff") || undefined;
+  const callType   = searchParams.get("callType") || undefined;
+  const outcome    = searchParams.get("outcome") || undefined;
+  const staff      = searchParams.get("staff") || undefined;
   const customerId = searchParams.get("customerId") || undefined;
 
-  // filter by stage if provided (accepts human or enum forms)
-  const stageParam = searchParams.get("stage");
+  const stageParam  = searchParams.get("stage");
   const stageFilter = stageParam ? normalizeStage(stageParam) : null;
 
   const limit = Math.min(Math.max(Number(searchParams.get("limit") || 100), 1), 200);
 
   const where: any = { ...(customerId ? { customerId } : {}) };
-
   if (from || to) {
     where.createdAt = {};
     if (from) where.createdAt.gte = from;
     if (to)   where.createdAt.lte = to;
   }
-  if (callType) where.callType = callType;
-  if (outcome)  where.outcome  = outcome;
-  if (staff)    where.staff    = staff;
-  if (stageFilter) where.stage = stageFilter;
+  if (callType)   where.callType = callType;
+  if (outcome)    where.outcome  = outcome;
+  if (staff)      where.staff    = staff;
+  if (stageFilter) where.stage   = stageFilter;
 
   const calls = await prisma.callLog.findMany({
     where,
     orderBy: { createdAt: "desc" },
     take: limit,
     include: {
-      customer: { select: { salonName: true, customerName: true } }
-    }
+      customer: { select: { salonName: true, customerName: true } },
+    },
   });
 
   return NextResponse.json(calls);
