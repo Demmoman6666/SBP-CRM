@@ -31,8 +31,8 @@ function normalizeStage(input: unknown): Stage | null {
 /* ---------------- calendar helper ---------------- */
 async function maybeCreateFollowUpEvent(saved: {
   id: string;
-  summary: string | null;        // notes from the call
-  customerName: string | null;   // display name for the event
+  summary: string | null;
+  customerName: string | null;
   followUpRequired: boolean;
   followUpAt: Date | null;
 }) {
@@ -63,7 +63,7 @@ async function maybeCreateFollowUpEvent(saved: {
     }
 
     const start = new Date(saved.followUpAt);
-    const end = new Date(start.getTime() + 30 * 60 * 1000); // 30 minutes
+    const end = new Date(start.getTime() + 30 * 60 * 1000);
 
     const title = `Follow-up: ${saved.customerName ?? "Customer"}`;
     const description =
@@ -107,7 +107,6 @@ async function readBody(req: Request) {
     return Object.fromEntries(new URLSearchParams(text));
   }
 
-  // fallbacks
   try { return await req.json(); } catch {}
   try {
     const text = await req.text();
@@ -134,11 +133,9 @@ function parseFollowUp(val: unknown): Date | null {
   if (!val) return null;
   const raw = String(val).trim();
 
-  // try native first
   const d1 = new Date(raw);
   if (!isNaN(d1.getTime())) return d1;
 
-  // try dd/mm/yyyy hh:mm
   const m = raw.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})(?:[ ,T]+(\d{2}):(\d{2}))?$/);
   if (m) {
     const [, dd, mm, yyyy, hh = "00", min = "00"] = m;
@@ -161,6 +158,16 @@ function parseDateEnd(raw?: string | null): Date | null {
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(`${raw}T23:59:59.999`);
   const d = new Date(raw);
   return isNaN(d.getTime()) ? null : d;
+}
+
+/* HH:mm -> minutes since midnight */
+function hhmmToMinutes(v: unknown): number {
+  const s = String(v ?? "").trim();
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (!m) return NaN;
+  const h = Number(m[1]), min = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(min)) return NaN;
+  return h * 60 + min;
 }
 
 /* --------------- POST /api/calls --------------- */
@@ -196,6 +203,27 @@ export async function POST(req: Request) {
       );
     }
 
+    // NEW: required times + compute duration (allow across midnight)
+    const startHHMM = String(body.startTime ?? body.start ?? "").trim();
+    const endHHMM   = String(body.endTime ?? body.finishTime ?? body.finish ?? "").trim();
+    if (!startHHMM || !endHHMM) {
+      return NextResponse.json(
+        { error: "Start Time and Finish Time are required." },
+        { status: 400 }
+      );
+    }
+    const sMin = hhmmToMinutes(startHHMM);
+    const eMin = hhmmToMinutes(endHHMM);
+    if (!Number.isFinite(sMin) || !Number.isFinite(eMin)) {
+      return NextResponse.json(
+        { error: "Invalid Start/Finish time." },
+        { status: 400 }
+      );
+    }
+    let durationMinutes = eMin - sMin;
+    if (durationMinutes <= 0) durationMinutes += 24 * 60; // wrap past midnight
+    durationMinutes = Math.max(1, Math.round(durationMinutes));
+
     // stage (optional, but validated)
     const stageProvided = normalizeStage(body.stage ?? body.customerStage ?? body.stageValue);
 
@@ -222,9 +250,9 @@ export async function POST(req: Request) {
     // allow client timestamp (not required)
     const clientLoggedAt = body.clientLoggedAt ? new Date(String(body.clientLoggedAt)) : null;
 
-    // ✅ If NOT existing, capture the free-typed customer name from the "customer" input
+    // If NOT existing, capture the free-typed customer name from "customer"
     const leadCustomerName =
-      !isExisting ? (String(body.customer ?? "").trim() || null) : null; // <-- FIXED
+      !isExisting ? (String(body.customer ?? "").trim() || null) : null;
 
     // For existing customers, look up a display name to use as event title
     let displayCustomerName: string | null = leadCustomerName;
@@ -240,16 +268,17 @@ export async function POST(req: Request) {
       data: {
         isExistingCustomer: !!isExisting,
         customerId,
-        customerName: leadCustomerName, // stores typed name for non-existing
+        customerName: leadCustomerName,
         contactPhone: !isExisting && body.contactPhone ? String(body.contactPhone) : null,
         contactEmail: !isExisting && body.contactEmail ? String(body.contactEmail) : null,
         callType,
         summary,
         outcome,
         staff,
-        stage: stageProvided ?? undefined, // capture stage on the call
+        stage: stageProvided ?? undefined,
         followUpRequired: !!followUpAt,
         followUpAt,
+        durationMinutes, // ✅ ensure reports can sum/average duration
         ...(clientLoggedAt && !isNaN(clientLoggedAt.getTime())
           ? { createdAt: clientLoggedAt }
           : {}),
@@ -268,8 +297,8 @@ export async function POST(req: Request) {
     // After-save: try to create the Google Calendar event if applicable
     await maybeCreateFollowUpEvent({
       id: created.id,
-      summary, // notes
-      customerName: displayCustomerName, // title source
+      summary,
+      customerName: displayCustomerName,
       followUpRequired: !!followUpAt,
       followUpAt,
     });
