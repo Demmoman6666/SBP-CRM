@@ -14,17 +14,12 @@ function normalizeStage(input: unknown): Stage | null {
   if (!input) return null;
   const s = String(input).trim().toLowerCase().replace(/[_-]+/g, " ");
   switch (s) {
-    case "lead":
-      return "LEAD";
+    case "lead": return "LEAD";
     case "appointment booked":
-    case "appointmentbooked":
-      return "APPOINTMENT_BOOKED";
-    case "sampling":
-      return "SAMPLING";
-    case "customer":
-      return "CUSTOMER";
-    default:
-      return null;
+    case "appointmentbooked": return "APPOINTMENT_BOOKED";
+    case "sampling": return "SAMPLING";
+    case "customer": return "CUSTOMER";
+    default: return null;
   }
 }
 
@@ -203,7 +198,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // NEW: required times + compute duration (allow across midnight)
+    // required times + compute duration (allow across midnight)
     const startHHMM = String(body.startTime ?? body.start ?? "").trim();
     const endHHMM   = String(body.endTime ?? body.finishTime ?? body.finish ?? "").trim();
     if (!startHHMM || !endHHMM) {
@@ -278,7 +273,11 @@ export async function POST(req: Request) {
         stage: stageProvided ?? undefined,
         followUpRequired: !!followUpAt,
         followUpAt,
-        durationMinutes, // ✅ ensure reports can sum/average duration
+        // ✅ persist times so the View page can show them
+        startTime: startHHMM,
+        endTime: endHHMM,
+        // ✅ and persist computed duration for reports
+        durationMinutes,
         ...(clientLoggedAt && !isNaN(clientLoggedAt.getTime())
           ? { createdAt: clientLoggedAt }
           : {}),
@@ -356,9 +355,7 @@ export async function GET(req: Request) {
     orderBy: { createdAt: "desc" },
     take: limit,
     include: {
-      customer: {
-        select: { salonName: true, customerName: true }
-      }
+      customer: { select: { salonName: true, customerName: true } }
     }
   });
 
