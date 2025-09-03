@@ -166,6 +166,14 @@ export default function NewCallPage() {
       return;
     }
 
+    // NEW: require start & finish times
+    const s = String(fd.get("startTime") || "").trim();
+    const f = String(fd.get("endTime") || "").trim();
+    if (!s || !f) {
+      setError("Start Time and Finish Time are required.");
+      return;
+    }
+
     const existing = fd.get("isExistingCustomer") === "true";
 
     // If existing customer, ensure a suggestion was actually picked
@@ -190,8 +198,7 @@ export default function NewCallPage() {
     if (fDate && fTime) {
       fd.set("followUpAt", `${fDate}T${fTime}`);
     }
-    // The server ignores followUpTime, so we can drop it
-    fd.delete("followUpTime");
+    fd.delete("followUpTime"); // server doesn't use it
 
     try {
       setSubmitting(true);
@@ -386,20 +393,32 @@ export default function NewCallPage() {
           <div className="form-hint">Optional. If chosen for an existing customer, their profile stage will be updated.</div>
         </div>
 
-        {/* Times & duration */}
+        {/* Times & duration (NOW REQUIRED) */}
         <div className="grid grid-2">
           <div className="field">
-            <label>Start Time</label>
+            <label>Start Time <span className="small muted">(required)</span></label>
             <div className="row" style={{ gap: 8 }}>
-              <input type="time" name="startTime" value={start} onChange={(e) => setStart(e.target.value)} />
+              <input
+                type="time"
+                name="startTime"
+                value={start}
+                onChange={(e) => setStart(e.target.value)}
+                required
+              />
               <button type="button" className="btn" onClick={() => setStart(nowHHMM())}>Now</button>
             </div>
           </div>
 
           <div className="field">
-            <label>Finish Time</label>
+            <label>Finish Time <span className="small muted">(required)</span></label>
             <div className="row" style={{ gap: 8 }}>
-              <input type="time" name="endTime" value={finish} onChange={(e) => setFinish(e.target.value)} />
+              <input
+                type="time"
+                name="endTime"
+                value={finish}
+                onChange={(e) => setFinish(e.target.value)}
+                required
+              />
               <button type="button" className="btn" onClick={() => setFinish(nowHHMM())}>Now</button>
             </div>
           </div>
