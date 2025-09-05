@@ -5,37 +5,31 @@ import type { Prisma } from "@prisma/client";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function parseCsv(param: string | null): string[] {
+// Strict comma-split for reps (names can contain spaces)
+function parseCommaList(param: string | null): string[] {
   if (!param) return [];
-  return param
-    .split(/[,\s]+/)
-    .map(s => s.trim())
-    .filter(Boolean);
+  return param.split(",").map(s => s.trim()).filter(Boolean);
+}
+
+// Flexible split for postcode prefixes (commas or whitespace)
+function parsePrefixes(param: string | null): string[] {
+  if (!param) return [];
+  return param.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
 }
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  // inputs
-  const repsRaw = parseCsv(searchParams.get("reps"));
-  const pcsRaw = parseCsv(searchParams.get("pc"));
+  const reps = parseCommaList(searchParams.get("reps"));
+  const prefixes = parsePrefixes(searchParams.get("pc"))
+    .map(p => p.toUpperCase().replace(/\s+/g, ""));
+
   const limit = Math.min(Number(searchParams.get("limit") || "200"), 1000);
 
-  // normalise
-  const reps = repsRaw
-    .map(r => r.trim())
-    .filter(Boolean);
-
-  const prefixes = pcsRaw
-    .map(p => p.toUpperCase().replace(/\s+/g, ""))
-    .filter(Boolean);
-
-  // filters
   const repFilter: Prisma.CustomerWhereInput =
     reps.length
       ? {
           OR: reps.map(r => ({
-            // equals + case-insensitive fixes exact/casing issues
             salesRep: { equals: r, mode: "insensitive" },
           })),
         }
@@ -50,9 +44,7 @@ export async function GET(req: Request) {
         }
       : {};
 
-  const where: Prisma.CustomerWhereInput = {
-    AND: [repFilter, pcFilter],
-  };
+  const where: Prisma.CustomerWhereInput = { AND: [repFilter, pcFilter] };
 
   const customers = await prisma.customer.findMany({
     where,
