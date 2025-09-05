@@ -99,6 +99,16 @@ function normalizeStage(input: FormDataEntryValue | null): Stage {
   return "LEAD";
 }
 
+// -------- Route Planning helpers --------
+const ROUTE_DAY_LABELS: Array<{ val: "MONDAY"|"TUESDAY"|"WEDNESDAY"|"THURSDAY"|"FRIDAY"; label: string }> = [
+  { val: "MONDAY", label: "Monday" },
+  { val: "TUESDAY", label: "Tuesday" },
+  { val: "WEDNESDAY", label: "Wednesday" },
+  { val: "THURSDAY", label: "Thursday" },
+  { val: "FRIDAY", label: "Friday" },
+];
+const ROUTE_DAY_SET = new Set(ROUTE_DAY_LABELS.map(d => d.val));
+
 export default async function CustomerDetail({ params }: { params: { id: string } }) {
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
@@ -134,9 +144,41 @@ export default async function CustomerDetail({ params }: { params: { id: string 
     revalidatePath(`/customers/${customer.id}`);
   }
 
+  /* -------- server action: Update Route Plan -------- */
+  async function updateRoutePlan(formData: FormData) {
+    "use server";
+
+    const enabled = formData.get("routePlanEnabled") === "on";
+
+    // Weeks: from checkboxes named routeWeeks, values "1".."4"
+    const weeksRaw = formData.getAll("routeWeeks").map((v) => Number(String(v)));
+    const weeks = Array.from(
+      new Set(weeksRaw.filter((n) => Number.isInteger(n) && n >= 1 && n <= 4))
+    ).sort((a, b) => a - b);
+
+    // Days: from checkboxes named routeDays, values of ROUTE_DAY_LABELS
+    const daysRaw = formData.getAll("routeDays").map((v) => String(v).toUpperCase());
+    const days = Array.from(new Set(daysRaw.filter((d) => ROUTE_DAY_SET.has(d as any))));
+
+    await prisma.customer.update({
+      where: { id: customer.id },
+      data: {
+        routePlanEnabled: enabled,
+        routeWeeks: weeks,
+        routeDays: days as any, // Prisma RouteDay[]
+      },
+    });
+
+    revalidatePath(`/customers/${customer.id}`);
+  }
+
   // Contact number: prefer telephone, fallback to "customerNumber"
   const contactNumber = customer.customerTelephone || customer.customerNumber || "-";
   const stageStyle = stageColor(customer.stage);
+
+  const hasWeek = (n: number) => Array.isArray(customer.routeWeeks) && customer.routeWeeks.includes(n);
+  const hasDay = (d: string) =>
+    Array.isArray(customer.routeDays) && (customer.routeDays as any[]).includes(d);
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -251,6 +293,92 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           </div>
         )}
       </div>
+
+      {/* ---------- NEW: Route Planning ---------- */}
+      <div className="card">
+        <h3>Route Planning</h3>
+
+        <form action={updateRoutePlan} style={{ marginTop: 8 }}>
+          {/* CSS-only toggling */}
+          <style>{`
+            /* Show Weeks/Days only when checkbox is checked */
+            #rp-enabled:checked ~ .rp-body { display: block; }
+            .rp-body { display: ${customer.routePlanEnabled ? "block" : "none"}; }
+            .chip {
+              display: inline-flex; align-items: center; gap: 6px;
+              border: 1px solid var(--border); border-radius: 999px;
+              padding: 6px 10px; cursor: pointer; user-select: none;
+            }
+            .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+          `}</style>
+
+          <div className="field" style={{ marginBottom: 10 }}>
+            <label htmlFor="rp-enabled" className="row" style={{ gap: 8, alignItems: "center", cursor: "pointer" }}>
+              <input
+                id="rp-enabled"
+                name="routePlanEnabled"
+                type="checkbox"
+                defaultChecked={!!customer.routePlanEnabled}
+              />
+              <span>Add To Route Plan</span>
+            </label>
+            <div className="form-hint">Include this salon in the 4-week Mon–Fri cycle.</div>
+          </div>
+
+          <div className="rp-body">
+            <div className="grid" style={{ gap: 16, gridTemplateColumns: "1fr 2fr" }}>
+              {/* Weeks */}
+              <div className="field">
+                <label>Weeks</label>
+                <div className="chips">
+                  {[1,2,3,4].map((n) => (
+                    <label key={n} className="chip">
+                      <input
+                        type="checkbox"
+                        name="routeWeeks"
+                        value={n}
+                        defaultChecked={hasWeek(n)}
+                      />
+                      Week {n}
+                    </label>
+                  ))}
+                </div>
+                <div className="form-hint">Pick one or more of the 4 weeks.</div>
+              </div>
+
+              {/* Days */}
+              <div className="field">
+                <label>Days</label>
+                <div className="chips">
+                  {ROUTE_DAY_LABELS.map(({ val, label }) => (
+                    <label key={val} className="chip">
+                      <input
+                        type="checkbox"
+                        name="routeDays"
+                        value={val}
+                        defaultChecked={hasDay(val)}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                <div className="form-hint">Pick one or more days (Mon–Fri).</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="row" style={{ gap: 8, marginTop: 16, alignItems: "center" }}>
+            <button className="primary" type="submit">Save</button>
+            {customer.routePlanEnabled && (
+              <span className="small muted">
+                Planned for weeks: {Array.isArray(customer.routeWeeks) && customer.routeWeeks.length ? customer.routeWeeks.join(", ") : "—"};{" "}
+                days: {Array.isArray(customer.routeDays) && (customer.routeDays as any[]).length ? (customer.routeDays as any[]).map(String).join(", ") : "—"}
+              </span>
+            )}
+          </div>
+        </form>
+      </div>
+      {/* ---------- END: Route Planning ---------- */}
 
       {/* Recent Orders */}
       <RecentOrders customerId={params.id} />
