@@ -39,6 +39,12 @@ export default function SalesHubPage() {
           <div className="action-title">Profit Calculator</div>
           <div className="action-sub">Model margins &amp; profit</div>
         </Link>
+
+        {/* Route Planner */}
+<Link href="/saleshub/route-planner" className="action-tile">
+  <div className="action-title">Route Planner</div>
+  <div className="action-sub">Filter by rep &amp; postcode</div>
+</Link>
       </section>
 
       {/* Pipeline tile (counts + table) */}
