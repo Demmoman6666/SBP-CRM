@@ -1,4 +1,3 @@
-// app/api/route-planning/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
@@ -16,26 +15,43 @@ function parseCsv(param: string | null): string[] {
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const reps = parseCsv(searchParams.get("reps"));
+
+  // inputs
+  const repsRaw = parseCsv(searchParams.get("reps"));
   const pcsRaw = parseCsv(searchParams.get("pc"));
   const limit = Math.min(Number(searchParams.get("limit") || "200"), 1000);
 
-  // Normalise postcode prefixes (uppercased, remove spaces)
-  const prefixes = pcsRaw.map(p => p.toUpperCase().replace(/\s+/g, ""));
+  // normalise
+  const reps = repsRaw
+    .map(r => r.trim())
+    .filter(Boolean);
 
-  // Build filters
+  const prefixes = pcsRaw
+    .map(p => p.toUpperCase().replace(/\s+/g, ""))
+    .filter(Boolean);
+
+  // filters
+  const repFilter: Prisma.CustomerWhereInput =
+    reps.length
+      ? {
+          OR: reps.map(r => ({
+            // equals + case-insensitive fixes exact/casing issues
+            salesRep: { equals: r, mode: "insensitive" },
+          })),
+        }
+      : {};
+
+  const pcFilter: Prisma.CustomerWhereInput =
+    prefixes.length
+      ? {
+          OR: prefixes.map(p => ({
+            postCode: { startsWith: p, mode: "insensitive" },
+          })),
+        }
+      : {};
+
   const where: Prisma.CustomerWhereInput = {
-    AND: [
-      reps.length ? { salesRep: { in: reps } } : {},
-      prefixes.length
-        ? {
-            OR: prefixes.map(p => ({
-              // We keep spaces in DB values (e.g., "CF43 1AB") and match with startsWith
-              postCode: { startsWith: p, mode: "insensitive" as const },
-            })),
-          }
-        : {},
-    ],
+    AND: [repFilter, pcFilter],
   };
 
   const customers = await prisma.customer.findMany({
