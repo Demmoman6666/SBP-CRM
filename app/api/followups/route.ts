@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Parse YYYY-MM-DD → Date (start of day, local server time)
+// Parse YYYY-MM-DD → Date
 function parseDate(d?: string | null) {
   if (!d) return null;
   const [y, m, day] = d.split("-").map(Number);
@@ -13,30 +13,37 @@ function parseDate(d?: string | null) {
   return new Date(y, m - 1, day, 0, 0, 0, 0);
 }
 
+function parseReps(param: string | null): string[] {
+  if (!param) return [];
+  return param.split(",").map(s => s.trim()).filter(Boolean);
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const fromStr = searchParams.get("from"); // YYYY-MM-DD (inclusive)
-  const toStr = searchParams.get("to");     // YYYY-MM-DD (exclusive)
+  const fromStr = searchParams.get("from"); // inclusive
+  const toStr   = searchParams.get("to");   // exclusive
+  const reps    = parseReps(searchParams.get("reps")); // comma-separated names
 
   let from = parseDate(fromStr);
-  let to = parseDate(toStr);
+  let to   = parseDate(toStr);
 
-  // Default: current month [monthStart, nextMonthStart)
+  // default to current month
   if (!from || !to) {
     const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    from = monthStart;
-    to = nextMonthStart;
+    from = new Date(now.getFullYear(), now.getMonth(), 1);
+    to   = new Date(now.getFullYear(), now.getMonth() + 1, 1);
   }
+
+  // Build rep filter against CallLog.staff (case-insensitive equals)
+  const repWhere = reps.length
+    ? { OR: reps.map(r => ({ staff: { equals: r, mode: "insensitive" as const } })) }
+    : {};
 
   const logs = await prisma.callLog.findMany({
     where: {
-      followUpAt: { gte: from!, lt: to! },
-      // we only care about booked follow-ups (date present)
-      // followUpRequired can be true/false; the presence of followUpAt is the source of truth
-      // Optionally uncomment if you want both:
-      // followUpRequired: true,
+      followUpAt: { gte: from!, lt: to!, not: null },
+      outcome: { equals: "Appointment booked", mode: "insensitive" }, // ← only these
+      ...repWhere,
     },
     select: {
       id: true,
@@ -57,7 +64,7 @@ export async function GET(req: Request) {
 
     return {
       id: l.id,
-      at: l.followUpAt,              // ISO Date
+      at: l.followUpAt,              // ISO
       staff: l.staff,
       summary: l.summary,
       customerId: l.customer?.id || null,
