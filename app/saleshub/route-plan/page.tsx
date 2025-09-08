@@ -15,7 +15,7 @@ export default async function RoutePlanPage() {
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
         <h1>Route Plan</h1>
-        <p className="small">Select a sales rep, week, and day to see the planned salons.</p>
+        <p className="small">Pick a sales rep, week, and day to see the planned salons and send the route to Google Maps.</p>
       </section>
 
       <RoutePlanClient reps={reps} />
