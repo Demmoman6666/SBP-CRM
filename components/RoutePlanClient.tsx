@@ -33,22 +33,38 @@ const MAX_STOPS_PER_MAPS_ROUTE = 25; // origin + destination + up to 23 waypoint
 const WAYPOINT_LIMIT = MAX_STOPS_PER_MAPS_ROUTE - 2;
 
 export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
+  // Filters
   const [rep, setRep] = useState<string>("");
   const [week, setWeek] = useState<string>("");
   const [day, setDay] = useState<string>("");
 
+  // Data
   const [rows, setRows] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Google Maps options
+  // Maps options
   const [startAtCurrent, setStartAtCurrent] = useState<boolean>(true);
   const [startAtFurthest, setStartAtFurthest] = useState<boolean>(false);
+  const [startAtCustom, setStartAtCustom] = useState<boolean>(false);
+  const [customStart, setCustomStart] = useState<string>("");
   const [finishAtCustom, setFinishAtCustom] = useState<boolean>(false);
   const [customEnd, setCustomEnd] = useState<string>("");
+
+  // Opening behavior
+  const [openSameTab, setOpenSameTab] = useState<boolean>(false); // helpful on iOS Safari
+  const [extraLegUrls, setExtraLegUrls] = useState<string[]>([]); // show links if multiple legs
+
+  // Geolocation status
+  const [geoStatus, setGeoStatus] = useState<"prompt" | "granted" | "denied" | "unsupported">("prompt");
+  const insecureContext =
+    typeof window !== "undefined" &&
+    window.location.protocol !== "https:" &&
+    window.location.hostname !== "localhost";
 
   const acRef = useRef<AbortController | null>(null);
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
+  // Build API query
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     if (rep) p.set("reps", rep);
@@ -59,6 +75,7 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     return p.toString();
   }, [rep, week, day]);
 
+  // Load data
   useEffect(() => {
     if (!rep || !week || !day) {
       setRows([]);
@@ -67,7 +84,6 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     acRef.current?.abort();
     const ac = new AbortController();
     acRef.current = ac;
-
     (async () => {
       setLoading(true);
       try {
@@ -79,12 +95,33 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
         if (acRef.current === ac) setLoading(false);
       }
     })();
-
     return () => ac.abort();
   }, [qs, rep, week, day]);
 
-  // Address-only for stable geocoding (no salonName to avoid POI mismatches)
+  // Probe geolocation permission
+  useEffect(() => {
+    if (typeof navigator === "undefined") return;
+    if (!("geolocation" in navigator)) { setGeoStatus("unsupported"); return; }
+    // @ts-ignore
+    if (navigator.permissions?.query) {
+      // @ts-ignore
+      navigator.permissions.query({ name: "geolocation" as PermissionName }).then((p: any) => {
+        setGeoStatus(p.state as any);
+        p.onchange = () => setGeoStatus(p.state as any);
+      }).catch(() => {});
+    }
+  }, []);
+
+  // Nudge prompt when toggling "start at furthest"
+  useEffect(() => {
+    if (startAtFurthest && geoStatus === "prompt" && !insecureContext) {
+      requestLocationOnce(); // fire prompt
+    }
+  }, [startAtFurthest, geoStatus, insecureContext]);
+
+  // -------- Helpers --------
   function geocodeAddress(r: Customer): string {
+    // Address-only for stable geocoding (no salonName to avoid POI mismatches)
     return [
       r.addressLine1,
       r.addressLine2 || "",
@@ -92,9 +129,7 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
       r.county || "",
       r.postCode || "",
       r.country || "UK",
-    ]
-      .filter(Boolean)
-      .join(", ");
+    ].filter(Boolean).join(", ");
   }
 
   function googleDirUrl({
@@ -118,56 +153,50 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     return u.toString();
   }
 
-  function buildMapsUrls(stops: string[], opts: { startAtCurrent: boolean; customEnd?: string }): string[] {
+  function buildMapsUrls(
+    stops: string[],
+    opts: { origin?: string | null; customEnd?: string }
+  ): string[] {
     const cleaned = stops.filter((s, i) => i === 0 || s !== stops[i - 1]);
     const hasCustomEnd = !!opts.customEnd && String(opts.customEnd).trim().length > 0;
     const customEnd = hasCustomEnd ? String(opts.customEnd).trim() : undefined;
 
-    // If nothing to visit but a custom end exists, route directly there
     if (cleaned.length === 0 && customEnd) {
-      const origin = opts.startAtCurrent ? "Current Location" : customEnd; // fallback
+      const origin = opts.origin && opts.origin.trim() ? opts.origin.trim() : "Current Location";
       return [googleDirUrl({ origin, destination: customEnd, waypoints: [] })];
     }
     if (cleaned.length === 0) return [];
 
-    // Decide origin & remaining stops
-    let origin: string;
-    let remaining: string[];
+    let origin = opts.origin && opts.origin.trim() ? opts.origin.trim() : "Current Location";
+    let remaining = cleaned.slice();
 
-    if (opts.startAtCurrent) {
-      origin = "Current Location";
-      remaining = cleaned.slice(); // all stops are waypoints + possibly destination
-    } else {
-      origin = cleaned[0];
+    // If origin equals the first stop address, skip it from remaining
+    if (origin !== "Current Location" && origin === cleaned[0]) {
       remaining = cleaned.slice(1);
+    }
+
+    if (remaining.length === 0) {
+      if (customEnd) {
+        const single = cleaned[0];
+        return [
+          googleDirUrl({ origin, destination: single, waypoints: [] }),
+          googleDirUrl({ origin: single, destination: customEnd, waypoints: [] }),
+        ];
+      }
+      return [googleDirUrl({ origin, destination: cleaned[0], waypoints: [] })];
     }
 
     const urls: string[] = [];
     let legOrigin = origin;
     let i = 0;
 
-    if (!remaining.length) {
-      // One stop + optional custom end
-      if (customEnd) {
-        // leg 1: origin -> single stop; leg 2: stop -> custom end
-        const single = cleaned[0];
-        urls.push(googleDirUrl({ origin, destination: single, waypoints: [] }));
-        urls.push(googleDirUrl({ origin: single, destination: customEnd, waypoints: [] }));
-        return urls;
-      } else {
-        return [googleDirUrl({ origin, destination: cleaned[0], waypoints: [] })];
-      }
-    }
-
     while (i < remaining.length) {
-      // Build segments of up to WAYPOINT_LIMIT waypoints + 1 destination
       const segment = remaining.slice(i, i + (WAYPOINT_LIMIT + 1));
       const isLastSegment = i + segment.length >= remaining.length;
       const destination = isLastSegment && customEnd ? customEnd : segment[segment.length - 1];
       const waypoints = isLastSegment && customEnd ? segment : segment.slice(0, -1);
 
       urls.push(googleDirUrl({ origin: legOrigin, destination, waypoints }));
-
       legOrigin = destination;
       i += segment.length;
     }
@@ -175,37 +204,39 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     return urls;
   }
 
-  // ---- "Start at furthest away" helpers ----
   function getPosition(): Promise<GeolocationPosition> {
     return new Promise((resolve, reject) => {
       if (!("geolocation" in navigator)) return reject(new Error("Geolocation not supported"));
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: false,
-        timeout: 8000,
-        maximumAge: 300000,
-      });
+      navigator.geolocation.getCurrentPosition(
+        resolve,
+        reject,
+        { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 }
+      );
     });
   }
 
+  async function requestLocationOnce() {
+    try {
+      await new Promise<void>((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          () => { setGeoStatus("granted"); resolve(); },
+          () => { setGeoStatus("denied"); resolve(); },
+          { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 }
+        );
+      });
+    } catch {
+      setGeoStatus("denied");
+    }
+  }
+
   async function reorderByFurthestFromMe(addrs: string[]): Promise<string[]> {
-    // Needs both location and API key for accurate distances.
     try {
       const pos = await getPosition();
       const lat = pos.coords.latitude;
       const lng = pos.coords.longitude;
 
-      if (!apiKey) {
-        // No API key — fallback: simple heuristic by postcode (very rough).
-        // Sort by reversed postcode string so farther-looking postcodes drift up.
-        // If you set NEXT_PUBLIC_GOOGLE_MAPS_API_KEY, we’ll use Distance Matrix instead.
-        return [...addrs].sort((a, b) => {
-          const pa = (a.match(/[A-Z]{1,2}\d{1,2}\s*\d[A-Z]{2}$/i) || [""])[0].toUpperCase();
-          const pb = (b.match(/[A-Z]{1,2}\d{1,2}\s*\d[A-Z]{2}$/i) || [""])[0].toUpperCase();
-          return pb.localeCompare(pa);
-        });
-      }
+      if (!apiKey) return postcodeHeuristicFurthest(addrs);
 
-      // Google Distance Matrix (simple, one-to-many)
       const destinations = addrs.map(encodeURIComponent).join("|");
       const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${lat},${lng}&destinations=${destinations}&mode=driving&key=${apiKey}`;
 
@@ -216,164 +247,188 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
       const elements = data?.rows?.[0]?.elements;
       if (!Array.isArray(elements) || elements.length !== addrs.length) throw new Error("Bad Distance Matrix shape");
 
-      // Pair each address with distance in metres (fallback to 0)
       const paired = addrs.map((addr, i) => ({
         addr,
-        dist: Number(elements[i]?.distance?.value ?? 0),
+        metric: Number(elements[i]?.duration?.value ?? elements[i]?.distance?.value ?? 0),
       }));
-
-      // Sort DESC by distance so the first is the furthest
-      paired.sort((a, b) => b.dist - a.dist);
-
+      paired.sort((a, b) => b.metric - a.metric); // DESC
       return paired.map(p => p.addr);
     } catch {
-      // Location blocked or network error: keep original order
-      return addrs;
+      return postcodeHeuristicFurthest(addrs);
     }
   }
 
-  // Open Maps with current options
+  function postcodeHeuristicFurthest(addrs: string[]): string[] {
+    const token = (s: string) => (s.match(/[A-Z]{1,2}\d{1,2}\s*\d[A-Z]{2}$/i) || [""])[0].toUpperCase();
+    return [...addrs].sort((a, b) => token(b).localeCompare(token(a)));
+  }
+
+  // -------- Action (with popup-safe pre-open) --------
   async function openInGoogleMaps() {
     if (!rows.length) return;
 
-    // Build the base stop list (address-only)
+    // Pre-open a tab synchronously to preserve the user gesture (prevents popup blocking after awaits)
+    let pre: Window | null = null;
+    if (!openSameTab) {
+      pre = window.open("", "_blank"); // about:blank
+    }
+
+    // Build stop list (address-only)
     let stops = rows.map(geocodeAddress);
 
-    // If "start at furthest", reorder stops so the first one is the furthest
+    // Reorder for furthest start if requested (async)
     if (startAtFurthest) {
       stops = await reorderByFurthestFromMe(stops);
     }
 
+    // Decide origin string
+    let origin: string | null = null;
+    if (startAtCustom && customStart.trim()) origin = customStart.trim();
+    else if (startAtCurrent) origin = "Current Location";
+    else origin = stops[0];
+
     const urls = buildMapsUrls(stops, {
-      startAtCurrent,
+      origin,
       customEnd: finishAtCustom && customEnd.trim() ? customEnd.trim() : undefined,
     });
-    if (!urls.length) return;
 
-    if (urls.length > 1) {
-      const proceed =
-        typeof window !== "undefined"
-          ? window.confirm(`Your route needs ${urls.length} Google Maps tabs due to the 25-stop limit. Open them now?`)
-          : true;
-      if (!proceed) return;
+    if (!urls.length) {
+      if (pre) try { pre.close(); } catch {}
+      return;
     }
 
-    for (const url of urls) {
-      window.open(url, "_blank");
+    // Navigate first leg
+    const first = urls[0];
+
+    if (openSameTab) {
+      // Most reliable on iOS Safari
+      window.location.href = first;
+    } else if (pre && typeof pre.location !== "undefined") {
+      // Use the pre-opened tab (works on mobile reliably)
+      pre.location.href = first;
+    } else {
+      // Popup blocked fallback: use same tab
+      window.location.href = first;
     }
+
+    // Handle extra legs via UI (multiple popups often blocked on mobile)
+    const rest = urls.slice(1);
+    setExtraLegUrls(rest);
   }
 
+  // -------- UI --------
   return (
     <section className="card">
-      <h2 style={{ marginTop: 0 }}>Filters</h2>
+      <h2 style={{ marginTop: 0 }}>Route Plan</h2>
 
+      {/* Filters */}
       <div className="row" style={{ gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
-        {/* Sales Rep */}
         <div className="field" style={{ minWidth: 260 }}>
           <label>Sales Rep</label>
           <select
             value={rep}
-            onChange={(e) => {
-              setRep(e.target.value);
-              setWeek("");
-              setDay("");
-            }}
+            onChange={(e) => { setRep(e.target.value); setWeek(""); setDay(""); }}
           >
             <option value="">— Select a rep —</option>
             {reps.map((r) => (
-              <option key={r.id} value={r.name}>
-                {r.name}
-              </option>
+              <option key={r.id} value={r.name}>{r.name}</option>
             ))}
           </select>
         </div>
 
-        {/* Week */}
         <div className="field" style={{ minWidth: 160 }}>
           <label>Week</label>
           <select
             value={week}
-            onChange={(e) => {
-              setWeek(e.target.value);
-              setDay("");
-            }}
+            onChange={(e) => { setWeek(e.target.value); setDay(""); }}
             disabled={!rep}
           >
             <option value="">— Select week —</option>
-            {[1, 2, 3, 4].map((n) => (
-              <option key={n} value={String(n)}>
-                Week {n}
-              </option>
-            ))}
+            {[1,2,3,4].map((n) => <option key={n} value={String(n)}>Week {n}</option>)}
           </select>
         </div>
 
-        {/* Day */}
         <div className="field" style={{ minWidth: 180 }}>
           <label>Day</label>
-          <select value={day} onChange={(e) => setDay(e.target.value)} disabled={!rep || !week}>
+          <select
+            value={day}
+            onChange={(e) => setDay(e.target.value)}
+            disabled={!rep || !week}
+          >
             <option value="">— Select day —</option>
-            {DAYS.map((d) => (
-              <option key={d.val} value={d.val}>
-                {d.label}
-              </option>
-            ))}
+            {DAYS.map((d) => <option key={d.val} value={d.val}>{d.label}</option>)}
           </select>
         </div>
       </div>
 
-      {/* Google Maps options */}
+      {/* Maps options */}
       <div className="row" style={{ gap: 12, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
         <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={startAtCurrent}
-            onChange={(e) => setStartAtCurrent(e.target.checked)}
-          />
+          <input type="checkbox" checked={startAtCurrent} onChange={(e) => setStartAtCurrent(e.target.checked)} />
           Start at current location
         </label>
 
         <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={startAtFurthest}
-            onChange={(e) => setStartAtFurthest(e.target.checked)}
-            disabled={!rows.length}
-          />
+          <input type="checkbox" checked={startAtFurthest} onChange={(e) => setStartAtFurthest(e.target.checked)} disabled={!rows.length} />
           Start at furthest away
         </label>
 
         <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <input type="checkbox" checked={startAtCustom} onChange={(e) => setStartAtCustom(e.target.checked)} />
+          Start at custom location
+        </label>
+        {startAtCustom && (
           <input
-            type="checkbox"
-            checked={finishAtCustom}
-            onChange={(e) => setFinishAtCustom(e.target.checked)}
+            type="text"
+            placeholder="e.g. Home, CF43 4XX"
+            value={customStart}
+            onChange={(e) => setCustomStart(e.target.value)}
+            style={{ minWidth: 260 }}
           />
+        )}
+
+        <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <input type="checkbox" checked={finishAtCustom} onChange={(e) => setFinishAtCustom(e.target.checked)} />
           Finish at custom location
         </label>
-
         {finishAtCustom && (
           <input
             type="text"
-            placeholder="e.g. Hotel, Depot, CF43 4XX"
+            placeholder="e.g. Warehouse, CF43 4XX"
             value={customEnd}
             onChange={(e) => setCustomEnd(e.target.value)}
             style={{ minWidth: 260 }}
           />
         )}
 
+        <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <input type="checkbox" checked={openSameTab} onChange={(e) => setOpenSameTab(e.target.checked)} />
+          Open in this tab (mobile-friendly)
+        </label>
+
         <button className="btn" onClick={openInGoogleMaps} disabled={!rows.length}>
           Open in Google Maps
         </button>
       </div>
 
-      {startAtFurthest && !apiKey && (
+      {/* Location enable + status */}
+      <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
+        {geoStatus !== "granted" && !startAtCustom && (
+          <button className="btn" type="button" onClick={requestLocationOnce}>
+            Enable location
+          </button>
+        )}
+        <span className="small" style={{ color: geoStatus === "denied" ? "var(--danger,#b91c1c)" : "var(--muted)" }}>
+          Location: {insecureContext ? "unavailable (use HTTPS or localhost)" : geoStatus}
+        </span>
+      </div>
+      {insecureContext && (
         <div className="small muted" style={{ marginTop: 6 }}>
-          Tip: Set <code>NEXT_PUBLIC_GOOGLE_MAPS_API_KEY</code> for accurate “furthest away” ordering
-          (uses Google Distance Matrix). Without it, a rough postcode heuristic is used.
+          Geolocation prompts require HTTPS (or localhost in dev). Open your Vercel URL or enable HTTPS.
         </div>
       )}
 
+      {/* Results */}
       <div style={{ marginTop: 16 }}>
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Day’s Route</h3>
@@ -402,10 +457,7 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id}>
-                    <td
-                      className="small"
-                      style={{ maxWidth: 260, whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" }}
-                    >
+                    <td className="small" style={{ maxWidth: 260, whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" }}>
                       {r.salonName}
                       <div className="small" style={{ color: "var(--muted)" }}>
                         {r.addressLine1}
@@ -421,9 +473,7 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
                     <td className="small">{r.postCode || "—"}</td>
                     <td className="small">{r.salesRep || "—"}</td>
                     <td className="small right">
-                      <Link href={`/customers/${r.id}`} className="btn small">
-                        View
-                      </Link>
+                      <Link href={`/customers/${r.id}`} className="btn small">View</Link>
                     </td>
                   </tr>
                 ))}
@@ -432,6 +482,26 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
           </div>
         )}
       </div>
+
+      {/* Extra legs list (user taps to open each) */}
+      {extraLegUrls.length > 0 && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <strong>More route legs</strong>
+            <span className="small muted">{extraLegUrls.length} remaining</span>
+          </div>
+          <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+            {extraLegUrls.map((u, i) => (
+              <a key={i} className="btn" href={u} target="_blank" rel="noopener noreferrer">
+                Open leg {i + 2}
+              </a>
+            ))}
+          </div>
+          <div className="small muted" style={{ marginTop: 6 }}>
+            Your browser may block multiple tabs. Tap each leg to continue the route.
+          </div>
+        </div>
+      )}
     </section>
   );
 }
