@@ -40,10 +40,16 @@ export default function SalesHubPage() {
           <div className="action-sub">Model margins &amp; profit</div>
         </Link>
 
-        {/* Route Planning hub (replaces old Route Planner tile) */}
+        {/* Route Planning hub */}
         <Link href="/saleshub/route-planning" className="action-tile">
           <div className="action-title">Route Planning</div>
           <div className="action-sub">Planner &amp; saved plans</div>
+        </Link>
+
+        {/* NEW: Calendar tile */}
+        <Link href="/saleshub/calendar" className="action-tile">
+          <div className="action-title">Calendar</div>
+          <div className="action-sub">Follow-up actions</div>
         </Link>
       </section>
 
