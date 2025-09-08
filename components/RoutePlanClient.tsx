@@ -29,9 +29,6 @@ const DAYS = [
   { val: "FRIDAY", label: "Friday" },
 ] as const;
 
-// NEW: open-days (for filtering salons that are open on these days)
-const OPEN_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
-
 const MAX_STOPS_PER_MAPS_ROUTE = 25; // origin + destination + up to 23 waypoints
 const WAYPOINT_LIMIT = MAX_STOPS_PER_MAPS_ROUTE - 2;
 
@@ -40,9 +37,6 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
   const [rep, setRep] = useState<string>("");
   const [week, setWeek] = useState<string>("");
   const [day, setDay] = useState<string>("");
-
-  // NEW: Days Open multi-select
-  const [openDayFilters, setOpenDayFilters] = useState<string[]>([]);
 
   // Data
   const [rows, setRows] = useState<Customer[]>([]);
@@ -61,7 +55,8 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
   const [extraLegUrls, setExtraLegUrls] = useState<string[]>([]); // show links if multiple legs
 
   // Geolocation status
-  const [geoStatus, setGeoStatus] = useState<"prompt" | "granted" | "denied" | "unsupported">("prompt");
+  const [geoStatus, setGeoStatus] =
+    useState<"prompt" | "granted" | "denied" | "unsupported">("prompt");
   const insecureContext =
     typeof window !== "undefined" &&
     window.location.protocol !== "https:" &&
@@ -76,11 +71,10 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     if (rep) p.set("reps", rep);
     if (week) p.set("week", week);
     if (day) p.set("day", day);
-    if (openDayFilters.length) p.set("days", openDayFilters.join(",")); // NEW
     p.set("onlyPlanned", "1");
     p.set("limit", "1000");
     return p.toString();
-  }, [rep, week, day, openDayFilters]);
+  }, [rep, week, day]);
 
   // Load data
   useEffect(() => {
@@ -94,7 +88,10 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     (async () => {
       setLoading(true);
       try {
-        const r = await fetch(`/api/route-planning?${qs}`, { cache: "no-store", signal: ac.signal });
+        const r = await fetch(`/api/route-planning?${qs}`, {
+          cache: "no-store",
+          signal: ac.signal,
+        });
         setRows(r.ok ? await r.json() : []);
       } catch (e: any) {
         if (e?.name !== "AbortError") setRows([]);
@@ -108,14 +105,20 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
   // Probe geolocation permission
   useEffect(() => {
     if (typeof navigator === "undefined") return;
-    if (!("geolocation" in navigator)) { setGeoStatus("unsupported"); return; }
+    if (!("geolocation" in navigator)) {
+      setGeoStatus("unsupported");
+      return;
+    }
     // @ts-ignore
     if (navigator.permissions?.query) {
       // @ts-ignore
-      navigator.permissions.query({ name: "geolocation" as PermissionName }).then((p: any) => {
-        setGeoStatus(p.state as any);
-        p.onchange = () => setGeoStatus(p.state as any);
-      }).catch(() => {});
+      navigator.permissions
+        .query({ name: "geolocation" as PermissionName })
+        .then((p: any) => {
+          setGeoStatus(p.state as any);
+          p.onchange = () => setGeoStatus(p.state as any);
+        })
+        .catch(() => {});
     }
   }, []);
 
@@ -136,7 +139,9 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
       r.county || "",
       r.postCode || "",
       r.country || "UK",
-    ].filter(Boolean).join(", ");
+    ]
+      .filter(Boolean)
+      .join(", ");
   }
 
   function googleDirUrl({
@@ -165,16 +170,19 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     opts: { origin?: string | null; customEnd?: string }
   ): string[] {
     const cleaned = stops.filter((s, i) => i === 0 || s !== stops[i - 1]);
-    const hasCustomEnd = !!opts.customEnd && String(opts.customEnd).trim().length > 0;
+    const hasCustomEnd =
+      !!opts.customEnd && String(opts.customEnd).trim().length > 0;
     const customEnd = hasCustomEnd ? String(opts.customEnd).trim() : undefined;
 
     if (cleaned.length === 0 && customEnd) {
-      const origin = opts.origin && opts.origin.trim() ? opts.origin.trim() : "Current Location";
+      const origin =
+        opts.origin && opts.origin.trim() ? opts.origin.trim() : "Current Location";
       return [googleDirUrl({ origin, destination: customEnd, waypoints: [] })];
     }
     if (cleaned.length === 0) return [];
 
-    let origin = opts.origin && opts.origin.trim() ? opts.origin.trim() : "Current Location";
+    let origin =
+      opts.origin && opts.origin.trim() ? opts.origin.trim() : "Current Location";
     let remaining = cleaned.slice();
 
     // If origin equals the first stop address, skip it from remaining
@@ -213,7 +221,8 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
 
   function getPosition(): Promise<GeolocationPosition> {
     return new Promise((resolve, reject) => {
-      if (!("geolocation" in navigator)) return reject(new Error("Geolocation not supported"));
+      if (!("geolocation" in navigator))
+        return reject(new Error("Geolocation not supported"));
       navigator.geolocation.getCurrentPosition(
         resolve,
         reject,
@@ -226,8 +235,14 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     try {
       await new Promise<void>((resolve) => {
         navigator.geolocation.getCurrentPosition(
-          () => { setGeoStatus("granted"); resolve(); },
-          () => { setGeoStatus("denied"); resolve(); },
+          () => {
+            setGeoStatus("granted");
+            resolve();
+          },
+          () => {
+            setGeoStatus("denied");
+            resolve();
+          },
           { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 }
         );
       });
@@ -252,21 +267,25 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
       const data = await res.json();
 
       const elements = data?.rows?.[0]?.elements;
-      if (!Array.isArray(elements) || elements.length !== addrs.length) throw new Error("Bad Distance Matrix shape");
+      if (!Array.isArray(elements) || elements.length !== addrs.length)
+        throw new Error("Bad Distance Matrix shape");
 
       const paired = addrs.map((addr, i) => ({
         addr,
-        metric: Number(elements[i]?.duration?.value ?? elements[i]?.distance?.value ?? 0),
+        metric: Number(
+          elements[i]?.duration?.value ?? elements[i]?.distance?.value ?? 0
+        ),
       }));
       paired.sort((a, b) => b.metric - a.metric); // DESC
-      return paired.map(p => p.addr);
+      return paired.map((p) => p.addr);
     } catch {
       return postcodeHeuristicFurthest(addrs);
     }
   }
 
   function postcodeHeuristicFurthest(addrs: string[]): string[] {
-    const token = (s: string) => (s.match(/[A-Z]{1,2}\d{1,2}\s*\d[A-Z]{2}$/i) || [""])[0].toUpperCase();
+    const token = (s: string) =>
+      (s.match(/[A-Z]{1,2}\d{1,2}\s*\d[A-Z]{2}$/i) || [""])[0].toUpperCase();
     return [...addrs].sort((a, b) => token(b).localeCompare(token(a)));
   }
 
@@ -323,12 +342,6 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     setExtraLegUrls(rest);
   }
 
-  function toggleOpenDay(d: string) {
-    setOpenDayFilters(prev =>
-      prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]
-    );
-  }
-
   // -------- UI --------
   return (
     <section className="card">
@@ -357,7 +370,9 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
             disabled={!rep}
           >
             <option value="">— Select week —</option>
-            {[1,2,3,4].map((n) => <option key={n} value={String(n)}>Week {n}</option>)}
+            {[1, 2, 3, 4].map((n) => (
+              <option key={n} value={String(n)}>Week {n}</option>
+            ))}
           </select>
         </div>
 
@@ -369,37 +384,10 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
             disabled={!rep || !week}
           >
             <option value="">— Select day —</option>
-            {DAYS.map((d) => <option key={d.val} value={d.val}>{d.label}</option>)}
+            {DAYS.map((d) => (
+              <option key={d.val} value={d.val}>{d.label}</option>
+            ))}
           </select>
-        </div>
-
-        {/* NEW: Days Open multi-select */}
-        <div className="field" style={{ minWidth: 320 }}>
-          <label>Days Open</label>
-          <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
-            {OPEN_DAYS.map((d) => {
-              const active = openDayFilters.includes(d);
-              return (
-                <button
-                  key={d}
-                  type="button"
-                  onClick={() => toggleOpenDay(d)}
-                  className="small"
-                  style={{
-                    border: "1px solid var(--border)",
-                    borderRadius: 999,
-                    padding: "6px 10px",
-                    background: active ? "#111" : "#fff",
-                    color: active ? "#fff" : "inherit",
-                    cursor: "pointer",
-                  }}
-                >
-                  {d}
-                </button>
-              );
-            })}
-          </div>
-          <div className="form-hint">Shows salons open on <b>any</b> of the selected days.</div>
         </div>
       </div>
 
@@ -475,14 +463,18 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Day’s Route</h3>
           <div className="small muted">
-            {rep && week && day ? (loading ? "Loading…" : `${rows.length} salon${rows.length === 1 ? "" : "s"}`) : "Select rep, week, and day to view"}
+            {rep && week && day
+              ? (loading ? "Loading…" : `${rows.length} salon${rows.length === 1 ? "" : "s"}`)
+              : "Select rep, week, and day to view"}
           </div>
         </div>
 
         {!rep || !week || !day ? (
           <p className="small" style={{ marginTop: 12 }}>Awaiting selections…</p>
         ) : !rows.length ? (
-          <p className="small" style={{ marginTop: 12 }}>{loading ? "Loading…" : "No matches found."}</p>
+          <p className="small" style={{ marginTop: 12 }}>
+            {loading ? "Loading…" : "No matches found."}
+          </p>
         ) : (
           <div className="table" style={{ marginTop: 12 }}>
             <table className="table">
