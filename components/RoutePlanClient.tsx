@@ -29,17 +29,25 @@ const DAYS = [
   { val: "FRIDAY", label: "Friday" },
 ] as const;
 
+const MAX_STOPS_PER_MAPS_ROUTE = 25; // origin + destination + waypoints (<=23)
+const WAYPOINT_LIMIT = MAX_STOPS_PER_MAPS_ROUTE - 2;
+
 export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
   const [rep, setRep] = useState<string>("");
   const [week, setWeek] = useState<string>("");
   const [day, setDay] = useState<string>("");
   const [rows, setRows] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Google Maps options
+  const [optimize, setOptimize] = useState<boolean>(true);
+  const [startAtCurrent, setStartAtCurrent] = useState<boolean>(true);
+
   const acRef = useRef<AbortController | null>(null);
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
-    if (rep) p.set("reps", rep); // comma-list; single rep is fine
+    if (rep) p.set("reps", rep); // single rep value; API handles case-insensitive equals
     if (week) p.set("week", week);
     if (day) p.set("day", day);
     p.set("onlyPlanned", "1");
@@ -70,6 +78,102 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
 
     return () => ac.abort();
   }, [qs, rep, week, day]);
+
+  function addr(r: Customer): string {
+    return [
+      r.salonName,
+      r.addressLine1,
+      r.addressLine2 || "",
+      r.town || "",
+      r.county || "",
+      r.postCode || "",
+      r.country || "UK",
+    ].filter(Boolean).join(", ");
+  }
+
+  function buildMapsUrls(stops: string[], opts: { optimize: boolean; startAtCurrent: boolean }): string[] {
+    // Deduplicate consecutive duplicate addresses to avoid weird routing
+    const cleaned = stops.filter((s, i) => i === 0 || s !== stops[i - 1]);
+    if (cleaned.length === 0) return [];
+
+    // Determine origin and the sequence of destination stops
+    let origin: string;
+    let remaining: string[];
+
+    if (opts.startAtCurrent) {
+      origin = "Current Location";
+      remaining = cleaned.slice(); // all are stops to visit
+    } else {
+      origin = cleaned[0];
+      remaining = cleaned.slice(1);
+    }
+
+    if (remaining.length === 0) {
+      // Only one stop → route from current to that stop (or from the only stop to itself)
+      return [googleDirUrl({ origin, destination: origin === "Current Location" ? cleaned[0] : cleaned[0], waypoints: [], optimize: false })];
+    }
+
+    const urls: string[] = [];
+    let legOrigin = origin;
+    let i = 0;
+
+    while (i < remaining.length) {
+      // Take up to WAYPOINT_LIMIT+1 stops for this leg (destination + waypoints)
+      const segment = remaining.slice(i, i + (WAYPOINT_LIMIT + 1)); // includes destination
+      const destination = segment[segment.length - 1];
+      const waypoints = segment.slice(0, -1);
+
+      urls.push(googleDirUrl({ origin: legOrigin, destination, waypoints, optimize: opts.optimize }));
+
+      // Next leg starts from the last destination
+      legOrigin = destination;
+      i += segment.length;
+    }
+
+    return urls;
+  }
+
+  function googleDirUrl({
+    origin,
+    destination,
+    waypoints,
+    optimize,
+  }: {
+    origin: string;
+    destination: string;
+    waypoints: string[];
+    optimize: boolean;
+  }): string {
+    const u = new URL("https://www.google.com/maps/dir/");
+    u.searchParams.set("api", "1");
+    u.searchParams.set("travelmode", "driving");
+    u.searchParams.set("origin", origin);
+    u.searchParams.set("destination", destination);
+    if (waypoints.length) {
+      const wp = (optimize ? ["optimize:true", ...waypoints] : waypoints).join("|");
+      u.searchParams.set("waypoints", wp);
+    }
+    return u.toString();
+  }
+
+  function openInGoogleMaps() {
+    if (!rows.length) return;
+    const stops = rows.map(addr);
+    const urls = buildMapsUrls(stops, { optimize, startAtCurrent });
+    if (!urls.length) return;
+
+    if (urls.length > 1) {
+      // Warn about multiple legs; some browsers block multiple popups
+      const proceed = typeof window !== "undefined"
+        ? window.confirm(`Your route needs ${urls.length} Google Maps tabs due to the stop limit. Open them now?`)
+        : true;
+      if (!proceed) return;
+    }
+
+    for (const url of urls) {
+      window.open(url, "_blank");
+    }
+  }
 
   return (
     <section className="card">
@@ -132,6 +236,29 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
             ))}
           </select>
         </div>
+      </div>
+
+      {/* Google Maps options */}
+      <div className="row" style={{ gap: 12, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={startAtCurrent}
+            onChange={(e) => setStartAtCurrent(e.target.checked)}
+          />
+          Start at current location
+        </label>
+        <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={optimize}
+            onChange={(e) => setOptimize(e.target.checked)}
+          />
+          Optimize stop order
+        </label>
+        <button className="btn" onClick={openInGoogleMaps} disabled={!rows.length}>
+          Open in Google Maps
+        </button>
       </div>
 
       <div style={{ marginTop: 16 }}>
