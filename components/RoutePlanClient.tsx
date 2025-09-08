@@ -29,6 +29,9 @@ const DAYS = [
   { val: "FRIDAY", label: "Friday" },
 ] as const;
 
+// NEW: open-days (for filtering salons that are open on these days)
+const OPEN_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+
 const MAX_STOPS_PER_MAPS_ROUTE = 25; // origin + destination + up to 23 waypoints
 const WAYPOINT_LIMIT = MAX_STOPS_PER_MAPS_ROUTE - 2;
 
@@ -37,6 +40,9 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
   const [rep, setRep] = useState<string>("");
   const [week, setWeek] = useState<string>("");
   const [day, setDay] = useState<string>("");
+
+  // NEW: Days Open multi-select
+  const [openDayFilters, setOpenDayFilters] = useState<string[]>([]);
 
   // Data
   const [rows, setRows] = useState<Customer[]>([]);
@@ -70,10 +76,11 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     if (rep) p.set("reps", rep);
     if (week) p.set("week", week);
     if (day) p.set("day", day);
+    if (openDayFilters.length) p.set("days", openDayFilters.join(",")); // NEW
     p.set("onlyPlanned", "1");
     p.set("limit", "1000");
     return p.toString();
-  }, [rep, week, day]);
+  }, [rep, week, day, openDayFilters]);
 
   // Load data
   useEffect(() => {
@@ -316,6 +323,12 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     setExtraLegUrls(rest);
   }
 
+  function toggleOpenDay(d: string) {
+    setOpenDayFilters(prev =>
+      prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]
+    );
+  }
+
   // -------- UI --------
   return (
     <section className="card">
@@ -358,6 +371,35 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
             <option value="">— Select day —</option>
             {DAYS.map((d) => <option key={d.val} value={d.val}>{d.label}</option>)}
           </select>
+        </div>
+
+        {/* NEW: Days Open multi-select */}
+        <div className="field" style={{ minWidth: 320 }}>
+          <label>Days Open</label>
+          <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+            {OPEN_DAYS.map((d) => {
+              const active = openDayFilters.includes(d);
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => toggleOpenDay(d)}
+                  className="small"
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 999,
+                    padding: "6px 10px",
+                    background: active ? "#111" : "#fff",
+                    color: active ? "#fff" : "inherit",
+                    cursor: "pointer",
+                  }}
+                >
+                  {d}
+                </button>
+              );
+            })}
+          </div>
+          <div className="form-hint">Shows salons open on <b>any</b> of the selected days.</div>
         </div>
       </div>
 
