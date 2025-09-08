@@ -18,11 +18,19 @@ type Customer = {
   customerNumber: string | null;
   salesRep: string | null;
   createdAt: string;
+  // optional extras (API may return them; not required to render)
+  daysOpen?: string | null;
+  openingHours?: string | null;
 };
+
+const DOW: Array<"Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"> = [
+  "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
+];
 
 export default function RoutePlannerClient({ reps }: { reps: string[] }) {
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [pcInput, setPcInput] = useState("");
+  const [selectedDays, setSelectedDays] = useState<string[]>([]); // NEW
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<Customer[]>([]);
 
@@ -39,8 +47,9 @@ export default function RoutePlannerClient({ reps }: { reps: string[] }) {
     const params = new URLSearchParams();
     if (selectedReps.length) params.set("reps", selectedReps.join(","));
     if (pcs.length) params.set("pc", pcs.join(","));
+    if (selectedDays.length) params.set("days", selectedDays.join(",")); // NEW
     return params.toString();
-  }, [selectedReps, pcs]);
+  }, [selectedReps, pcs, selectedDays]);
 
   async function runSearch() {
     setLoading(true);
@@ -55,7 +64,6 @@ export default function RoutePlannerClient({ reps }: { reps: string[] }) {
     }
   }
 
-  // Optional: auto-search whenever filters change
   useEffect(() => {
     runSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -64,6 +72,12 @@ export default function RoutePlannerClient({ reps }: { reps: string[] }) {
   function toggleRep(rep: string) {
     setSelectedReps(prev =>
       prev.includes(rep) ? prev.filter(r => r !== rep) : [...prev, rep]
+    );
+  }
+
+  function toggleDay(day: string) {
+    setSelectedDays(prev =>
+      prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]
     );
   }
 
@@ -173,7 +187,36 @@ export default function RoutePlannerClient({ reps }: { reps: string[] }) {
           <div className="form-hint">Comma or space separated. Matches start of the postcode.</div>
         </div>
 
-        {/* Manual search button (kept for clarity) */}
+        {/* NEW: Days Open */}
+        <div className="field" style={{ minWidth: 320 }}>
+          <label>Days Open</label>
+          <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+            {DOW.map(d => {
+              const active = selectedDays.includes(d);
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => toggleDay(d)}
+                  className="small"
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 999,
+                    padding: "6px 10px",
+                    background: active ? "#111" : "#fff",
+                    color: active ? "#fff" : "inherit",
+                    cursor: "pointer",
+                  }}
+                >
+                  {d}
+                </button>
+              );
+            })}
+          </div>
+          <div className="form-hint">Shows salons open on <b>any</b> of the selected days.</div>
+        </div>
+
+        {/* Manual search button */}
         <div>
           <button className="primary" onClick={runSearch} disabled={loading}>
             {loading ? "Searching..." : "Search"}
