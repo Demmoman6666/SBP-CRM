@@ -6,28 +6,23 @@ import type { Prisma } from "@prisma/client";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// -------- helpers --------
-
-// Strict comma-split for reps (names can contain spaces)
+/* ---------------- helpers ---------------- */
 function parseCommaList(param: string | null): string[] {
   if (!param) return [];
   return param.split(",").map(s => s.trim()).filter(Boolean);
 }
-
-// Flexible split for postcode prefixes (commas or whitespace)
 function parsePrefixes(param: string | null): string[] {
   if (!param) return [];
   return param.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
 }
 
-// Accept Mon,Tue,Wed,Thu,Fri,Sat,Sun OR full names (case-insensitive)
+// Accept Mon,Tue,Wed,Thu,Fri,Sat,Sun (or full names)
 const DOW_SHORT = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] as const;
 type DowShort = typeof DOW_SHORT[number];
 
 function normDayToken(s: string): DowShort | null {
   const t = s.trim().toLowerCase();
   if (!t) return null;
-  // map full names -> short
   if (t.startsWith("mon")) return "Mon";
   if (t.startsWith("tue")) return "Tue";
   if (t.startsWith("wed")) return "Wed";
@@ -37,7 +32,6 @@ function normDayToken(s: string): DowShort | null {
   if (t.startsWith("sun")) return "Sun";
   return null;
 }
-
 function parseDays(param: string | null): DowShort[] {
   if (!param) return [];
   const out: DowShort[] = [];
@@ -48,8 +42,7 @@ function parseDays(param: string | null): DowShort[] {
   return out;
 }
 
-// Parse openingHours JSON string into a Set of days that are open
-// Expected shape per your UI: { Mon: { open: true, from?: "...", to?: "..." }, ... }
+// Parse openingHours JSON into a set of open days
 function openDaysFromOpeningHours(src?: string | null): Set<DowShort> {
   const set = new Set<DowShort>();
   if (!src) return set;
@@ -58,12 +51,14 @@ function openDaysFromOpeningHours(src?: string | null): Set<DowShort> {
     if (obj && typeof obj === "object") {
       for (const d of DOW_SHORT) {
         const it = (obj as any)[d];
-        if (it && typeof it === "object" && it.open === true) set.add(d);
+        // Count as open if explicitly open:true OR (no flag but has times)
+        if (
+          (it && typeof it === "object" && it.open === true) ||
+          (it && (it.from || it.to))
+        ) set.add(d);
       }
     }
-  } catch {
-    // ignore bad JSON
-  }
+  } catch {}
   return set;
 }
 
@@ -78,15 +73,12 @@ function tokensFromDaysOpen(csv?: string | null): Set<DowShort> {
   return set;
 }
 
-// -------- main --------
-
-// Valid route-planning days (for routeDays enum) — Monday..Friday only, per your schema
-const VALID_DAYS = new Set(["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY"]);
+/* ---------------- main ---------------- */
+const VALID_ROUTE_DAYS = new Set(["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY"]);
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  // filters from query
   const reps = parseCommaList(searchParams.get("reps"));
   const prefixes = parsePrefixes(searchParams.get("pc")).map(p => p.toUpperCase().replace(/\s+/g, ""));
 
@@ -95,50 +87,28 @@ export async function GET(req: Request) {
   const week = Number.isInteger(weekRaw) && weekRaw >= 1 && weekRaw <= 4 ? weekRaw : null;
 
   const dayRaw = (searchParams.get("day") || "").trim().toUpperCase();
-  const day = VALID_DAYS.has(dayRaw) ? dayRaw : null;
+  const day = VALID_ROUTE_DAYS.has(dayRaw) ? dayRaw : null;
 
-  // NEW: days open (Mon,Tue,...)
+  // NEW: Days Open (Mon,Tue,...) from Route Planner
   const daysOpenFilter = parseDays(searchParams.get("days"));
 
   const limit = Math.min(Math.max(Number(searchParams.get("limit") || "200"), 1), 1000);
 
   const andFilters: Prisma.CustomerWhereInput[] = [];
 
-  // reps: case-insensitive equals
   if (reps.length) {
-    andFilters.push({
-      OR: reps.map(r => ({ salesRep: { equals: r, mode: "insensitive" } })),
-    });
+    andFilters.push({ OR: reps.map(r => ({ salesRep: { equals: r, mode: "insensitive" } })) });
   }
-
-  // postcode prefixes: case-insensitive startsWith
   if (prefixes.length) {
-    andFilters.push({
-      OR: prefixes.map(p => ({ postCode: { startsWith: p, mode: "insensitive" } })),
-    });
+    andFilters.push({ OR: prefixes.map(p => ({ postCode: { startsWith: p, mode: "insensitive" } })) });
   }
 
-  // route plan filters
-  if (onlyPlanned || week || day) {
-    andFilters.push({ routePlanEnabled: true });
-  }
-  if (week) {
-    andFilters.push({ routeWeeks: { has: week } });
-  }
-  if (day) {
-    andFilters.push({ routeDays: { has: day as any } }); // enum RouteDay
-  }
+  // Route Plan page filters
+  if (onlyPlanned || week || day) andFilters.push({ routePlanEnabled: true });
+  if (week) andFilters.push({ routeWeeks: { has: week } });
+  if (day)  andFilters.push({ routeDays: { has: day as any } });
 
-  // SQL-level prefilter for days open via Customer.daysOpen CSV (fast, ANY match)
-  if (daysOpenFilter.length) {
-    andFilters.push({
-      OR: daysOpenFilter.map(d => ({
-        daysOpen: { contains: d, mode: "insensitive" },
-      })),
-    });
-    // Note: we *don’t* try to SQL-match openingHours JSON text — we’ll do precise parse below
-  }
-
+  // IMPORTANT: do NOT SQL-prefilter by daysOpen, otherwise customers who only have openingHours JSON get excluded.
   const where: Prisma.CustomerWhereInput = andFilters.length ? { AND: andFilters } : {};
 
   const customers = await prisma.customer.findMany({
@@ -158,11 +128,11 @@ export async function GET(req: Request) {
       salesRep: true,
       createdAt: true,
 
-      // helpful for post-filter & debug
+      // For open-days filtering
       daysOpen: true,
       openingHours: true,
 
-      // helpful if the UI wants to show what was selected
+      // Route plan flags
       routePlanEnabled: true,
       routeWeeks: true,
       routeDays: true,
@@ -171,22 +141,15 @@ export async function GET(req: Request) {
     take: limit,
   });
 
-  // Precise post-filter by openingHours JSON (ANY of selected days with open:true)
-  let filtered = customers;
-  if (daysOpenFilter.length) {
-    filtered = customers.filter(c => {
-      // 1) CSV tokens
-      const csvTokens = tokensFromDaysOpen(c.daysOpen);
-      const csvHit = daysOpenFilter.some(d => csvTokens.has(d));
-
-      // 2) JSON openingHours tokens (exact open:true)
-      const ohTokens = openDaysFromOpeningHours(c.openingHours);
-      const ohHit = daysOpenFilter.some(d => ohTokens.has(d));
-
-      // If either CSV or openingHours says open on any selected day, include
-      return csvHit || ohHit;
-    });
-  }
+  // Post-filter for Days Open: include if ANY selected day is open (in CSV or JSON)
+  const filtered =
+    daysOpenFilter.length === 0
+      ? customers
+      : customers.filter(c => {
+          const csv = tokensFromDaysOpen(c.daysOpen);
+          const oh  = openDaysFromOpeningHours(c.openingHours);
+          return daysOpenFilter.some(d => csv.has(d) || oh.has(d));
+        });
 
   return NextResponse.json(filtered);
 }
