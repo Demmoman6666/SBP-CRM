@@ -1,7 +1,7 @@
 // components/RoutePlanClient.tsx
 "use client";
 
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 type Rep = { id: string; name: string };
@@ -40,7 +40,6 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
   const [loading, setLoading] = useState(false);
 
   // Google Maps options
-  const [optimize, setOptimize] = useState<boolean>(true);
   const [startAtCurrent, setStartAtCurrent] = useState<boolean>(true);
 
   const acRef = useRef<AbortController | null>(null);
@@ -79,7 +78,7 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     return () => ac.abort();
   }, [qs, rep, week, day]);
 
-  // ✅ Address-only for Google Maps geocoding (prevents name-based POI mismatches)
+  // Address-only for stable geocoding (no salonName to avoid POI mismatches)
   function geocodeAddress(r: Customer): string {
     return [
       r.addressLine1,
@@ -93,7 +92,7 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
       .join(", ");
   }
 
-  function buildMapsUrls(stops: string[], opts: { optimize: boolean; startAtCurrent: boolean }): string[] {
+  function buildMapsUrls(stops: string[], opts: { startAtCurrent: boolean }): string[] {
     const cleaned = stops.filter((s, i) => i === 0 || s !== stops[i - 1]);
     if (cleaned.length === 0) return [];
 
@@ -112,9 +111,8 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
       return [
         googleDirUrl({
           origin,
-          destination: origin === "Current Location" ? cleaned[0] : cleaned[0],
+          destination: cleaned[0],
           waypoints: [],
-          optimize: false,
         }),
       ];
     }
@@ -124,11 +122,12 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     let i = 0;
 
     while (i < remaining.length) {
-      const segment = remaining.slice(i, i + (WAYPOINT_LIMIT + 1)); // last is destination
+      // up to 1 destination + 23 waypoints
+      const segment = remaining.slice(i, i + (WAYPOINT_LIMIT + 1));
       const destination = segment[segment.length - 1];
       const waypoints = segment.slice(0, -1);
 
-      urls.push(googleDirUrl({ origin: legOrigin, destination, waypoints, optimize: opts.optimize }));
+      urls.push(googleDirUrl({ origin: legOrigin, destination, waypoints }));
 
       legOrigin = destination;
       i += segment.length;
@@ -141,12 +140,10 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     origin,
     destination,
     waypoints,
-    optimize,
   }: {
     origin: string;
     destination: string;
     waypoints: string[];
-    optimize: boolean;
   }): string {
     const u = new URL("https://www.google.com/maps/dir/");
     u.searchParams.set("api", "1");
@@ -154,22 +151,24 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     u.searchParams.set("origin", origin);
     u.searchParams.set("destination", destination);
     if (waypoints.length) {
-      const wp = (optimize ? ["optimize:true", ...waypoints] : waypoints).join("|");
-      u.searchParams.set("waypoints", wp);
+      // DO NOT add "optimize:true" — unsupported in api=1; becomes a bogus waypoint
+      u.searchParams.set("waypoints", waypoints.join("|"));
     }
     return u.toString();
   }
 
   function openInGoogleMaps() {
     if (!rows.length) return;
-    const stops = rows.map(geocodeAddress); // ✅ address-only
-    const urls = buildMapsUrls(stops, { optimize, startAtCurrent });
+    const stops = rows.map(geocodeAddress);
+    const urls = buildMapsUrls(stops, { startAtCurrent });
     if (!urls.length) return;
 
     if (urls.length > 1) {
       const proceed =
         typeof window !== "undefined"
-          ? window.confirm(`Your route needs ${urls.length} Google Maps tabs due to the stop limit. Open them now?`)
+          ? window.confirm(
+              `Your route needs ${urls.length} Google Maps tabs due to the 25-stop limit. Open them now?`
+            )
           : true;
       if (!proceed) return;
     }
@@ -243,10 +242,6 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
         <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={startAtCurrent} onChange={(e) => setStartAtCurrent(e.target.checked)} />
           Start at current location
-        </label>
-        <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <input type="checkbox" checked={optimize} onChange={(e) => setOptimize(e.target.checked)} />
-          Optimize stop order
         </label>
         <button className="btn" onClick={openInGoogleMaps} disabled={!rows.length}>
           Open in Google Maps
