@@ -29,7 +29,7 @@ const DAYS = [
   { val: "FRIDAY", label: "Friday" },
 ] as const;
 
-const MAX_STOPS_PER_MAPS_ROUTE = 25; // origin + destination + waypoints (<=23)
+const MAX_STOPS_PER_MAPS_ROUTE = 25; // origin + destination + up to 23 waypoints
 const WAYPOINT_LIMIT = MAX_STOPS_PER_MAPS_ROUTE - 2;
 
 export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
@@ -47,7 +47,7 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
-    if (rep) p.set("reps", rep); // single rep value; API handles case-insensitive equals
+    if (rep) p.set("reps", rep);
     if (week) p.set("week", week);
     if (day) p.set("day", day);
     p.set("onlyPlanned", "1");
@@ -79,38 +79,44 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     return () => ac.abort();
   }, [qs, rep, week, day]);
 
-  function addr(r: Customer): string {
+  // ✅ Address-only for Google Maps geocoding (prevents name-based POI mismatches)
+  function geocodeAddress(r: Customer): string {
     return [
-      r.salonName,
       r.addressLine1,
       r.addressLine2 || "",
       r.town || "",
       r.county || "",
       r.postCode || "",
       r.country || "UK",
-    ].filter(Boolean).join(", ");
+    ]
+      .filter(Boolean)
+      .join(", ");
   }
 
   function buildMapsUrls(stops: string[], opts: { optimize: boolean; startAtCurrent: boolean }): string[] {
-    // Deduplicate consecutive duplicate addresses to avoid weird routing
     const cleaned = stops.filter((s, i) => i === 0 || s !== stops[i - 1]);
     if (cleaned.length === 0) return [];
 
-    // Determine origin and the sequence of destination stops
     let origin: string;
     let remaining: string[];
 
     if (opts.startAtCurrent) {
       origin = "Current Location";
-      remaining = cleaned.slice(); // all are stops to visit
+      remaining = cleaned.slice();
     } else {
       origin = cleaned[0];
       remaining = cleaned.slice(1);
     }
 
     if (remaining.length === 0) {
-      // Only one stop → route from current to that stop (or from the only stop to itself)
-      return [googleDirUrl({ origin, destination: origin === "Current Location" ? cleaned[0] : cleaned[0], waypoints: [], optimize: false })];
+      return [
+        googleDirUrl({
+          origin,
+          destination: origin === "Current Location" ? cleaned[0] : cleaned[0],
+          waypoints: [],
+          optimize: false,
+        }),
+      ];
     }
 
     const urls: string[] = [];
@@ -118,14 +124,12 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
     let i = 0;
 
     while (i < remaining.length) {
-      // Take up to WAYPOINT_LIMIT+1 stops for this leg (destination + waypoints)
-      const segment = remaining.slice(i, i + (WAYPOINT_LIMIT + 1)); // includes destination
+      const segment = remaining.slice(i, i + (WAYPOINT_LIMIT + 1)); // last is destination
       const destination = segment[segment.length - 1];
       const waypoints = segment.slice(0, -1);
 
       urls.push(googleDirUrl({ origin: legOrigin, destination, waypoints, optimize: opts.optimize }));
 
-      // Next leg starts from the last destination
       legOrigin = destination;
       i += segment.length;
     }
@@ -158,15 +162,15 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
 
   function openInGoogleMaps() {
     if (!rows.length) return;
-    const stops = rows.map(addr);
+    const stops = rows.map(geocodeAddress); // ✅ address-only
     const urls = buildMapsUrls(stops, { optimize, startAtCurrent });
     if (!urls.length) return;
 
     if (urls.length > 1) {
-      // Warn about multiple legs; some browsers block multiple popups
-      const proceed = typeof window !== "undefined"
-        ? window.confirm(`Your route needs ${urls.length} Google Maps tabs due to the stop limit. Open them now?`)
-        : true;
+      const proceed =
+        typeof window !== "undefined"
+          ? window.confirm(`Your route needs ${urls.length} Google Maps tabs due to the stop limit. Open them now?`)
+          : true;
       if (!proceed) return;
     }
 
@@ -223,11 +227,7 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
         {/* Day */}
         <div className="field" style={{ minWidth: 180 }}>
           <label>Day</label>
-          <select
-            value={day}
-            onChange={(e) => setDay(e.target.value)}
-            disabled={!rep || !week}
-          >
+          <select value={day} onChange={(e) => setDay(e.target.value)} disabled={!rep || !week}>
             <option value="">— Select day —</option>
             {DAYS.map((d) => (
               <option key={d.val} value={d.val}>
@@ -241,19 +241,11 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
       {/* Google Maps options */}
       <div className="row" style={{ gap: 12, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
         <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={startAtCurrent}
-            onChange={(e) => setStartAtCurrent(e.target.checked)}
-          />
+          <input type="checkbox" checked={startAtCurrent} onChange={(e) => setStartAtCurrent(e.target.checked)} />
           Start at current location
         </label>
         <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={optimize}
-            onChange={(e) => setOptimize(e.target.checked)}
-          />
+          <input type="checkbox" checked={optimize} onChange={(e) => setOptimize(e.target.checked)} />
           Optimize stop order
         </label>
         <button className="btn" onClick={openInGoogleMaps} disabled={!rows.length}>
@@ -265,61 +257,68 @@ export default function RoutePlanClient({ reps }: { reps: Rep[] }) {
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Day’s Route</h3>
           <div className="small muted">
-            {rep && week && day
-              ? loading
-                ? "Loading…"
-                : `${rows.length} salon${rows.length === 1 ? "" : "s"}`
-              : "Select rep, week, and day to view"}
+            {rep && week && day ? (loading ? "Loading…" : `${rows.length} salon${rows.length === 1 ? "" : "s"}`) : "Select rep, week, and day to view"}
           </div>
         </div>
 
         {!rep || !week || !day ? (
           <p className="small" style={{ marginTop: 12 }}>Awaiting selections…</p>
         ) : !rows.length ? (
-          <p className="small" style={{ marginTop: 12 }}>
-            {loading ? "Loading…" : "No matches found."}
-          </p>
+          <p className="small" style={{ marginTop: 12 }}>{loading ? "Loading…" : "No matches found."}</p>
         ) : (
-          <div className="table" style={{ marginTop: 12 }}>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Salon</th>
-                  <th>Contact</th>
-                  <th>Town</th>
-                  <th>Postcode</th>
-                  <th>Sales Rep</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id}>
-                    <td className="small" style={{ maxWidth: 260, whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" }}>
-                      {r.salonName}
-                      <div className="small" style={{ color: "var(--muted)" }}>
-                        {r.addressLine1}
-                        {r.addressLine2 ? `, ${r.addressLine2}` : ""}
-                        {r.town ? `, ${r.town}` : ""}
-                        {r.county ? `, ${r.county}` : ""}
-                        {r.postCode ? `, ${r.postCode}` : ""}
-                        {r.country ? `, ${r.country}` : ""}
-                      </div>
-                    </td>
-                    <td className="small">{r.customerName || "—"}</td>
-                    <td className="small">{r.town || "—"}</td>
-                    <td className="small">{r.postCode || "—"}</td>
-                    <td className="small">{r.salesRep || "—"}</td>
-                    <td className="small right">
-                      <Link href={`/customers/${r.id}`} className="btn small">
-                        View
-                      </Link>
-                    </td>
+          <>
+            <div className="table" style={{ marginTop: 12 }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Salon</th>
+                    <th>Contact</th>
+                    <th>Town</th>
+                    <th>Postcode</th>
+                    <th>Sales Rep</th>
+                    <th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.id}>
+                      <td
+                        className="small"
+                        style={{ maxWidth: 260, whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" }}
+                      >
+                        {r.salonName}
+                        <div className="small" style={{ color: "var(--muted)" }}>
+                          {r.addressLine1}
+                          {r.addressLine2 ? `, ${r.addressLine2}` : ""}
+                          {r.town ? `, ${r.town}` : ""}
+                          {r.county ? `, ${r.county}` : ""}
+                          {r.postCode ? `, ${r.postCode}` : ""}
+                          {r.country ? `, ${r.country}` : ""}
+                        </div>
+                      </td>
+                      <td className="small">{r.customerName || "—"}</td>
+                      <td className="small">{r.town || "—"}</td>
+                      <td className="small">{r.postCode || "—"}</td>
+                      <td className="small">{r.salesRep || "—"}</td>
+                      <td className="small right">
+                        <Link href={`/customers/${r.id}`} className="btn small">
+                          View
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Optional: see exactly what we send to Google Maps */}
+            <details style={{ marginTop: 12 }}>
+              <summary className="small">Preview route addresses</summary>
+              <pre className="small" style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
+                {rows.map(geocodeAddress).join("\n")}
+              </pre>
+            </details>
+          </>
         )}
       </div>
     </section>
