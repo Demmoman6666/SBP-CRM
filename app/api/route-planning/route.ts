@@ -1,3 +1,4 @@
+// app/api/route-planning/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
@@ -17,34 +18,52 @@ function parsePrefixes(param: string | null): string[] {
   return param.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
 }
 
+const VALID_DAYS = new Set(["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY"]);
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
+  // filters from query
   const reps = parseCommaList(searchParams.get("reps"));
-  const prefixes = parsePrefixes(searchParams.get("pc"))
-    .map(p => p.toUpperCase().replace(/\s+/g, ""));
+  const prefixes = parsePrefixes(searchParams.get("pc")).map(p => p.toUpperCase().replace(/\s+/g, ""));
 
-  const limit = Math.min(Number(searchParams.get("limit") || "200"), 1000);
+  const onlyPlanned = searchParams.get("onlyPlanned") === "1";
+  const weekRaw = Number(searchParams.get("week") || "");
+  const week = Number.isInteger(weekRaw) && weekRaw >= 1 && weekRaw <= 4 ? weekRaw : null;
 
-  const repFilter: Prisma.CustomerWhereInput =
-    reps.length
-      ? {
-          OR: reps.map(r => ({
-            salesRep: { equals: r, mode: "insensitive" },
-          })),
-        }
-      : {};
+  const dayRaw = (searchParams.get("day") || "").trim().toUpperCase();
+  const day = VALID_DAYS.has(dayRaw) ? dayRaw : null;
 
-  const pcFilter: Prisma.CustomerWhereInput =
-    prefixes.length
-      ? {
-          OR: prefixes.map(p => ({
-            postCode: { startsWith: p, mode: "insensitive" },
-          })),
-        }
-      : {};
+  const limit = Math.min(Math.max(Number(searchParams.get("limit") || "200"), 1), 1000);
 
-  const where: Prisma.CustomerWhereInput = { AND: [repFilter, pcFilter] };
+  const andFilters: Prisma.CustomerWhereInput[] = [];
+
+  // reps: case-insensitive equals
+  if (reps.length) {
+    andFilters.push({
+      OR: reps.map(r => ({ salesRep: { equals: r, mode: "insensitive" } })),
+    });
+  }
+
+  // postcode prefixes: case-insensitive startsWith
+  if (prefixes.length) {
+    andFilters.push({
+      OR: prefixes.map(p => ({ postCode: { startsWith: p, mode: "insensitive" } })),
+    });
+  }
+
+  // route plan filters
+  if (onlyPlanned || week || day) {
+    andFilters.push({ routePlanEnabled: true });
+  }
+  if (week) {
+    andFilters.push({ routeWeeks: { has: week } });
+  }
+  if (day) {
+    andFilters.push({ routeDays: { has: day as any } }); // enum RouteDay
+  }
+
+  const where: Prisma.CustomerWhereInput = andFilters.length ? { AND: andFilters } : {};
 
   const customers = await prisma.customer.findMany({
     where,
@@ -62,6 +81,10 @@ export async function GET(req: Request) {
       customerNumber: true,
       salesRep: true,
       createdAt: true,
+      // helpful if the UI wants to show what was selected
+      routePlanEnabled: true,
+      routeWeeks: true,
+      routeDays: true,
     },
     orderBy: [{ postCode: "asc" }, { salonName: "asc" }],
     take: limit,
