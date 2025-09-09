@@ -81,7 +81,7 @@ export async function POST(req: Request) {
       const customer = body?.customer ?? body;
       await upsertCustomerFromShopify(customer, shop);
       console.log(
-        `[WEBHOOK] customer upserted from ${topic} id=${customer?.id ?? "?"} tags=${JSON.stringify(customer?.tags)}`
+        `[WEBHOOK] customer upserted from ${topic} id=${customer?.id ?? customer?.customer_id ?? "?"} tags=${JSON.stringify(customer?.tags)}`
       );
       return ok();
     }
