@@ -1,10 +1,13 @@
-// app/api/shopify/webhooks/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import {
   verifyShopifyHmac,
   upsertCustomerFromShopify,
+  upsertCustomerFromShopifyById,
   upsertOrderFromShopify,
+  parseShopifyTags,
+  extractShopifyCustomerId,
+  getSalesRepForTags,
 } from "@/lib/shopify";
 
 export const runtime = "nodejs";
@@ -69,25 +72,46 @@ export async function POST(req: Request) {
       return ok();
     }
 
-    // ───────── customers (create/update + tag-only topics) ─────────
-    if (
-      topic === "customers/create" ||
-      topic === "customers/update" ||
-      topic === "customer.tags_added" ||
-      topic === "customer.tags_removed" ||
-      topic === "customers/tags/add" ||
-      topic === "customers/tags/remove"
-    ) {
-      const customer = body?.customer ?? body;
-      await upsertCustomerFromShopify(customer, shop);
-      console.log(
-        `[WEBHOOK] customer upserted from ${topic} id=${customer?.id ?? customer?.customer_id ?? "?"} tags=${JSON.stringify(customer?.tags)}`
-      );
+    // ───────── customers core payloads (may NOT include tags on newer API) ─────────
+    if (topic === "customers/create" || topic === "customers/update") {
+      const customerPayload = body?.customer ?? body;
+      const tagsFieldExists = customerPayload && typeof customerPayload === "object" && ("tags" in customerPayload);
+      const tags = tagsFieldExists ? parseShopifyTags(customerPayload.tags) : null;
+      console.info(`[WEBHOOK] ${topic} id=${customerPayload?.id ?? "?"} tags=${tagsFieldExists ? JSON.stringify(tags) : "absent"}`);
+
+      await upsertCustomerFromShopify(customerPayload, shop, {
+        // if tags are absent, the lib will avoid touching shopifyTags;
+        // passing them here only when present
+        overrideTags: tags,
+      });
+      return ok();
+    }
+
+    // ───────── tag delta webhooks (do include tags; sometimes minimal payload) ─────────
+    if (topic === "customer.tags_added" || topic === "customer.tags_removed") {
+      // tags may be under body.tags or variant fields; normalize
+      const eventTags = parseShopifyTags(body?.tags ?? body?.added_tags ?? body?.removed_tags);
+      console.info(`[WEBHOOK] ${topic} eventTags=${JSON.stringify(eventTags)}`);
+
+      // Try to extract a customer id from any of the known fields (top-level or nested)
+      const idFromTop = extractShopifyCustomerId(body);
+      const idFromNested = extractShopifyCustomerId(body?.customer);
+      const shopCustomerId = idFromTop || idFromNested;
+
+      if (!shopCustomerId) {
+        console.warn(`[WEBHOOK] ${topic} missing customer id in payload; cannot upsert.`);
+        return ok(); // 200 so Shopify doesn't retry forever
+      }
+
+      // Fetch full customer from Shopify (ensures we also keep address/email fresh),
+      // then upsert; lib will map eventTags -> salesRep.
+      await upsertCustomerFromShopifyById(shopCustomerId, shop, { overrideTags: eventTags });
+      console.info(`[WEBHOOK] ${topic} upserted via fetch id=${shopCustomerId}`);
       return ok();
     }
 
     // ───────── orders ─────────
-    if (topic === "orders/create" || topic === "orders/updated") {
+    if (topic === "orders/create" || topic === "orders/updated" || topic === "orders/paid" || topic === "orders/fulfilled" || topic === "orders/partially_fulfilled") {
       const order = body?.order ?? body;
       await upsertOrderFromShopify(order, shop);
       console.log(`[WEBHOOK] order upserted from ${topic} id=${order?.id ?? "?"}`);
