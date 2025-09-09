@@ -241,12 +241,13 @@ function extractShopifyCustomerId(payload: any): string | null {
 }
 
 function cleanObject<T extends Record<string, any>>(obj: T): Partial<T> {
-  const out: Record<string, any> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v === null || v === undefined) continue;
-    if (typeof v === "string" && v.trim() === "") continue;
-    out[k] = v;
-  }
+  const out: Partial<T> = {};
+  (Object.keys(obj) as Array<keyof T>).forEach((k) => {
+    const v = obj[k];
+    if (v === null || v === undefined) return;
+    if (typeof v === "string" && v.trim() === "") return;
+    (out as any)[k] = v; // constructing a Partial<T> intentionally
+  });
   return out;
 }
 
@@ -350,7 +351,7 @@ export async function upsertCustomerFromShopify(shop: any, _shopDomain: string) 
       shopifyTags: { set: tags },
       shopifyLastSyncedAt: new Date(),
     };
-    if (mappedRep) updateData.salesRep = mappedRep; // set unconditionally to clear when null if desired
+    if (mappedRep) updateData.salesRep = mappedRep; // set when resolved
     return prisma.customer.update({ where: { id: existing.id }, data: updateData });
   }
 
