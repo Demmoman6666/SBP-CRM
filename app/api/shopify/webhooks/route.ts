@@ -58,7 +58,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    // ───────── products → keep StockedBrand in sync (Option A) ─────────
+    // ───────── products → keep StockedBrand in sync ─────────
     if (topic === "products/create" || topic === "products/update") {
       const vendor = await upsertStockedBrandFromProductPayload(body);
       if (vendor) {
@@ -69,11 +69,20 @@ export async function POST(req: Request) {
       return ok();
     }
 
-    // ───────── customers ─────────
-    if (topic === "customers/create" || topic === "customers/update") {
+    // ───────── customers (create/update + tag-only topics) ─────────
+    if (
+      topic === "customers/create" ||
+      topic === "customers/update" ||
+      topic === "customer.tags_added" ||
+      topic === "customer.tags_removed" ||
+      topic === "customers/tags/add" ||
+      topic === "customers/tags/remove"
+    ) {
       const customer = body?.customer ?? body;
       await upsertCustomerFromShopify(customer, shop);
-      console.log(`[WEBHOOK] customer upserted from ${topic} id=${customer?.id ?? "?"}`);
+      console.log(
+        `[WEBHOOK] customer upserted from ${topic} id=${customer?.id ?? "?"} tags=${JSON.stringify(customer?.tags)}`
+      );
       return ok();
     }
 
