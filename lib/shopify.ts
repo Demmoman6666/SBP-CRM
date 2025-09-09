@@ -31,7 +31,7 @@ function parseShopifyTags(input: any): string[] {
   // Accept string ("a, b"), array of strings, or array of objects with {name}
   if (Array.isArray(input)) {
     return input
-      .map((t: any) => (typeof t === "string" ? t : t?.name ?? ""))
+      .map((t: any) => (typeof t === "string" ? t : (t?.name ?? "")))
       .map(String)
       .map(s => s.trim())
       .filter(Boolean);
@@ -219,25 +219,118 @@ async function fetchShopifyCustomerTags(shopifyId: string): Promise<string[]> {
   return parseShopifyTags(json?.customer?.tags);
 }
 
+/** ──────────── Helpers for robust ID + safe updates ──────────── */
+function extractShopifyCustomerId(payload: any): string | null {
+  const raw =
+    payload?.id ??
+    payload?.customer_id ??
+    payload?.customer?.id ??
+    payload?.admin_graphql_api_id ??
+    null;
+
+  if (!raw) return null;
+  const s = String(raw);
+
+  // GraphQL gid: gid://shopify/Customer/123456789
+  const m = s.match(/\/Customer\/(\d+)$/);
+  if (m) return m[1];
+
+  // Numeric or numeric string
+  const n = s.match(/^\d+$/) ? s : null;
+  return n;
+}
+
+function cleanObject<T extends Record<string, any>>(obj: T): Partial<T> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === null || v === undefined) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+function isMinimalTagOnlyPayload(shop: any): boolean {
+  // Heuristic: tag-only events usually lack name/email/default_address
+  const hasIdentity =
+    !!shop?.email || !!shop?.first_name || !!shop?.last_name || !!shop?.default_address;
+  return !hasIdentity;
+}
+
 /** ───────────────── Inbound upserts (Shopify → CRM) ───────────────── */
 
-/** Upsert Customer from Shopify payload */
+/** Upsert Customer from Shopify payload (robust for tag-only payloads) */
 export async function upsertCustomerFromShopify(shop: any, _shopDomain: string) {
-  const shopifyId = String(shop.id);
-  const email: string | null = (shop.email || "").toLowerCase() || null;
+  const shopifyId = extractShopifyCustomerId(shop);
+  const tags: string[] = parseShopifyTags(shop?.tags);
+  const mappedRep = await getSalesRepForTags(tags);
 
+  // Debug
+  console.log(`[WEBHOOK] tags=${JSON.stringify(tags)} -> rep=${mappedRep ?? "-"}`);
+
+  if (!shopifyId) {
+    console.warn("[WEBHOOK] Missing customer id in payload; skipping upsert.");
+    return null;
+  }
+
+  const tagOnly = isMinimalTagOnlyPayload(shop);
+
+  // Try to locate existing CRM customer by Shopify ID
+  const existing = await prisma.customer.findFirst({ where: { shopifyCustomerId: shopifyId } });
+
+  // If tag-only and we don't have the customer yet, fetch full record and recurse once
+  if (!existing && tagOnly) {
+    try {
+      const res = await shopifyRest(`/customers/${shopifyId}.json`, { method: "GET" });
+      if (res.ok) {
+        const json = await res.json();
+        const full = json?.customer;
+        if (full) {
+          return upsertCustomerFromShopify(full, _shopDomain);
+        }
+      } else {
+        const t = await res.text().catch(() => "");
+        console.warn(`[WEBHOOK] Failed to fetch full customer ${shopifyId}: ${res.status} ${t}`);
+      }
+    } catch (e) {
+      console.warn(`[WEBHOOK] Error fetching full customer ${shopifyId}: ${(e as Error).message}`);
+    }
+    // If still missing, do a minimal create with just the id + tags + rep
+    return prisma.customer.create({
+      data: {
+        salonName: "Shopify Customer",
+        customerName: "Unknown",
+        addressLine1: "",
+        shopifyCustomerId: shopifyId,
+        shopifyTags: tags,
+        ...(mappedRep ? { salesRep: mappedRep } : {}),
+      },
+    });
+  }
+
+  if (tagOnly && existing) {
+    // Only update tags + rep; do not blank out other fields
+    return prisma.customer.update({
+      where: { id: existing.id },
+      data: {
+        shopifyTags: { set: tags },
+        ...(mappedRep ? { salesRep: mappedRep } : {}),
+        shopifyLastSyncedAt: new Date(),
+      },
+    });
+  }
+
+  // Full (or near-full) payload: build a safe base and prune empties
+  const email: string | null = (shop.email || "").toLowerCase() || null;
   const addr = shop.default_address || {};
   const fullName = [shop.first_name, shop.last_name].filter(Boolean).join(" ").trim();
   const company = addr.company || "";
   const phone = shop.phone || addr.phone || null;
 
-  const tags: string[] = parseShopifyTags(shop.tags);
-  const mappedRep = await getSalesRepForTags(tags);
-
   const salonName = company || fullName || "Shopify Customer";
   const customerName = fullName || company || "Unknown";
 
-  const base = {
+  const base = cleanObject({
     salonName,
     customerName,
     addressLine1: addr.address1 || "",
@@ -249,30 +342,39 @@ export async function upsertCustomerFromShopify(shop: any, _shopDomain: string) 
     customerEmailAddress: email,
     customerTelephone: phone,
     shopifyCustomerId: shopifyId,
-  };
+  });
 
-  // Debug: confirm tag parsing & mapping
-  console.log(`[WEBHOOK] tags=${JSON.stringify(tags)} -> rep=${mappedRep ?? "-"}`);
-
-  const byShopId = await prisma.customer.findFirst({ where: { shopifyCustomerId: shopifyId } });
-  if (byShopId) {
-    const updateData: any = { ...base, shopifyTags: { set: tags } };
-    if (mappedRep) updateData.salesRep = mappedRep; // set unconditionally if you want to clear when null
-    return prisma.customer.update({ where: { id: byShopId.id }, data: updateData });
+  if (existing) {
+    const updateData: any = {
+      ...base,
+      shopifyTags: { set: tags },
+      shopifyLastSyncedAt: new Date(),
+    };
+    if (mappedRep) updateData.salesRep = mappedRep; // set unconditionally to clear when null if desired
+    return prisma.customer.update({ where: { id: existing.id }, data: updateData });
   }
 
+  // Not existing by ID — try to merge by email (case-insensitive)
   if (email) {
     const byEmail = await prisma.customer.findFirst({
-      where: { customerEmailAddress: { equals: email, mode: "insensitive" } }, // case-insensitive match
+      where: { customerEmailAddress: { equals: email, mode: "insensitive" } },
     });
     if (byEmail) {
-      const updateData: any = { ...base, shopifyTags: { set: tags } };
+      const updateData: any = {
+        ...base,
+        shopifyTags: { set: tags },
+        shopifyLastSyncedAt: new Date(),
+      };
       if (mappedRep) updateData.salesRep = mappedRep;
       return prisma.customer.update({ where: { id: byEmail.id }, data: updateData });
     }
   }
 
-  const createData: any = { ...base, shopifyTags: tags };
+  // Create new
+  const createData: any = {
+    ...base,
+    shopifyTags: tags,
+  };
   if (mappedRep) createData.salesRep = mappedRep;
   return prisma.customer.create({ data: createData });
 }
