@@ -1,3 +1,4 @@
+// lib/shopify.ts
 import { prisma } from "@/lib/prisma";
 import crypto from "crypto";
 
@@ -6,21 +7,25 @@ const RAW_SHOP_DOMAIN = (process.env.SHOPIFY_SHOP_DOMAIN || "").trim();
 const SHOP_DOMAIN = RAW_SHOP_DOMAIN.replace(/^https?:\/\//i, "");
 const SHOP_ADMIN_TOKEN = (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "").trim();
 export const SHOPIFY_API_VERSION = (process.env.SHOPIFY_API_VERSION || "2024-07").trim();
+
 const WEBHOOK_SECRET = (process.env.SHOPIFY_WEBHOOK_SECRET || "").trim();
 const ALT_SECRET_1 = (process.env.SHOPIFY_API_SECRET_KEY || "").trim();
 const ALT_SECRET_2 = (process.env.SHOPIFY_CLIENT_SECRET || "").trim();
 const DISABLE_HMAC = (process.env.SHOPIFY_DISABLE_HMAC || "") === "1";
 
-/** Utils */
-function toNumber(v: any): number | null { if (v==null) return null; const n=Number(v); return Number.isFinite(n)?n:null; }
+/** ───────────────── Utils ───────────────── */
+function toNumber(v: any): number | null { if (v == null) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
+
 export function parseShopifyTags(input: any): string[] {
-  if (Array.isArray(input)) return input.map(String).map(s=>s.trim()).filter(Boolean);
-  if (typeof input === "string") return input.split(",").map(s=>s.trim()).filter(Boolean);
+  if (Array.isArray(input)) return input.map(String).map(s => s.trim()).filter(Boolean);
+  if (typeof input === "string") return input.split(",").map(s => s.trim()).filter(Boolean);
   return [];
 }
-function tagsToString(tags: string[]) { return Array.from(new Set(tags.map(t=>t.trim()).filter(Boolean))).join(", "); }
+function tagsToString(tags: string[]): string {
+  return Array.from(new Set(tags.map(t => t.trim()).filter(Boolean))).join(", ");
+}
 
-/** REST Admin */
+/** ───────────────── REST Admin helper ───────────────── */
 export async function shopifyRest(path: string, init: RequestInit = {}) {
   if (!SHOP_DOMAIN || !SHOP_ADMIN_TOKEN) throw new Error("Missing SHOPIFY_SHOP_DOMAIN or SHOPIFY_ADMIN_ACCESS_TOKEN");
   const url = `https://${SHOP_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}${path}`;
@@ -31,35 +36,39 @@ export async function shopifyRest(path: string, init: RequestInit = {}) {
   return fetch(url, { ...init, headers, cache: "no-store" });
 }
 
-/** HMAC */
+/** ───────────────── HMAC ───────────────── */
 function verifyWithSecret(secret: string, rawBytes: Buffer, hmacHeader: string) {
   if (!secret) return false;
   const providedBytes = Buffer.from(hmacHeader, "base64");
   const digestBytes = crypto.createHmac("sha256", secret).update(rawBytes).digest();
-  try { return providedBytes.length===digestBytes.length && crypto.timingSafeEqual(providedBytes, digestBytes); }
+  try { return providedBytes.length === digestBytes.length && crypto.timingSafeEqual(providedBytes, digestBytes); }
   catch { return false; }
 }
 export function verifyShopifyHmac(rawBody: ArrayBuffer|Buffer|string, hmacHeader?: string|null) {
   if (DISABLE_HMAC) return true;
   if (!hmacHeader) return false;
-  const bodyBuf = typeof rawBody==="string" ? Buffer.from(rawBody,"utf8")
-                 : Buffer.isBuffer(rawBody) ? rawBody
-                 : Buffer.from(rawBody as ArrayBuffer);
+  const bodyBuf = typeof rawBody === "string" ? Buffer.from(rawBody, "utf8")
+                : Buffer.isBuffer(rawBody) ? rawBody
+                : Buffer.from(rawBody as ArrayBuffer);
   const secrets = [WEBHOOK_SECRET, ALT_SECRET_1, ALT_SECRET_2].filter(Boolean);
   for (const s of secrets) if (verifyWithSecret(s, bodyBuf, hmacHeader)) return true;
   return false;
 }
 
-/** Sales Rep mapping */
+/** ───────────────── Sales Rep mapping ───────────────── */
 export async function getSalesRepForTags(tags: string[]): Promise<string | null> {
   if (!tags || !tags.length) return null;
-  const norm = tags.map(t=>t.trim()).filter(Boolean);
+  const norm = tags.map(t => t.trim()).filter(Boolean);
 
+  // Rule table first (allows synonyms / aliases)
   const rule = await prisma.salesRepTagRule.findFirst({
-    where: { tag: { in: norm } }, include: { salesRep: true }, orderBy: { createdAt: "asc" },
+    where: { tag: { in: norm } },
+    include: { salesRep: true },
+    orderBy: { createdAt: "asc" },
   });
   if (rule?.salesRep?.name) return rule.salesRep.name;
 
+  // Fallback: direct match to SalesRep.name
   const reps = await prisma.salesRep.findMany({ select: { name: true } });
   const byLower = new Map(reps.map(r => [r.name.toLowerCase(), r.name]));
   for (const t of norm) {
@@ -69,7 +78,7 @@ export async function getSalesRepForTags(tags: string[]): Promise<string | null>
   return null;
 }
 
-/** Fetch full Shopify customer by id (ensures tags present) */
+/** ───────────────── Customer fetch / id helpers ───────────────── */
 async function fetchShopifyCustomerById(shopifyId: string): Promise<any | null> {
   if (!shopifyId) return null;
   const res = await shopifyRest(`/customers/${shopifyId}.json`, { method: "GET" });
@@ -78,12 +87,12 @@ async function fetchShopifyCustomerById(shopifyId: string): Promise<any | null> 
   return json?.customer ?? null;
 }
 
-/** Pull a numeric Shopify customer id from various shapes */
+/** Pull numeric Shopify customer id from various payload shapes */
 export function extractShopifyCustomerId(payload: any): string | null {
   if (!payload || typeof payload !== "object") return null;
-  if (payload.customer_id != null) return String(payload.customer_id);                // tag events
-  if (payload.customer?.id != null) return String(payload.customer.id);              // nested
-  if (payload.id != null && typeof payload.id !== "object") return String(payload.id);
+  if (payload.customer_id != null) return String(payload.customer_id);                    // tag events
+  if (payload.customer?.id != null) return String(payload.customer.id);                  // nested
+  if (payload.id != null && typeof payload.id !== "object") return String(payload.id);   // direct
   const gid: string | undefined = payload.admin_graphql_api_id || payload.customer?.admin_graphql_api_id;
   if (gid && typeof gid === "string") {
     const m = gid.match(/\/Customer\/(\d+)$/);
@@ -92,27 +101,20 @@ export function extractShopifyCustomerId(payload: any): string | null {
   return null;
 }
 
-/** Upsert helpers */
+/** ───────────────── Inbound upserts (Shopify → CRM) ───────────────── */
 type UpsertOpts = {
-  updateOnly?: boolean;
+  updateOnly?: boolean;                    // if true, never create CRM records
   matchBy?: "shopifyIdOnly" | "shopifyIdOrEmail";
 };
 
-export async function upsertCustomerFromShopifyById(
-  shopCustomerId: string,
-  _shopDomain: string,
-  opts?: UpsertOpts
-) {
+/** Fetch by id first (ensures tags present), then upsert */
+export async function upsertCustomerFromShopifyById(shopCustomerId: string, _shopDomain: string, opts?: UpsertOpts) {
   const full = await fetchShopifyCustomerById(shopCustomerId);
   if (!full) { console.warn(`[WEBHOOK] fetch failed for Shopify customer ${shopCustomerId}`); return; }
   await upsertCustomerFromShopify(full, _shopDomain, opts);
 }
 
-/**
- * Main upsert. Always maps tags → salesRep.
- * - For create/update payloads with full tags, this just works.
- * - For tag events we call the *_ById version so `full.tags` is present.
- */
+/** Main upsert — maps tags → salesRep, and syncs shopifyTags */
 export async function upsertCustomerFromShopify(shop: any, _shopDomain: string, opts?: UpsertOpts) {
   const shopifyId = extractShopifyCustomerId(shop);
   const email: string | null = (shop.email || "").toLowerCase() || null;
@@ -158,7 +160,6 @@ export async function upsertCustomerFromShopify(shop: any, _shopDomain: string, 
   }
 
   if (opts?.updateOnly) {
-    // Don’t create for tag-only events
     console.info(`[WEBHOOK] updateOnly=true, no CRM match for shopifyId=${shopifyId ?? "-"}, email=${email ?? "-"}`);
     return;
   }
@@ -170,7 +171,7 @@ export async function upsertCustomerFromShopify(shop: any, _shopDomain: string, 
   console.info(`[WEBHOOK] CRM created id=${created.id} → rep=${repName ?? "-"}`);
 }
 
-/** Orders (unchanged) */
+/** Orders (Shopify → CRM) */
 export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
   const orderId = String(order.id);
   const custShopId = order.customer ? String(order.customer.id) : null;
@@ -237,4 +238,99 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
   if (itemsData.length) await prisma.orderLineItem.createMany({ data: itemsData });
 
   return ord;
+}
+
+/** ───────────────── Outbound push (CRM → Shopify) ─────────────────
+ * Keep for existing routes that call pushCustomerToShopifyById.
+ */
+async function tagForSalesRepName(repName: string): Promise<string> {
+  const rep = await prisma.salesRep.findFirst({ where: { name: repName }, select: { id: true, name: true } });
+  if (!rep) return repName;
+  const rule = await prisma.salesRepTagRule.findFirst({ where: { salesRepId: rep.id }, select: { tag: true } });
+  return (rule?.tag?.trim()) || rep.name;
+}
+async function allRepTagsToStripLower(): Promise<Set<string>> {
+  const [rules, reps] = await Promise.all([
+    prisma.salesRepTagRule.findMany({ select: { tag: true } }),
+    prisma.salesRep.findMany({ select: { name: true } }),
+  ]);
+  const s = new Set<string>();
+  for (const r of rules) if (r.tag) s.add(r.tag.toLowerCase().trim());
+  for (const r of reps) if (r.name) s.add(r.name.toLowerCase().trim());
+  return s;
+}
+async function fetchShopifyCustomerTags(shopifyId: string): Promise<string[]> {
+  const res = await shopifyRest(`/customers/${shopifyId}.json`, { method: "GET" });
+  if (!res.ok) return [];
+  const json = await res.json();
+  return parseShopifyTags(json?.customer?.tags);
+}
+
+/** Exported for your existing API usage */
+export async function pushCustomerToShopifyById(crmCustomerId: string) {
+  const c = await prisma.customer.findUnique({ where: { id: crmCustomerId } });
+  if (!c) return;
+
+  const parts = (c.customerName || "").trim().split(/\s+/);
+  const first_name = parts[0] || "";
+  const last_name = parts.slice(1).join(" ") || "";
+
+  const baseAddress = {
+    default: true,
+    company: c.salonName || undefined,
+    address1: c.addressLine1 || undefined,
+    address2: c.addressLine2 || undefined,
+    city: c.town || undefined,
+    province: c.county || undefined,
+    country: c.country || undefined,
+    zip: c.postCode || undefined,
+  };
+
+  const currentRep = (c.salesRep || "").trim();
+  const repTag = currentRep ? (await tagForSalesRepName(currentRep)) : null;
+
+  let existingShopifyId = c.shopifyCustomerId || null;
+  let existingTags: string[] = [];
+  if (existingShopifyId) {
+    try { existingTags = await fetchShopifyCustomerTags(existingShopifyId); } catch { existingTags = []; }
+  }
+
+  const repUniverse = await allRepTagsToStripLower();
+  const kept = existingTags.filter(t => !repUniverse.has(t.toLowerCase().trim()));
+  const newTags = repTag ? [...kept, repTag] : kept;
+
+  const payload: any = {
+    customer: {
+      email: c.customerEmailAddress || undefined,
+      phone: c.customerTelephone || undefined,
+      first_name,
+      last_name,
+      addresses: [baseAddress],
+      tags: tagsToString(newTags),
+    },
+  };
+
+  if (!existingShopifyId) {
+    const res = await shopifyRest(`/customers.json`, { method: "POST", body: JSON.stringify(payload) });
+    if (!res.ok) throw new Error(`Shopify create failed: ${res.status} ${await res.text().catch(()=> "")}`);
+    const json = await res.json();
+    const shopifyId = String(json?.customer?.id ?? "");
+    if (shopifyId) {
+      await prisma.customer.update({
+        where: { id: c.id },
+        data: { shopifyCustomerId: shopifyId, shopifyLastSyncedAt: new Date(), shopifyTags: parseShopifyTags(json?.customer?.tags) },
+      });
+    }
+  } else {
+    const res = await shopifyRest(`/customers/${existingShopifyId}.json`, {
+      method: "PUT",
+      body: JSON.stringify({ customer: { id: Number(existingShopifyId), ...payload.customer } }),
+    });
+    if (!res.ok) throw new Error(`Shopify update failed: ${res.status} ${await res.text().catch(()=> "")}`);
+    const json = await res.json();
+    await prisma.customer.update({
+      where: { id: c.id },
+      data: { shopifyLastSyncedAt: new Date(), shopifyTags: parseShopifyTags(json?.customer?.tags) },
+    });
+  }
 }
