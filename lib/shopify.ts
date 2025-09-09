@@ -1,4 +1,3 @@
-// lib/shopify.ts
 import { prisma } from "@/lib/prisma";
 import crypto from "crypto";
 
@@ -27,23 +26,15 @@ function toNumber(v: any): number | null {
 }
 
 /** Tag helpers */
-function parseShopifyTags(input: any): string[] {
-  // Accept string ("a, b"), array of strings, or array of objects with {name}
+export function parseShopifyTags(input: any): string[] {
   if (Array.isArray(input)) {
-    return input
-      .map((t: any) => (typeof t === "string" ? t : (t?.name ?? "")))
-      .map(String)
-      .map(s => s.trim())
-      .filter(Boolean);
+    return input.map(String).map(s => s.trim()).filter(Boolean);
   }
   if (typeof input === "string") {
     return input
       .split(",")
       .map(s => s.trim())
       .filter(Boolean);
-  }
-  if (Array.isArray(input?.tags)) {
-    return parseShopifyTags(input.tags);
   }
   return [];
 }
@@ -150,38 +141,28 @@ export function verifyShopifyHmac(
 
 /** ───────────────── Sales Rep ↔ Tag mapping helpers ───────────────── */
 
-/** Case-insensitive tag → SalesRep.name */
+/** 1) Map incoming Shopify tags → a SalesRep.name (via rules, then fallback to matching names) */
 export async function getSalesRepForTags(tags: string[]): Promise<string | null> {
   if (!tags || tags.length === 0) return null;
+  const norm = tags.map(t => t.trim()).filter(Boolean);
 
-  const norm = (s: string) => s.trim().toLowerCase();
-  const tagSet = new Set(tags.map(norm).filter(Boolean));
-
-  // 1) Rule-based mapping (case-insensitive)
-  const rules = await prisma.salesRepTagRule.findMany({
-    select: { tag: true, salesRep: { select: { name: true } } },
+  const rule = await prisma.salesRepTagRule.findFirst({
+    where: { tag: { in: norm } },
+    include: { salesRep: true },
+    orderBy: { createdAt: "asc" },
   });
-  for (const r of rules) {
-    const repName = r.salesRep?.name;
-    if (!repName) continue;
-    const ruleTag = (r.tag || "").trim();
-    if (ruleTag && tagSet.has(norm(ruleTag))) {
-      return repName;
-    }
-  }
+  if (rule?.salesRep?.name) return rule.salesRep.name;
 
-  // 2) Fallback: tag equals rep name (case-insensitive)
   const reps = await prisma.salesRep.findMany({ select: { name: true } });
-  const byLower = new Map(reps.map(r => [norm(r.name || ""), r.name]));
-  for (const t of tagSet) {
-    const hit = byLower.get(t);
+  const byLower = new Map(reps.map(r => [r.name.toLowerCase(), r.name]));
+  for (const t of norm) {
+    const hit = byLower.get(t.toLowerCase());
     if (hit) return hit;
   }
-
   return null;
 }
 
-/** For pushing CRM → Shopify, pick the tag we should apply for a Sales Rep name */
+/** 2) For pushing CRM → Shopify, pick the tag string we should apply for a given sales rep name */
 async function tagForSalesRepName(repName: string): Promise<string> {
   const rep = await prisma.salesRep.findFirst({
     where: { name: repName },
@@ -196,7 +177,7 @@ async function tagForSalesRepName(repName: string): Promise<string> {
   return (rule?.tag?.trim()) || rep.name;
 }
 
-/** Universe of “rep tags” to strip/replace when updating Shopify tags */
+/** 3) Universe of “rep tags” to strip/replace when updating Shopify tags */
 async function allRepTagsToStripLower(): Promise<Set<string>> {
   const [rules, reps] = await Promise.all([
     prisma.salesRepTagRule.findMany({ select: { tag: true } }),
@@ -208,7 +189,7 @@ async function allRepTagsToStripLower(): Promise<Set<string>> {
   return s;
 }
 
-/** Read current Shopify tags for a customer ID */
+/** 4) Read current Shopify tags for a customer ID */
 async function fetchShopifyCustomerTags(shopifyId: string): Promise<string[]> {
   const res = await shopifyRest(`/customers/${shopifyId}.json`, { method: "GET" });
   if (!res.ok) {
@@ -219,119 +200,72 @@ async function fetchShopifyCustomerTags(shopifyId: string): Promise<string[]> {
   return parseShopifyTags(json?.customer?.tags);
 }
 
-/** ──────────── Helpers for robust ID + safe updates ──────────── */
-function extractShopifyCustomerId(payload: any): string | null {
-  const raw =
-    payload?.id ??
-    payload?.customer_id ??
-    payload?.customer?.id ??
-    payload?.admin_graphql_api_id ??
-    null;
-
-  if (!raw) return null;
-  const s = String(raw);
-
-  // GraphQL gid: gid://shopify/Customer/123456789
-  const m = s.match(/\/Customer\/(\d+)$/);
-  if (m) return m[1];
-
-  // Numeric or numeric string
-  const n = s.match(/^\d+$/) ? s : null;
-  return n;
+/** 5) Fetch full Shopify customer JSON by id */
+async function fetchShopifyCustomerById(shopifyId: string): Promise<any | null> {
+  const res = await shopifyRest(`/customers/${shopifyId}.json`, { method: "GET" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    console.warn(`[WEBHOOK] fetch customer ${shopifyId} failed: ${res.status} ${text}`);
+    return null;
+  }
+  const json = await res.json();
+  return json?.customer ?? null;
 }
 
-function cleanObject<T extends Record<string, any>>(obj: T): Partial<T> {
-  const out: Partial<T> = {};
-  (Object.keys(obj) as Array<keyof T>).forEach((k) => {
-    const v = obj[k];
-    if (v === null || v === undefined) return;
-    if (typeof v === "string" && v.trim() === "") return;
-    (out as any)[k] = v; // constructing a Partial<T> intentionally
-  });
-  return out;
-}
+/** Try to pull a numeric Shopify customer id from various shapes */
+export function extractShopifyCustomerId(payload: any): string | null {
+  if (!payload || typeof payload !== "object") return null;
 
-function isMinimalTagOnlyPayload(shop: any): boolean {
-  // Heuristic: tag-only events usually lack name/email/default_address
-  const hasIdentity =
-    !!shop?.email || !!shop?.first_name || !!shop?.last_name || !!shop?.default_address;
-  return !hasIdentity;
+  // common minimal field on tag webhooks
+  if (payload.customer_id != null) return String(payload.customer_id);
+
+  // sometimes nested ‘customer’ with id
+  if (payload.customer?.id != null) return String(payload.customer.id);
+
+  // occasionally the payload itself is the customer
+  if (payload.id != null && typeof payload.id !== "object") return String(payload.id);
+
+  // GraphQL gid e.g. gid://shopify/Customer/123
+  const gid: string | undefined =
+    payload.admin_graphql_api_id ||
+    payload.customer?.admin_graphql_api_id;
+  if (gid && typeof gid === "string") {
+    const m = gid.match(/\/Customer\/(\d+)$/);
+    if (m) return m[1];
+  }
+
+  return null;
 }
 
 /** ───────────────── Inbound upserts (Shopify → CRM) ───────────────── */
 
-/** Upsert Customer from Shopify payload (robust for tag-only payloads) */
-export async function upsertCustomerFromShopify(shop: any, _shopDomain: string) {
+/**
+ * Upsert Customer from Shopify payload.
+ * - If `overrideTags` is provided, uses those for rep mapping & CRM tags.
+ * - If payload doesn’t include a `tags` field at all, CRM tags are left untouched.
+ */
+export async function upsertCustomerFromShopify(shop: any, _shopDomain: string, opts?: { overrideTags?: string[] | null }) {
   const shopifyId = extractShopifyCustomerId(shop);
-  const tags: string[] = parseShopifyTags(shop?.tags);
-  const mappedRep = await getSalesRepForTags(tags);
-
-  // Debug
-  console.log(`[WEBHOOK] tags=${JSON.stringify(tags)} -> rep=${mappedRep ?? "-"}`);
-
-  if (!shopifyId) {
-    console.warn("[WEBHOOK] Missing customer id in payload; skipping upsert.");
-    return null;
-  }
-
-  const tagOnly = isMinimalTagOnlyPayload(shop);
-
-  // Try to locate existing CRM customer by Shopify ID
-  const existing = await prisma.customer.findFirst({ where: { shopifyCustomerId: shopifyId } });
-
-  // If tag-only and we don't have the customer yet, fetch full record and recurse once
-  if (!existing && tagOnly) {
-    try {
-      const res = await shopifyRest(`/customers/${shopifyId}.json`, { method: "GET" });
-      if (res.ok) {
-        const json = await res.json();
-        const full = json?.customer;
-        if (full) {
-          return upsertCustomerFromShopify(full, _shopDomain);
-        }
-      } else {
-        const t = await res.text().catch(() => "");
-        console.warn(`[WEBHOOK] Failed to fetch full customer ${shopifyId}: ${res.status} ${t}`);
-      }
-    } catch (e) {
-      console.warn(`[WEBHOOK] Error fetching full customer ${shopifyId}: ${(e as Error).message}`);
-    }
-    // If still missing, do a minimal create with just the id + tags + rep
-    return prisma.customer.create({
-      data: {
-        salonName: "Shopify Customer",
-        customerName: "Unknown",
-        addressLine1: "",
-        shopifyCustomerId: shopifyId,
-        shopifyTags: tags,
-        ...(mappedRep ? { salesRep: mappedRep } : {}),
-      },
-    });
-  }
-
-  if (tagOnly && existing) {
-    // Only update tags + rep; do not blank out other fields
-    return prisma.customer.update({
-      where: { id: existing.id },
-      data: {
-        shopifyTags: { set: tags },
-        ...(mappedRep ? { salesRep: mappedRep } : {}),
-        shopifyLastSyncedAt: new Date(),
-      },
-    });
-  }
-
-  // Full (or near-full) payload: build a safe base and prune empties
   const email: string | null = (shop.email || "").toLowerCase() || null;
+
   const addr = shop.default_address || {};
   const fullName = [shop.first_name, shop.last_name].filter(Boolean).join(" ").trim();
   const company = addr.company || "";
   const phone = shop.phone || addr.phone || null;
 
+  // tags handling (don’t erase when absent on payload)
+  const tagsFieldExists = shop && typeof shop === "object" && ("tags" in shop);
+  const incomingTags: string[] | null =
+    Array.isArray(opts?.overrideTags) ? opts!.overrideTags!
+    : tagsFieldExists ? parseShopifyTags(shop.tags)
+    : null;
+
+  const mappedRep = await getSalesRepForTags(incomingTags || []);
+
   const salonName = company || fullName || "Shopify Customer";
   const customerName = fullName || company || "Unknown";
 
-  const base = cleanObject({
+  const base = {
     salonName,
     customerName,
     addressLine1: addr.address1 || "",
@@ -342,42 +276,43 @@ export async function upsertCustomerFromShopify(shop: any, _shopDomain: string) 
     country: addr.country || null,
     customerEmailAddress: email,
     customerTelephone: phone,
-    shopifyCustomerId: shopifyId,
-  });
+    shopifyCustomerId: shopifyId || null,
+  };
+
+  // Prefer shopifyId if present, else fall back to email
+  const existing =
+    (shopifyId && await prisma.customer.findFirst({ where: { shopifyCustomerId: shopifyId } })) ||
+    (email && await prisma.customer.findFirst({ where: { customerEmailAddress: email } })) ||
+    null;
 
   if (existing) {
-    const updateData: any = {
-      ...base,
-      shopifyTags: { set: tags },
-      shopifyLastSyncedAt: new Date(),
-    };
-    if (mappedRep) updateData.salesRep = mappedRep; // set when resolved
-    return prisma.customer.update({ where: { id: existing.id }, data: updateData });
+    const data: any = { ...base };
+    if (incomingTags !== null) data.shopifyTags = { set: incomingTags };
+    if (mappedRep) data.salesRep = mappedRep;
+
+    await prisma.customer.update({ where: { id: existing.id }, data });
+    console.info(`[WEBHOOK] upserted CRM customer (update) id=${existing.id} shopifyId=${shopifyId ?? "-"} rep=${mappedRep ?? "-"}`);
+    return;
   }
 
-  // Not existing by ID — try to merge by email (case-insensitive)
-  if (email) {
-    const byEmail = await prisma.customer.findFirst({
-      where: { customerEmailAddress: { equals: email, mode: "insensitive" } },
-    });
-    if (byEmail) {
-      const updateData: any = {
-        ...base,
-        shopifyTags: { set: tags },
-        shopifyLastSyncedAt: new Date(),
-      };
-      if (mappedRep) updateData.salesRep = mappedRep;
-      return prisma.customer.update({ where: { id: byEmail.id }, data: updateData });
-    }
-  }
-
-  // Create new
-  const createData: any = {
-    ...base,
-    shopifyTags: tags,
-  };
+  // create
+  const createData: any = { ...base };
+  if (Array.isArray(incomingTags)) createData.shopifyTags = incomingTags;
   if (mappedRep) createData.salesRep = mappedRep;
-  return prisma.customer.create({ data: createData });
+
+  const created = await prisma.customer.create({ data: createData });
+  console.info(`[WEBHOOK] upserted CRM customer (create) id=${created.id} shopifyId=${shopifyId ?? "-" } rep=${mappedRep ?? "-"}`);
+}
+
+/** Upsert by Shopify customer id (fetch full record first), with optional tag override */
+export async function upsertCustomerFromShopifyById(shopCustomerId: string, _shopDomain: string, opts?: { overrideTags?: string[] | null }) {
+  const full = await fetchShopifyCustomerById(shopCustomerId);
+  if (!full) {
+    console.warn(`[WEBHOOK] could not fetch Shopify customer ${shopCustomerId} to upsert`);
+    return;
+  }
+  // Pass through overrideTags so rep mapping is from the tag event, not stale REST data.
+  await upsertCustomerFromShopify(full, _shopDomain, { overrideTags: opts?.overrideTags ?? null });
 }
 
 /** Upsert Order + line items (Shopify → CRM) */
