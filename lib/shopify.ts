@@ -28,14 +28,22 @@ function toNumber(v: any): number | null {
 
 /** Tag helpers */
 function parseShopifyTags(input: any): string[] {
+  // Accept string ("a, b"), array of strings, or array of objects with {name}
   if (Array.isArray(input)) {
-    return input.map(String).map(s => s.trim()).filter(Boolean);
+    return input
+      .map((t: any) => (typeof t === "string" ? t : t?.name ?? ""))
+      .map(String)
+      .map(s => s.trim())
+      .filter(Boolean);
   }
   if (typeof input === "string") {
     return input
       .split(",")
       .map(s => s.trim())
       .filter(Boolean);
+  }
+  if (Array.isArray(input?.tags)) {
+    return parseShopifyTags(input.tags);
   }
   return [];
 }
@@ -142,28 +150,38 @@ export function verifyShopifyHmac(
 
 /** ───────────────── Sales Rep ↔ Tag mapping helpers ───────────────── */
 
-/** 1) Map incoming Shopify tags → a SalesRep.name (via rules, then fallback to matching names) */
+/** Case-insensitive tag → SalesRep.name */
 export async function getSalesRepForTags(tags: string[]): Promise<string | null> {
   if (!tags || tags.length === 0) return null;
-  const norm = tags.map(t => t.trim()).filter(Boolean);
 
-  const rule = await prisma.salesRepTagRule.findFirst({
-    where: { tag: { in: norm } },
-    include: { salesRep: true },
-    orderBy: { createdAt: "asc" },
+  const norm = (s: string) => s.trim().toLowerCase();
+  const tagSet = new Set(tags.map(norm).filter(Boolean));
+
+  // 1) Rule-based mapping (case-insensitive)
+  const rules = await prisma.salesRepTagRule.findMany({
+    select: { tag: true, salesRep: { select: { name: true } } },
   });
-  if (rule?.salesRep?.name) return rule.salesRep.name;
+  for (const r of rules) {
+    const repName = r.salesRep?.name;
+    if (!repName) continue;
+    const ruleTag = (r.tag || "").trim();
+    if (ruleTag && tagSet.has(norm(ruleTag))) {
+      return repName;
+    }
+  }
 
+  // 2) Fallback: tag equals rep name (case-insensitive)
   const reps = await prisma.salesRep.findMany({ select: { name: true } });
-  const byLower = new Map(reps.map(r => [r.name.toLowerCase(), r.name]));
-  for (const t of norm) {
-    const hit = byLower.get(t.toLowerCase());
+  const byLower = new Map(reps.map(r => [norm(r.name || ""), r.name]));
+  for (const t of tagSet) {
+    const hit = byLower.get(t);
     if (hit) return hit;
   }
+
   return null;
 }
 
-/** 2) For pushing CRM → Shopify, pick the tag string we should apply for a given sales rep name */
+/** For pushing CRM → Shopify, pick the tag we should apply for a Sales Rep name */
 async function tagForSalesRepName(repName: string): Promise<string> {
   const rep = await prisma.salesRep.findFirst({
     where: { name: repName },
@@ -178,7 +196,7 @@ async function tagForSalesRepName(repName: string): Promise<string> {
   return (rule?.tag?.trim()) || rep.name;
 }
 
-/** 3) Universe of “rep tags” to strip/replace when updating Shopify tags */
+/** Universe of “rep tags” to strip/replace when updating Shopify tags */
 async function allRepTagsToStripLower(): Promise<Set<string>> {
   const [rules, reps] = await Promise.all([
     prisma.salesRepTagRule.findMany({ select: { tag: true } }),
@@ -190,7 +208,7 @@ async function allRepTagsToStripLower(): Promise<Set<string>> {
   return s;
 }
 
-/** 4) Read current Shopify tags for a customer ID */
+/** Read current Shopify tags for a customer ID */
 async function fetchShopifyCustomerTags(shopifyId: string): Promise<string[]> {
   const res = await shopifyRest(`/customers/${shopifyId}.json`, { method: "GET" });
   if (!res.ok) {
@@ -233,15 +251,20 @@ export async function upsertCustomerFromShopify(shop: any, _shopDomain: string) 
     shopifyCustomerId: shopifyId,
   };
 
+  // Debug: confirm tag parsing & mapping
+  console.log(`[WEBHOOK] tags=${JSON.stringify(tags)} -> rep=${mappedRep ?? "-"}`);
+
   const byShopId = await prisma.customer.findFirst({ where: { shopifyCustomerId: shopifyId } });
   if (byShopId) {
     const updateData: any = { ...base, shopifyTags: { set: tags } };
-    if (mappedRep) updateData.salesRep = mappedRep;
+    if (mappedRep) updateData.salesRep = mappedRep; // set unconditionally if you want to clear when null
     return prisma.customer.update({ where: { id: byShopId.id }, data: updateData });
   }
 
   if (email) {
-    const byEmail = await prisma.customer.findFirst({ where: { customerEmailAddress: email } });
+    const byEmail = await prisma.customer.findFirst({
+      where: { customerEmailAddress: { equals: email, mode: "insensitive" } }, // case-insensitive match
+    });
     if (byEmail) {
       const updateData: any = { ...base, shopifyTags: { set: tags } };
       if (mappedRep) updateData.salesRep = mappedRep;
