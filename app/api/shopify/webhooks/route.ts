@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import {
   verifyShopifyHmac,
   upsertCustomerFromShopify,
@@ -7,7 +6,6 @@ import {
   upsertOrderFromShopify,
   parseShopifyTags,
   extractShopifyCustomerId,
-  getSalesRepForTags,
 } from "@/lib/shopify";
 
 export const runtime = "nodejs";
@@ -18,20 +16,6 @@ const EXPECTED_SHOP = (process.env.SHOPIFY_SHOP_DOMAIN || "").toLowerCase();
 function ok(text = "ok", code = 200) { return new NextResponse(text, { status: code }); }
 function bad(msg: string, code = 400) { console.error(msg); return new NextResponse(msg, { status: code }); }
 
-// --- helper: extract vendor from product payload and upsert into StockedBrand
-async function upsertStockedBrandFromProductPayload(payload: any) {
-  const product = payload?.product ?? payload;
-  const vendor = (product?.vendor || "").toString().trim();
-  if (!vendor) return null;
-
-  await prisma.stockedBrand.upsert({
-    where: { name: vendor },
-    update: {},
-    create: { name: vendor },
-  });
-  return vendor;
-}
-
 export async function GET() { return ok(); }
 
 export async function POST(req: Request) {
@@ -39,20 +23,14 @@ export async function POST(req: Request) {
   const shop  = (req.headers.get("x-shopify-shop-domain") || "").toLowerCase();
   const hmac  = req.headers.get("x-shopify-hmac-sha256");
 
-  // 1) raw body
   const raw = await req.arrayBuffer();
-
-  // 2) HMAC verify
-  const valid = verifyShopifyHmac(raw, hmac);
-  if (!valid) {
+  if (!verifyShopifyHmac(raw, hmac)) {
     return bad(`Shopify webhook HMAC failed { topic: '${topic}', shopDomain: '${shop}' }`, 401);
   }
-
   if (EXPECTED_SHOP && shop && shop !== EXPECTED_SHOP) {
     return bad(`Unexpected shop domain '${shop}' (expected '${EXPECTED_SHOP}')`, 401);
   }
 
-  // 3) parse
   let body: any;
   try {
     body = JSON.parse(Buffer.from(raw).toString("utf8"));
@@ -61,64 +39,58 @@ export async function POST(req: Request) {
   }
 
   try {
-    // ───────── products → keep StockedBrand in sync ─────────
-    if (topic === "products/create" || topic === "products/update") {
-      const vendor = await upsertStockedBrandFromProductPayload(body);
-      if (vendor) {
-        console.log(`[WEBHOOK] stocked brand upserted from ${topic}: "${vendor}"`);
-      } else {
-        console.log(`[WEBHOOK] ${topic} had no vendor, nothing to upsert`);
-      }
-      return ok();
-    }
-
-    // ───────── customers core payloads (may NOT include tags on newer API) ─────────
+    // ───────── customers (CREATE / UPDATE) ─────────
     if (topic === "customers/create" || topic === "customers/update") {
-      const customerPayload = body?.customer ?? body;
-      const tagsFieldExists = customerPayload && typeof customerPayload === "object" && ("tags" in customerPayload);
-      const tags = tagsFieldExists ? parseShopifyTags(customerPayload.tags) : null;
-      console.info(`[WEBHOOK] ${topic} id=${customerPayload?.id ?? "?"} tags=${tagsFieldExists ? JSON.stringify(tags) : "absent"}`);
+      const payload = body?.customer ?? body;
+      const shopifyId = extractShopifyCustomerId(payload);
 
-      await upsertCustomerFromShopify(customerPayload, shop, {
-        // if tags are absent, the lib will avoid touching shopifyTags;
-        // passing them here only when present
-        overrideTags: tags,
+      console.info(`[WEBHOOK] ${topic} id=${shopifyId ?? "?"}`);
+
+      // Always fetch full customer (ensures tags are present reliably)
+      await upsertCustomerFromShopifyById(String(shopifyId), shop, {
+        // use fetched tags, create if needed (for create), match by id or email
+        updateOnly: false,
+        matchBy: "shopifyIdOrEmail",
       });
       return ok();
     }
 
-    // ───────── tag delta webhooks (do include tags; sometimes minimal payload) ─────────
+    // ───────── tag delta webhooks: UPDATE EXISTING ONLY ─────────
     if (topic === "customer.tags_added" || topic === "customer.tags_removed") {
-      // tags may be under body.tags or variant fields; normalize
+      const shopifyId =
+        extractShopifyCustomerId(body) ?? extractShopifyCustomerId(body?.customer);
       const eventTags = parseShopifyTags(body?.tags ?? body?.added_tags ?? body?.removed_tags);
-      console.info(`[WEBHOOK] ${topic} eventTags=${JSON.stringify(eventTags)}`);
 
-      // Try to extract a customer id from any of the known fields (top-level or nested)
-      const idFromTop = extractShopifyCustomerId(body);
-      const idFromNested = extractShopifyCustomerId(body?.customer);
-      const shopCustomerId = idFromTop || idFromNested;
+      console.info(`[WEBHOOK] ${topic} id=${shopifyId ?? "?"} eventTags=${JSON.stringify(eventTags)}`);
 
-      if (!shopCustomerId) {
-        console.warn(`[WEBHOOK] ${topic} missing customer id in payload; cannot upsert.`);
-        return ok(); // 200 so Shopify doesn't retry forever
+      if (!shopifyId) {
+        console.warn(`[WEBHOOK] ${topic} missing customer id; skipping`);
+        return ok();
       }
 
-      // Fetch full customer from Shopify (ensures we also keep address/email fresh),
-      // then upsert; lib will map eventTags -> salesRep.
-      await upsertCustomerFromShopifyById(shopCustomerId, shop, { overrideTags: eventTags });
-      console.info(`[WEBHOOK] ${topic} upserted via fetch id=${shopCustomerId}`);
+      // Update-only to avoid creating “random” customers from minimal tag events
+      await upsertCustomerFromShopifyById(String(shopifyId), shop, {
+        updateOnly: true,
+        matchBy: "shopifyIdOnly",
+      });
       return ok();
     }
 
-    // ───────── orders ─────────
-    if (topic === "orders/create" || topic === "orders/updated" || topic === "orders/paid" || topic === "orders/fulfilled" || topic === "orders/partially_fulfilled") {
+    // ───────── orders (unchanged) ─────────
+    if (
+      topic === "orders/create" ||
+      topic === "orders/updated" ||
+      topic === "orders/paid" ||
+      topic === "orders/fulfilled" ||
+      topic === "orders/partially_fulfilled"
+    ) {
       const order = body?.order ?? body;
       await upsertOrderFromShopify(order, shop);
       console.log(`[WEBHOOK] order upserted from ${topic} id=${order?.id ?? "?"}`);
       return ok();
     }
 
-    // Unknown/ignored topics still 200 so Shopify doesn't retry forever
+    // Ignore everything else, but 200 so Shopify doesn’t retry
     console.log(`[WEBHOOK] ignored topic '${topic}' from ${shop}`);
     return ok();
   } catch (err: any) {
