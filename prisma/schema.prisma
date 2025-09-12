@@ -263,6 +263,12 @@ model CallLog {
   durationMinutes      Int?
   appointmentBooked    Boolean?  @default(false)
 
+  // GEO (captured by the form; required at UI level)
+  latitude             Float?
+  longitude            Float?
+  accuracyM            Float?
+  geoCollectedAt       DateTime?
+
   // links chosen during the call
   stockedBrandLinks    CallLogStockedBrand[]
   competitorBrandLinks CallLogCompetitorBrand[]
