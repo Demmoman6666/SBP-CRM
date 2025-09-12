@@ -147,6 +147,82 @@ export default function NewCallPage() {
     return String(diff);
   }, [start, finish]);
 
+  /* GEO — mandatory */
+  type GeoState = "prompt" | "granted" | "denied" | "unsupported";
+  const [geoState, setGeoState] = useState<GeoState>("prompt");
+  const [locating, setLocating] = useState(false);
+  const [geoErr, setGeoErr] = useState<string | null>(null);
+  const [lat, setLat] = useState<number | null>(null);
+  const [lng, setLng] = useState<number | null>(null);
+  const [accuracyM, setAccuracyM] = useState<number | null>(null);
+  const [geoAt, setGeoAt] = useState<string | null>(null);
+
+  const insecureContext =
+    typeof window !== "undefined" &&
+    window.location.protocol !== "https:" &&
+    window.location.hostname !== "localhost";
+
+  useEffect(() => {
+    if (typeof navigator === "undefined") return;
+    if (!("geolocation" in navigator)) {
+      setGeoState("unsupported");
+      return;
+    }
+    // Probe permission if supported
+    // @ts-ignore
+    if (navigator.permissions?.query) {
+      // @ts-ignore
+      navigator.permissions.query({ name: "geolocation" as PermissionName }).then((p: any) => {
+        setGeoState(p.state as GeoState);
+        p.onchange = () => setGeoState(p.state as GeoState);
+        // If already granted, capture immediately
+        if (p.state === "granted" && !lat && !lng) {
+          void captureLocation();
+        }
+      }).catch(() => {});
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function getPosition(): Promise<GeolocationPosition> {
+    return new Promise((resolve, reject) => {
+      if (!("geolocation" in navigator)) return reject(new Error("Geolocation not supported"));
+      navigator.geolocation.getCurrentPosition(
+        resolve,
+        reject,
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+    });
+  }
+
+  async function captureLocation() {
+    setGeoErr(null);
+    setLocating(true);
+    try {
+      const pos = await getPosition();
+      const { latitude, longitude, accuracy } = pos.coords;
+      setLat(latitude);
+      setLng(longitude);
+      setAccuracyM(Number.isFinite(accuracy) ? accuracy : null);
+      setGeoAt(new Date().toISOString());
+      setGeoState("granted");
+    } catch (e: any) {
+      const msg =
+        e?.code === 1
+          ? "Permission denied. Please allow location."
+          : e?.code === 2
+          ? "Position unavailable. Try again."
+          : e?.code === 3
+          ? "Timed out. Try again."
+          : "Could not get your location.";
+      setGeoErr(msg);
+      if (e?.code === 1) setGeoState("denied");
+    } finally {
+      setLocating(false);
+    }
+  }
+
+  const hasLocation = Number.isFinite(lat as any) && Number.isFinite(lng as any);
+
   /* Submission state */
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -154,6 +230,22 @@ export default function NewCallPage() {
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
+
+    if (insecureContext) {
+      setError("Location requires HTTPS (or localhost in dev). Open the secure site to log a call.");
+      return;
+    }
+
+    // Ensure we have location
+    if (!hasLocation) {
+      // One last attempt (uses user gesture from submit)
+      await captureLocation();
+      if (!hasLocation) {
+        setError("Location is required. Please tap “Use my location” and allow permission.");
+        return;
+      }
+    }
+
     const fd = new FormData(e.currentTarget);
 
     // Must have a rep & summary
@@ -166,7 +258,7 @@ export default function NewCallPage() {
       return;
     }
 
-    // NEW: require start & finish times
+    // require start & finish times
     const s = String(fd.get("startTime") || "").trim();
     const f = String(fd.get("endTime") || "").trim();
     if (!s || !f) {
@@ -191,6 +283,12 @@ export default function NewCallPage() {
       }
       fd.set("customerName", typed);
     }
+
+    // GEO → append mandatory hidden fields
+    fd.set("latitude", hasLocation ? String(lat) : "");
+    fd.set("longitude", hasLocation ? String(lng) : "");
+    if (accuracyM != null) fd.set("accuracyM", String(accuracyM));
+    if (geoAt) fd.set("geoCollectedAt", geoAt);
 
     // Combine follow-up date + time into a single ISO string
     const fDate = (fd.get("followUpAt") || "").toString().trim();
@@ -429,6 +527,64 @@ export default function NewCallPage() {
           <input name="durationMinutes" value={duration} readOnly placeholder="—" />
         </div>
 
+        {/* GEO (MANDATORY) */}
+        <div className="card" style={{ background: "#fafafa" }}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <strong>Location (required)</strong>
+              <div className="small muted">
+                We store your current location with this call for auditing and route insights.
+              </div>
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={captureLocation}
+                disabled={locating || insecureContext}
+                title={insecureContext ? "Location requires HTTPS or localhost" : "Get location"}
+              >
+                {locating ? "Getting location…" : hasLocation ? "Refresh location" : "Use my location"}
+              </button>
+            </div>
+          </div>
+
+          <div className="small" style={{ marginTop: 6 }}>
+            Status:{" "}
+            <span style={{ color: geoState === "denied" ? "var(--danger,#b91c1c)" : "inherit" }}>
+              {insecureContext ? "Unavailable (open HTTPS site)" : geoState}
+            </span>
+            {hasLocation && (
+              <>
+                {" • "}
+                <span>
+                  {lat?.toFixed(5)}, {lng?.toFixed(5)}{accuracyM ? ` • ±${Math.round(accuracyM)}m` : ""}{" "}
+                  {geoAt ? `• ${new Date(geoAt).toLocaleTimeString()}` : ""}
+                </span>
+              </>
+            )}
+            {geoErr && <div className="small" style={{ color: "var(--danger,#b91c1c)" }}>{geoErr}</div>}
+          </div>
+
+          {/* Hidden fields posted to API */}
+          <input type="hidden" name="latitude" value={hasLocation ? String(lat) : ""} />
+          <input type="hidden" name="longitude" value={hasLocation ? String(lng) : ""} />
+          <input type="hidden" name="accuracyM" value={accuracyM != null ? String(accuracyM) : ""} />
+          <input type="hidden" name="geoCollectedAt" value={geoAt || ""} />
+
+          {!hasLocation && !insecureContext && (
+            <div className="small" style={{ marginTop: 6 }}>
+              Tip: If you dismissed the prompt, enable location for this site in your browser settings and tap “Use my
+              location” again.
+            </div>
+          )}
+          {insecureContext && (
+            <div className="small" style={{ marginTop: 6 }}>
+              Geolocation prompts require HTTPS (or localhost in dev). Open the secure URL to continue.
+            </div>
+          )}
+        </div>
+
         {/* Call type + follow-up */}
         <div className="grid grid-2">
           <div className="field">
@@ -496,7 +652,20 @@ export default function NewCallPage() {
 
         <div className="right row" style={{ gap: 8 }}>
           <a href="/" className="btn" style={{ background: "#f3f4f6" }}>Cancel</a>
-          <button className="primary" type="submit" disabled={submitting}>
+          <button
+            className="primary"
+            type="submit"
+            disabled={
+              submitting ||
+              insecureContext ||
+              !hasLocation // hard block until location present
+            }
+            title={
+              insecureContext ? "Open the HTTPS site to enable location" :
+              !hasLocation ? "Location is required" :
+              undefined
+            }
+          >
             {submitting ? "Saving…" : "Save Call"}
           </button>
         </div>
