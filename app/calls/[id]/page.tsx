@@ -34,7 +34,7 @@ export default async function CallLogViewPage({ params }: { params: { id: string
   const call = await prisma.callLog.findUnique({
     where: { id: params.id },
     include: {
-      customer: { select: { salonName: true, customerName: true } }, // ← bring customer name(s)
+      customer: { select: { salonName: true, customerName: true } }, // relation names
     },
   });
 
@@ -60,6 +60,26 @@ export default async function CallLogViewPage({ params }: { params: { id: string
     ? (call.customer?.salonName ?? call.customer?.customerName ?? "—")
     : (call.customerName ?? "—");
 
+  // ---- location fields (safe access) ----
+  const lat = (call as any).latitude as number | undefined | null;
+  const lng = (call as any).longitude as number | undefined | null;
+  const accuracyM = (call as any).accuracyM as number | undefined | null;
+  const geoCollectedAt = (call as any).geoCollectedAt as Date | undefined | null;
+
+  const hasLocation =
+    lat != null &&
+    lng != null &&
+    Number.isFinite(Number(lat)) &&
+    Number.isFinite(Number(lng));
+
+  const coordStr = hasLocation ? `${lat},${lng}` : "";
+  const mapsOpenUrl = hasLocation
+    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(coordStr)}`
+    : "";
+  const mapsEmbedSrc = hasLocation
+    ? `https://www.google.com/maps?q=${encodeURIComponent(coordStr)}&z=15&output=embed`
+    : "";
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
@@ -73,69 +93,73 @@ export default async function CallLogViewPage({ params }: { params: { id: string
       </section>
 
       <section className="card">
-        <div className="grid grid-2" style={{ gap: 12 }}>
-          <div>
-            <b>Sales Rep</b>
-            <p className="small" style={{ marginTop: 6 }}>{call.staff || "—"}</p>
+        <div className="grid" style={{ gap: 16 }}>
+          {/* top section: details */}
+          <div className="grid grid-2" style={{ gap: 12 }}>
+            <div>
+              <b>Sales Rep</b>
+              <p className="small" style={{ marginTop: 6 }}>{call.staff || "—"}</p>
+            </div>
+
+            <div>
+              <b>Customer</b>
+              <p className="small" style={{ marginTop: 6 }}>{customerLabel}</p>
+            </div>
+
+            <div>
+              <b>Type</b>
+              <p className="small" style={{ marginTop: 6 }}>{call.callType || "—"}</p>
+            </div>
+
+            <div>
+              <b>Outcome</b>
+              <p className="small" style={{ marginTop: 6 }}>{call.outcome || "—"}</p>
+            </div>
+
+            <div>
+              <b>Stage</b>
+              <p className="small" style={{ marginTop: 6 }}>{(call as any).stage || "—"}</p>
+            </div>
+
+            <div>
+              <b>Appointment Booked</b>
+              <p className="small" style={{ marginTop: 6 }}>{apptBooked ? "Yes" : "No"}</p>
+            </div>
+
+            <div>
+              <b>Start Time</b>
+              <p className="small" style={{ marginTop: 6 }}>{fmtTime((call as any).startTime)}</p>
+            </div>
+
+            <div>
+              <b>End Time</b>
+              <p className="small" style={{ marginTop: 6 }}>{fmtTime((call as any).endTime)}</p>
+            </div>
+
+            <div>
+              <b>Duration (mins)</b>
+              <p className="small" style={{ marginTop: 6 }}>
+                {duration ?? (call as any).durationMinutes ?? "—"}
+              </p>
+            </div>
+
+            <div>
+              <b>Follow-up</b>
+              <p className="small" style={{ marginTop: 6 }}>{fmt((call as any).followUpAt)}</p>
+            </div>
+
+            <div>
+              <b>Contact Phone</b>
+              <p className="small" style={{ marginTop: 6 }}>{(call as any).contactPhone || "—"}</p>
+            </div>
+
+            <div>
+              <b>Contact Email</b>
+              <p className="small" style={{ marginTop: 6 }}>{(call as any).contactEmail || "—"}</p>
+            </div>
           </div>
 
-          <div>
-            <b>Customer</b>
-            <p className="small" style={{ marginTop: 6 }}>{customerLabel}</p>
-          </div>
-
-          <div>
-            <b>Type</b>
-            <p className="small" style={{ marginTop: 6 }}>{call.callType || "—"}</p>
-          </div>
-
-          <div>
-            <b>Outcome</b>
-            <p className="small" style={{ marginTop: 6 }}>{call.outcome || "—"}</p>
-          </div>
-
-          <div>
-            <b>Stage</b>
-            <p className="small" style={{ marginTop: 6 }}>{(call as any).stage || "—"}</p>
-          </div>
-
-          <div>
-            <b>Appointment Booked</b>
-            <p className="small" style={{ marginTop: 6 }}>{apptBooked ? "Yes" : "No"}</p>
-          </div>
-
-          <div>
-            <b>Start Time</b>
-            <p className="small" style={{ marginTop: 6 }}>{fmtTime((call as any).startTime)}</p>
-          </div>
-
-          <div>
-            <b>End Time</b>
-            <p className="small" style={{ marginTop: 6 }}>{fmtTime((call as any).endTime)}</p>
-          </div>
-
-          <div>
-            <b>Duration (mins)</b>
-            <p className="small" style={{ marginTop: 6 }}>
-              {duration ?? (call as any).durationMinutes ?? "—"}
-            </p>
-          </div>
-
-          <div>
-            <b>Follow-up</b>
-            <p className="small" style={{ marginTop: 6 }}>{fmt((call as any).followUpAt)}</p>
-          </div>
-
-          <div>
-            <b>Contact Phone</b>
-            <p className="small" style={{ marginTop: 6 }}>{(call as any).contactPhone || "—"}</p>
-          </div>
-
-          <div>
-            <b>Contact Email</b>
-            <p className="small" style={{ marginTop: 6 }}>{(call as any).contactEmail || "—"}</p>
-          </div>
-
+          {/* summary */}
           <div style={{ gridColumn: "1 / -1" }}>
             <b>Summary</b>
             <p className="small" style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>
@@ -151,6 +175,59 @@ export default async function CallLogViewPage({ params }: { params: { id: string
               </p>
             </div>
           )}
+
+          {/* location block */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <b>Location</b>
+            <div className="small muted" style={{ marginTop: 6 }}>
+              {hasLocation ? (
+                <>
+                  {geoCollectedAt ? <>Captured: {fmt(geoCollectedAt)} • </> : null}
+                  {accuracyM != null ? <>Accuracy: ±{Math.round(Number(accuracyM))}m • </> : null}
+                  Coords: {coordStr}
+                </>
+              ) : (
+                "No location captured for this call."
+              )}
+            </div>
+
+            {hasLocation && (
+              <div className="grid" style={{ gap: 8, marginTop: 8 }}>
+                <div
+                  style={{
+                    width: "100%",
+                    height: 280,
+                    borderRadius: 12,
+                    overflow: "hidden",
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  <iframe
+                    title="Call location"
+                    src={mapsEmbedSrc}
+                    width="100%"
+                    height="100%"
+                    style={{ border: 0 }}
+                    loading="lazy"
+                    referrerPolicy="no-referrer-when-downgrade"
+                  />
+                </div>
+
+                <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+                  <a className="btn small" href={mapsOpenUrl} target="_blank" rel="noopener noreferrer">
+                    Open in Google Maps
+                  </a>
+                  <button
+                    type="button"
+                    className="btn small"
+                    onClick={() => navigator.clipboard?.writeText(coordStr)}
+                  >
+                    Copy coords
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </section>
     </div>
