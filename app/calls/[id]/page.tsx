@@ -30,13 +30,47 @@ function minsFrom(log: { durationMinutes?: number | null; startTime?: Date | nul
   return null;
 }
 
+async function getCallWithFallback(id: string) {
+  // Try full fetch first (includes potential geo fields)
+  try {
+    const call = await prisma.callLog.findUnique({
+      where: { id },
+      include: {
+        customer: { select: { salonName: true, customerName: true } },
+      },
+    });
+    return { call, degraded: false };
+  } catch (e) {
+    // Likely columns don’t exist yet. Fetch a safe subset that’s guaranteed to exist.
+    const call = await prisma.callLog.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        createdAt: true,
+        isExistingCustomer: true,
+        customerId: true,
+        callType: true,
+        outcome: true,
+        staff: true,
+        stage: true,
+        startTime: true,
+        endTime: true,
+        durationMinutes: true,
+        followUpAt: true,
+        contactPhone: true,
+        contactEmail: true,
+        summary: true,
+        // no geo fields in fallback
+        customer: { select: { salonName: true, customerName: true } },
+      },
+    });
+    // Re-shape to look like the include-version
+    return { call: call as any, degraded: true };
+  }
+}
+
 export default async function CallLogViewPage({ params }: { params: { id: string } }) {
-  const call = await prisma.callLog.findUnique({
-    where: { id: params.id },
-    include: {
-      customer: { select: { salonName: true, customerName: true } }, // relation names
-    },
-  });
+  const { call, degraded } = await getCallWithFallback(params.id);
 
   if (!call) {
     return (
@@ -60,25 +94,10 @@ export default async function CallLogViewPage({ params }: { params: { id: string
     ? (call.customer?.salonName ?? call.customer?.customerName ?? "—")
     : (call.customerName ?? "—");
 
-  // ---- location fields (safe access) ----
-  const lat = (call as any).latitude as number | undefined | null;
-  const lng = (call as any).longitude as number | undefined | null;
-  const accuracyM = (call as any).accuracyM as number | undefined | null;
-  const geoCollectedAt = (call as any).geoCollectedAt as Date | undefined | null;
-
-  const hasLocation =
-    lat != null &&
-    lng != null &&
-    Number.isFinite(Number(lat)) &&
-    Number.isFinite(Number(lng));
-
-  const coordStr = hasLocation ? `${lat},${lng}` : "";
-  const mapsOpenUrl = hasLocation
-    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(coordStr)}`
-    : "";
-  const mapsEmbedSrc = hasLocation
-    ? `https://www.google.com/maps?q=${encodeURIComponent(coordStr)}&z=15&output=embed`
-    : "";
+  const lat = (call as any).latitude as number | undefined;
+  const lng = (call as any).longitude as number | undefined;
+  const acc = (call as any).accuracyM as number | undefined;
+  const capturedAt = (call as any).geoCollectedAt as Date | undefined;
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -90,76 +109,77 @@ export default async function CallLogViewPage({ params }: { params: { id: string
           </div>
           <Link href="/calls" className="btn">Back</Link>
         </div>
+        {degraded && (
+          <div className="small" style={{ marginTop: 8, color: "var(--muted)" }}>
+            Showing without location (database not yet migrated). Commit schema changes and redeploy so geo fields are created.
+          </div>
+        )}
       </section>
 
       <section className="card">
-        <div className="grid" style={{ gap: 16 }}>
-          {/* top section: details */}
-          <div className="grid grid-2" style={{ gap: 12 }}>
-            <div>
-              <b>Sales Rep</b>
-              <p className="small" style={{ marginTop: 6 }}>{call.staff || "—"}</p>
-            </div>
-
-            <div>
-              <b>Customer</b>
-              <p className="small" style={{ marginTop: 6 }}>{customerLabel}</p>
-            </div>
-
-            <div>
-              <b>Type</b>
-              <p className="small" style={{ marginTop: 6 }}>{call.callType || "—"}</p>
-            </div>
-
-            <div>
-              <b>Outcome</b>
-              <p className="small" style={{ marginTop: 6 }}>{call.outcome || "—"}</p>
-            </div>
-
-            <div>
-              <b>Stage</b>
-              <p className="small" style={{ marginTop: 6 }}>{(call as any).stage || "—"}</p>
-            </div>
-
-            <div>
-              <b>Appointment Booked</b>
-              <p className="small" style={{ marginTop: 6 }}>{apptBooked ? "Yes" : "No"}</p>
-            </div>
-
-            <div>
-              <b>Start Time</b>
-              <p className="small" style={{ marginTop: 6 }}>{fmtTime((call as any).startTime)}</p>
-            </div>
-
-            <div>
-              <b>End Time</b>
-              <p className="small" style={{ marginTop: 6 }}>{fmtTime((call as any).endTime)}</p>
-            </div>
-
-            <div>
-              <b>Duration (mins)</b>
-              <p className="small" style={{ marginTop: 6 }}>
-                {duration ?? (call as any).durationMinutes ?? "—"}
-              </p>
-            </div>
-
-            <div>
-              <b>Follow-up</b>
-              <p className="small" style={{ marginTop: 6 }}>{fmt((call as any).followUpAt)}</p>
-            </div>
-
-            <div>
-              <b>Contact Phone</b>
-              <p className="small" style={{ marginTop: 6 }}>{(call as any).contactPhone || "—"}</p>
-            </div>
-
-            <div>
-              <b>Contact Email</b>
-              <p className="small" style={{ marginTop: 6 }}>{(call as any).contactEmail || "—"}</p>
-            </div>
+        <div className="grid grid-2" style={{ gap: 12 }}>
+          <div>
+            <b>Sales Rep</b>
+            <p className="small" style={{ marginTop: 6 }}>{call.staff || "—"}</p>
           </div>
 
-          {/* summary */}
+          <div>
+            <b>Customer</b>
+            <p className="small" style={{ marginTop: 6 }}>{customerLabel}</p>
+          </div>
+
+          <div>
+            <b>Type</b>
+            <p className="small" style={{ marginTop: 6 }}>{call.callType || "—"}</p>
+          </div>
+
+          <div>
+            <b>Outcome</b>
+            <p className="small" style={{ marginTop: 6 }}>{call.outcome || "—"}</p>
+          </div>
+
+          <div>
+            <b>Stage</b>
+            <p className="small" style={{ marginTop: 6 }}>{(call as any).stage || "—"}</p>
+          </div>
+
+          <div>
+            <b>Appointment Booked</b>
+            <p className="small" style={{ marginTop: 6 }}>{apptBooked ? "Yes" : "No"}</p>
+          </div>
+
+          <div>
+            <b>Start Time</b>
+            <p className="small" style={{ marginTop: 6 }}>{fmtTime((call as any).startTime)}</p>
+          </div>
+
+          <div>
+            <b>End Time</b>
+            <p className="small" style={{ marginTop: 6 }}>{fmtTime((call as any).endTime)}</p>
+          </div>
+
+          <div>
+            <b>Duration (mins)</b>
+            <p className="small" style={{ marginTop: 6 }}>
+              {duration ?? (call as any).durationMinutes ?? "—"}
+            </p>
+          </div>
+
+          <div>
+            <b>Follow-up</b>
+            <p className="small" style={{ marginTop: 6 }}>{fmt((call as any).followUpAt)}</p>
+          </div>
+
+          <div>
+            <b>Contact Phone</b>
+            <p className="small" style={{ marginTop: 6 }}>{(call as any).contactPhone || "—"}</p>
+          </div>
+
+          <div>
+            <b>Contact Email</b>
+            <p className="small" style={{ marginTop: 6 }}>{(call as any).contactEmail || "—"}</p>
+          </div>
+
           <div style={{ gridColumn: "1 / -1" }}>
             <b>Summary</b>
             <p className="small" style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>
@@ -176,56 +196,43 @@ export default async function CallLogViewPage({ params }: { params: { id: string
             </div>
           )}
 
-          {/* location block */}
-          <div style={{ gridColumn: "1 / -1" }}>
+          {/* Location */}
+          <div style={{ gridColumn: "1 / -1", marginTop: 8 }}>
             <b>Location</b>
-            <div className="small muted" style={{ marginTop: 6 }}>
-              {hasLocation ? (
-                <>
-                  {geoCollectedAt ? <>Captured: {fmt(geoCollectedAt)} • </> : null}
-                  {accuracyM != null ? <>Accuracy: ±{Math.round(Number(accuracyM))}m • </> : null}
-                  Coords: {coordStr}
-                </>
-              ) : (
-                "No location captured for this call."
-              )}
-            </div>
-
-            {hasLocation && (
-              <div className="grid" style={{ gap: 8, marginTop: 8 }}>
-                <div
-                  style={{
-                    width: "100%",
-                    height: 280,
-                    borderRadius: 12,
-                    overflow: "hidden",
-                    border: "1px solid var(--border)",
-                  }}
-                >
-                  <iframe
-                    title="Call location"
-                    src={mapsEmbedSrc}
-                    width="100%"
-                    height="100%"
-                    style={{ border: 0 }}
-                    loading="lazy"
-                    referrerPolicy="no-referrer-when-downgrade"
-                  />
+            {typeof lat === "number" && typeof lng === "number" ? (
+              <div className="grid" style={{ gap: 8, marginTop: 6 }}>
+                <div className="small">
+                  {capturedAt ? `Captured: ${fmt(capturedAt)}` : null}
+                  {acc ? ` • Accuracy: ±${acc} m` : null}
                 </div>
-
-                <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-                  <a className="btn small" href={mapsOpenUrl} target="_blank" rel="noopener noreferrer">
+                <iframe
+                  title="Call location"
+                  style={{ width: "100%", height: 280, border: 0, borderRadius: 12 }}
+                  src={`https://www.google.com/maps?q=${encodeURIComponent(`${lat},${lng}`)}&z=15&output=embed`}
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                />
+                <div className="row" style={{ gap: 8 }}>
+                  <a
+                    className="btn"
+                    href={`https://www.google.com/maps?q=${encodeURIComponent(`${lat},${lng}`)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
                     Open in Google Maps
                   </a>
-                  <button
-                    type="button"
-                    className="btn small"
-                    onClick={() => navigator.clipboard?.writeText(coordStr)}
+                  <a
+                    className="btn"
+                    href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${lat},${lng}`)}&travelmode=driving`}
+                    target="_blank"
+                    rel="noopener noreferrer"
                   >
-                    Copy coords
-                  </button>
+                    Navigate
+                  </a>
                 </div>
               </div>
+            ) : (
+              <p className="small" style={{ marginTop: 6 }}>No location captured for this call.</p>
             )}
           </div>
         </div>
