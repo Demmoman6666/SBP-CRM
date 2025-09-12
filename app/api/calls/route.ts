@@ -91,6 +91,11 @@ const toBool = (v: unknown) => {
 
 const isCuid = (s: string) => /^c[a-z0-9]{24,}$/i.test(s);
 
+const toNum = (v: unknown): number | null => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
 /** Accepts:
  *  - 2025-08-29T21:02
  *  - 29/08/2025 21:02
@@ -162,6 +167,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Summary is required." }, { status: 400 });
     }
 
+    // ⛔️ HARD REQUIREMENT: geolocation must be present
+    const latitude  = toNum(body.latitude ?? body.lat ?? body.coords?.latitude);
+    const longitude = toNum(body.longitude ?? body.lng ?? body.coords?.longitude);
+    if (latitude == null || longitude == null) {
+      return NextResponse.json({ error: "Location is required to log a call." }, { status: 400 });
+    }
+    const accuracyM = toNum(body.accuracyM ?? body.accuracy ?? body.coords?.accuracy);
+    const geoCollectedAt =
+      body.geoCollectedAt ? new Date(String(body.geoCollectedAt)) : new Date();
+
     // required times + compute duration (allow across midnight)
     const startHHMM = String(body.startTime ?? body.start ?? "").trim();
     const endHHMM   = String(body.endTime ?? body.finishTime ?? body.finish ?? "").trim();
@@ -197,7 +212,7 @@ export async function POST(req: Request) {
     const outcome  = body.outcome ? String(body.outcome) : null;
     const followUpAt = parseFollowUp(body.followUpAt ?? body.followUp ?? body.followupAt);
 
-    // ✅ derive a consistent appointment flag for reports & the View page
+    // derive appointment flag
     const appointmentBooked =
       outcome === "Appointment booked" ||
       callType === "Booked Call" ||
@@ -244,11 +259,17 @@ export async function POST(req: Request) {
         followUpRequired: !!followUpAt,
         followUpAt,
 
-        // ✅ persist times & derived metrics
+        // times & derived metrics
         startTime,
         endTime,
         durationMinutes,
         appointmentBooked,
+
+        // ✅ persist geolocation
+        latitude,
+        longitude,
+        accuracyM: accuracyM != null ? Math.round(accuracyM) : null,
+        geoCollectedAt,
 
         ...(hasClientLoggedAt ? { createdAt: anchor } : {}),
       },
