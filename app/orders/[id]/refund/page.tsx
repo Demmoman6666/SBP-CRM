@@ -1,6 +1,7 @@
 // app/orders/[id]/refund/page.tsx
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import RefundClient from "./RefundClient";
 
 function money(n?: any, currency?: string) {
   if (n == null) return "-";
@@ -89,6 +90,7 @@ export default async function RefundPage({ params }: { params: { id: string } })
                     max={li.quantity}
                     defaultValue={0}
                     style={{ width: 90 }}
+                    data-refund-qty
                   />
                 </div>
               </div>
@@ -100,6 +102,16 @@ export default async function RefundPage({ params }: { params: { id: string } })
             placeholder="Reason (optional)"
             className="textarea"
             rows={3}
+          />
+
+          {/* Live Shopify-calculated refund preview */}
+          <RefundClient
+            orderId={order.id}
+            currency={currency}
+            lines={order.lineItems.map((li) => ({
+              id: li.id,
+              maxQty: Number(li.quantity || 0),
+            }))}
           />
 
           <div className="right row" style={{ gap: 8 }}>
