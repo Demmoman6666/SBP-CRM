@@ -8,6 +8,9 @@ const SHOP_DOMAIN = RAW_SHOP_DOMAIN.replace(/^https?:\/\//i, "");
 const SHOP_ADMIN_TOKEN = (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "").trim();
 export const SHOPIFY_API_VERSION = (process.env.SHOPIFY_API_VERSION || "2024-07").trim();
 
+// Optional: default tag applied to Draft Orders created from the CRM
+const DEFAULT_DRAFT_TAG = (process.env.SHOPIFY_DRAFT_TAG || "CRM").trim();
+
 const WEBHOOK_SECRET = (process.env.SHOPIFY_WEBHOOK_SECRET || "").trim();
 const ALT_SECRET_1 = (process.env.SHOPIFY_API_SECRET_KEY || "").trim();
 const ALT_SECRET_2 = (process.env.SHOPIFY_CLIENT_SECRET || "").trim();
@@ -545,21 +548,30 @@ export async function createDraftOrderForCustomer(
   if (!customer) throw new Error("Customer not found");
   if (!customer.shopifyCustomerId) throw new Error("This customer is not linked to a Shopify customer");
 
-  // Draft order payload
-  const line_items = items.map(li => ({
+  // Draft order line items (REST expects numeric variant_id)
+  const line_items = items.map((li) => ({
     variant_id: Number(li.variantId),
     quantity: li.quantity,
   }));
 
-  const payload = {
+  // REST requires `tags` to be a comma-separated string (NOT an array)
+  const draftTag = DEFAULT_DRAFT_TAG; // e.g. "CRM" or "CRM, Wholesale"
+
+  const payload: any = {
     draft_order: {
       customer: { id: Number(customer.shopifyCustomerId) },
       line_items,
       note: note || undefined,
-      tags: "CRM",
       use_customer_default_address: true,
+      // Add an attribution without risking a type mismatch on tags
+      note_attributes: [{ name: "Source", value: "CRM" }],
     },
   };
+
+  if (draftTag) {
+    // Only include if non-empty string; server will 400 if this is an array
+    payload.draft_order.tags = draftTag;
+  }
 
   const res = await shopifyRest(`/draft_orders.json`, {
     method: "POST",
