@@ -3,68 +3,60 @@ import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
 import { shopifyRest } from "@/lib/shopify";
+import { upsertOrderFromShopify } from "@/lib/shopify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** ───────────────────── helpers ───────────────────── */
+/* ---------------- helpers ---------------- */
+
 function toNumber(v: any): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
 
-/** Parse HTML form with inputs named qty_<crmLineItemId> and an optional "reason" */
-async function readRefundRequest(
-  req: Request,
-  validIds: string[]
-): Promise<{ reason?: string; items: Array<{ lineId: string; quantity: number }> }> {
-  const ct = req.headers.get("content-type") || "";
-  if (ct.includes("application/json")) {
-    const json = (await req.json()) ?? {};
-    const itemsRaw = Array.isArray(json.items) ? json.items : [];
-    const items = itemsRaw
-      .map((i: any) => ({ lineId: String(i.lineId), quantity: Number(i.quantity || 0) }))
-      .filter((i) => i.quantity > 0 && validIds.includes(i.lineId));
-    return { reason: json.reason ? String(json.reason) : undefined, items };
+/** Parse HTML form with inputs named qty_<crmLineItemId> */
+function parseQtyForm(form: FormData) {
+  const out = new Map<string, number>();
+  for (const [k, v] of form.entries()) {
+    if (!k.startsWith("qty_")) continue;
+    const id = k.slice(4);
+    const q = Number(v);
+    if (Number.isFinite(q) && q > 0) out.set(id, Math.floor(q));
   }
-
-  const fd = await req.formData();
-  const items: Array<{ lineId: string; quantity: number }> = [];
-  for (const id of validIds) {
-    const key = `qty_${id}`;
-    const q = Number(fd.get(key) ?? 0);
-    if (Number.isFinite(q) && q > 0) items.push({ lineId: id, quantity: Math.floor(q) });
-  }
-  const reason = String(fd.get("reason") || "") || undefined;
-  return { reason, items };
+  return out;
 }
 
-/** Extract a Stripe Checkout Session id (cs_...) from a Shopify order's note or note_attributes */
+/** Try to find the Stripe Checkout Session id (cs_...) that created this order. */
 function extractStripeSessionIdFromShopify(order: any): string | null {
-  const note: string = order?.note || "";
-  let m = note.match(/(cs_(?:test|live)_[A-Za-z0-9]+)/);
+  const note: string = String(order?.note || "");
+  const m = note.match(/(cs_(?:test|live)_[A-Za-z0-9]+)/);
   if (m?.[1]) return m[1];
-
   const attrs: Array<{ name?: string; value?: string }> = order?.note_attributes || [];
   for (const a of attrs) {
-    const val = String(a?.value || "");
-    m = val.match(/(cs_(?:test|live)_[A-Za-z0-9]+)/);
-    if (m?.[1]) return m[1];
+    const mm = String(a?.value || "").match(/(cs_(?:test|live)_[A-Za-z0-9]+)/);
+    if (mm?.[1]) return mm[1];
   }
   return null;
 }
 
-/** Convert a decimal string like "12.34" to integer pence/cents (rounding). */
-function decimalToMinorUnits(amount: string | number): number {
-  const n = typeof amount === "string" ? Number(amount) : amount;
-  return Math.round(Number.isFinite(n) ? n * 100 : 0);
+/** Pick a Shopify parent transaction (sale/capture) to attach the refund to */
+function pickParentTransactionId(transactions: any[]): string | null {
+  if (!Array.isArray(transactions)) return null;
+  const candidates = transactions.filter(
+    (t) =>
+      t &&
+      (t.kind === "sale" || t.kind === "capture") &&
+      (t.status === "success" || t.status === "completed")
+  );
+  if (candidates.length === 0) return null;
+  const last = candidates[candidates.length - 1];
+  return String(last.id);
 }
 
-/** ───────────────────── handler ───────────────────── */
-export async function POST(
-  req: Request,
-  { params }: { params: { id: string } }
-) {
+/* ---------------- main handler ---------------- */
+
+export async function POST(req: Request, ctx: { params: { id: string } }) {
   try {
     const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
     if (!stripeSecret) {
@@ -72,153 +64,204 @@ export async function POST(
     }
     const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
 
-    // 1) Load CRM order + line items
-    const crmOrder = await prisma.order.findUnique({
-      where: { id: params.id },
-      include: { lineItems: true },
-    });
-    if (!crmOrder) return NextResponse.json({ error: "Order not found" }, { status: 404 });
-    if (!crmOrder.shopifyOrderId) {
-      return NextResponse.json({ error: "This order is not linked to Shopify" }, { status: 400 });
+    const orderId = ctx.params.id;
+
+    // Accept both forms (current UI) and JSON (future-proof/preview tooling)
+    let qtyMap = new Map<string, number>();
+    let reason: string | undefined;
+
+    const ctype = req.headers.get("content-type") || "";
+    if (ctype.includes("application/json")) {
+      const json = await req.json().catch(() => ({}));
+      const items: Array<{ crmLineItemId: string; quantity: number }> = json?.items || [];
+      reason = json?.reason || undefined;
+      for (const it of items) {
+        const q = Number(it.quantity || 0);
+        if (q > 0 && it.crmLineItemId) qtyMap.set(String(it.crmLineItemId), Math.floor(q));
+      }
+    } else {
+      const form = await req.formData();
+      qtyMap = parseQtyForm(form);
+      reason = String(form.get("reason") || "") || undefined;
     }
 
-    // 2) Read requested refund quantities
-    const validIds = crmOrder.lineItems.map((l) => l.id);
-    const { reason, items } = await readRefundRequest(req, validIds);
-    if (!items.length) {
+    if (qtyMap.size === 0) {
       return NextResponse.json({ error: "Select at least one item to refund." }, { status: 400 });
     }
 
-    // Clamp quantities to purchased amounts and map to Shopify line_item_id
-    const byId = new Map(crmOrder.lineItems.map((l) => [l.id, l]));
-    const refund_line_items = items.map((i) => {
-      const li = byId.get(i.lineId);
-      if (!li?.shopifyLineItemId) {
-        throw new Error(`Missing Shopify line_item_id for CRM line ${i.lineId}`);
-      }
-      const maxQty = Math.max(0, Number(li.quantity || 0));
-      const qty = Math.min(i.quantity, maxQty);
-      return {
-        line_item_id: Number(li.shopifyLineItemId),
-        quantity: qty,
-        restock_type: "no_restock" as const, // change to "return" if inventory should be returned
-      };
+    // Load CRM order + lines
+    const crmOrder = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { lineItems: true, customer: true },
     });
-
-    const shopifyOrderId = Number(crmOrder.shopifyOrderId);
-
-    // 3) Get original sale/capture transaction to link the refund against
-    const txRes = await shopifyRest(`/orders/${shopifyOrderId}/transactions.json`, { method: "GET" });
-    if (!txRes.ok) {
-      const t = await txRes.text().catch(() => "");
-      throw new Error(`Fetch transactions failed: ${txRes.status} ${t}`);
+    if (!crmOrder) {
+      return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
-    const txJson: any = await txRes.json();
-    const saleTx =
-      (txJson?.transactions || []).find((t: any) => t.kind === "sale" || t.kind === "capture") || null;
+    if (!crmOrder.shopifyOrderId) {
+      return NextResponse.json({ error: "This order is not linked to a Shopify order" }, { status: 400 });
+    }
 
-    // 4) Ask Shopify to CALCULATE the refund (Shopify computes line, shipping, tax/VAT)
+    // Build refund_line_items for Shopify using Shopify line_item_id
+    const refund_line_items: Array<{ line_item_id: number; quantity: number; restock_type: string }> = [];
+    for (const li of crmOrder.lineItems) {
+      const q = qtyMap.get(li.id);
+      if (!q) continue;
+      const max = Math.max(0, Number(li.quantity || 0));
+      if (q > max) {
+        return NextResponse.json({ error: `Refund qty for line "${li.productTitle || li.variantTitle || li.id}" exceeds purchased qty.` }, { status: 400 });
+      }
+      const shopifyLineItemId = li.shopifyLineItemId ? Number(li.shopifyLineItemId) : NaN;
+      if (!Number.isFinite(shopifyLineItemId)) {
+        return NextResponse.json({ error: "Missing Shopify line item id on this order line." }, { status: 400 });
+      }
+      refund_line_items.push({
+        line_item_id: shopifyLineItemId,
+        quantity: q,
+        restock_type: "no_restock",
+      });
+    }
+    if (refund_line_items.length === 0) {
+      return NextResponse.json({ error: "Calculated refund is £0.00" }, { status: 400 });
+    }
+
+    const shopifyOrderId = crmOrder.shopifyOrderId;
+
+    // 1) Ask Shopify to CALCULATE the refund (gets VAT/tax/discounts right)
     const calcRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds/calculate.json`, {
       method: "POST",
       body: JSON.stringify({
         refund: {
-          currency: crmOrder.currency || "GBP",
-          note: reason || undefined,
-          shipping: { amount: "0.00" },
+          shipping: { full_refund: false },
           refund_line_items,
-          transactions: saleTx ? [{ parent_id: Number(saleTx.id) }] : undefined,
         },
       }),
     });
-    if (!calcRes.ok) {
-      const t = await calcRes.text().catch(() => "");
-      return NextResponse.json({ error: `Refund calculate failed: ${calcRes.status} ${t}` }, { status: 502 });
-    }
-    const calcJson: any = await calcRes.json();
 
-    // Extract the total refund amount from Shopify's calculation (decimal major units)
-    const calcAmountStr =
-      calcJson?.refund?.transactions?.[0]?.amount ??
-      calcJson?.refund?.amount ??
-      "0.00";
-    const refundMinorUnits = decimalToMinorUnits(calcAmountStr);
-    if (refundMinorUnits <= 0) {
+    if (!calcRes.ok) {
+      const text = await calcRes.text().catch(() => "");
+      return NextResponse.json({ error: `Shopify calculate failed: ${calcRes.status} ${text}` }, { status: 502 });
+    }
+    const calcJson = await calcRes.json();
+    const calcRefund = calcJson?.refund || calcJson;
+
+    // Derive gross amount from Shopify's calculation
+    // Prefer transactions[0].amount if present, else sum line totals + tax.
+    let calcAmount = 0;
+    const t0 = calcRefund?.transactions?.[0];
+    if (t0?.amount != null) {
+      calcAmount = Number(t0.amount);
+    } else {
+      // Fallback: best-effort sum
+      const items: any[] = Array.isArray(calcRefund?.refund_line_items) ? calcRefund.refund_line_items : [];
+      const subtotal = items.reduce((s, it) => s + (toNumber(it?.subtotal) || 0), 0);
+      const tax = items.reduce((s, it) => s + (toNumber(it?.total_tax) || 0), 0);
+      calcAmount = subtotal + tax;
+    }
+
+    if (!(calcAmount > 0)) {
       return NextResponse.json({ error: "Calculated refund is £0.00" }, { status: 400 });
     }
 
-    // 5) Find the Stripe PaymentIntent (from the Shopify order's stored Checkout Session id)
-    let stripePaymentIntentId: string | null = null;
-    // Fetch Shopify order to read its note/note_attributes for cs_...
-    const orderRes = await shopifyRest(`/orders/${shopifyOrderId}.json`, { method: "GET" });
-    if (orderRes.ok) {
-      const orderJson = await orderRes.json();
-      const sessionId = extractStripeSessionIdFromShopify(orderJson?.order);
-      if (sessionId) {
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
-        const pi = session.payment_intent;
-        if (typeof pi === "string") stripePaymentIntentId = pi;
-        else if (pi && "id" in (pi as any)) stripePaymentIntentId = (pi as any).id;
-      }
+    const currency = String(
+      t0?.currency ||
+        crmOrder.currency ||
+        "GBP"
+    ).toLowerCase();
+
+    const stripeAmount = Math.round(calcAmount * 100);
+
+    // 2) Find original Stripe payment_intent via the Checkout Session id recorded on the Shopify order
+    const shopOrderRes = await shopifyRest(`/orders/${shopifyOrderId}.json`, { method: "GET" });
+    if (!shopOrderRes.ok) {
+      const text = await shopOrderRes.text().catch(() => "");
+      return NextResponse.json({ error: `Fetch Shopify order failed: ${shopOrderRes.status} ${text}` }, { status: 502 });
     }
-    if (!stripePaymentIntentId) {
-      return NextResponse.json(
-        { error: "Could not determine original Stripe payment (no Checkout Session id found)." },
-        { status: 400 }
-      );
+    const shopOrderJson = await shopOrderRes.json();
+    const sessionId = extractStripeSessionIdFromShopify(shopOrderJson?.order);
+    if (!sessionId) {
+      return NextResponse.json({ error: "Could not determine original Stripe Checkout Session from Shopify order note." }, { status: 400 });
+    }
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const pi = session.payment_intent;
+    const paymentIntentId =
+      typeof pi === "string" ? pi : (pi && "id" in (pi as any) ? (pi as any).id : null);
+
+    if (!paymentIntentId) {
+      return NextResponse.json({ error: "Stripe payment intent not found for this order" }, { status: 400 });
     }
 
-    // 6) Perform the Stripe refund for the exact amount Shopify calculated
+    // 3) Create the Stripe refund for the Shopify-calculated gross amount
     await stripe.refunds.create({
-      payment_intent: stripePaymentIntentId,
-      amount: refundMinorUnits, // already includes VAT because we used Shopify's calc
+      payment_intent: paymentIntentId,
+      amount: stripeAmount,
       reason: "requested_by_customer",
       metadata: {
         crmOrderId: crmOrder.id,
-        shopifyOrderId: crmOrder.shopifyOrderId || "",
+        shopifyOrderId: String(shopifyOrderId),
         crmReason: reason || "",
       },
     });
 
-    // 7) Create the Shopify refund (so Shopify shows "refunded/partially_refunded")
+    // 4) Create the Shopify refund record so status/amounts update in Shopify
+    //    Need a parent transaction id (sale/capture) to attach the refund.
+    const txRes = await shopifyRest(`/orders/${shopifyOrderId}/transactions.json`, { method: "GET" });
+    let parentId: string | null = null;
+    if (txRes.ok) {
+      const txJson = await txRes.json();
+      parentId = pickParentTransactionId(txJson?.transactions || []);
+    }
+
     const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
       method: "POST",
       body: JSON.stringify({
         refund: {
-          ...calcJson.refund,
           note: reason || undefined,
-          // Ensure the refund is linked to the original sale transaction
-          transactions: saleTx
+          notify: true,
+          currency,
+          refund_line_items,
+          transactions: parentId
             ? [
                 {
-                  parent_id: Number(saleTx.id),
-                  amount: calcAmountStr,
+                  parent_id: Number(parentId),
+                  amount: calcAmount.toFixed(2),
                   kind: "refund",
+                  gateway: "stripe",
+                  currency: currency.toUpperCase(),
                 },
               ]
-            : calcJson.refund?.transactions,
-          notify: true, // email customer
+            : undefined,
         },
       }),
     });
 
-    const text = await createRes.text();
     if (!createRes.ok) {
-      return NextResponse.json(
-        { error: `Shopify refund create failed: ${createRes.status} ${text}` },
-        { status: 502 }
-      );
+      const text = await createRes.text().catch(() => "");
+      return NextResponse.json({ error: `Shopify refund create failed: ${createRes.status} ${text}` }, { status: 502 });
     }
 
-    // Redirect back to the order page
-    const base = req.url.split("/api/")[0];
-    return NextResponse.redirect(`${base}/orders/${crmOrder.id}?refunded=1`, { status: 303 });
+    // 5) Refresh CRM copy of the order from Shopify (keeps totals/statuses right)
+    try {
+      const freshOrderRes = await shopifyRest(`/orders/${shopifyOrderId}.json`, { method: "GET" });
+      if (freshOrderRes.ok) {
+        const fresh = await freshOrderRes.json();
+        if (fresh?.order) await upsertOrderFromShopify(fresh.order, "");
+      }
+    } catch {
+      // non-fatal
+    }
+
+    // Redirect back to the order page with a toast flag
+    const back = new URL(req.url);
+    back.pathname = back.pathname.replace(/\/api\/orders\/[^/]+\/refund$/, `/orders/${crmOrder.id}`);
+    back.search = `?refunded=1&amount=${stripeAmount}`;
+    return NextResponse.redirect(back, { status: 303 });
   } catch (err: any) {
     console.error("Refund error:", err);
     return NextResponse.json({ error: err?.message || "Refund failed" }, { status: 500 });
   }
 }
 
-/** Disallow GET (avoids the 405 page if someone browses to this endpoint) */
+/** Explicit 405 for GET to avoid accidental browsing to the API endpoint */
 export async function GET() {
   return NextResponse.json({ error: "Method Not Allowed" }, { status: 405 });
 }
