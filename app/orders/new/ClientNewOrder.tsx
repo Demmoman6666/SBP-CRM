@@ -115,6 +115,10 @@ export default function ClientNewOrder() {
   // Hide search after first add; allow toggling back on
   const [showSearch, setShowSearch] = useState(true);
 
+  // 🔶 Stripe: local state for “Pay by card”
+  const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!showSearch) return; // don't fetch when hidden
     if (!query.trim()) {
@@ -237,6 +241,44 @@ export default function ClientNewOrder() {
       setError(err?.message || "Failed to create draft order");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  // 🔶 Stripe: Pay by card handler
+  async function onPayByCard() {
+    setPayError(null);
+    if (!customerId) {
+      setPayError("Missing customerId. Open this page from a customer profile.");
+      return;
+    }
+    if (!cart.length) {
+      setPayError("Add at least one item to pay.");
+      return;
+    }
+
+    try {
+      setPaying(true);
+      const items = cart.map((l) => ({
+        name: `${l.productTitle} — ${l.variantTitle}`,
+        unitAmountExVat: typeof l.priceNet === "number" ? l.priceNet : Number(l.priceNet || 0),
+        quantity: l.quantity,
+        variantId: l.variantId,
+      }));
+
+      const res = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerId, items }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.url) {
+        throw new Error(json?.error || "Failed to start Checkout");
+      }
+      window.location.href = json.url as string; // redirect to Stripe
+    } catch (e: any) {
+      setPayError(e?.message || "Stripe error");
+    } finally {
+      setPaying(false);
     }
   }
 
@@ -398,8 +440,24 @@ export default function ClientNewOrder() {
         )}
       </section>
 
+      {/* Footer actions: Pay by card + Create Draft Order */}
       <form onSubmit={onSubmit} className="right row" style={{ gap: 8 }}>
-        {error && <div className="form-error" style={{ marginRight: "auto" }}>{error}</div>}
+        {(error || payError) && (
+          <div className="form-error" style={{ marginRight: "auto" }}>
+            {error || payError}
+          </div>
+        )}
+
+        <button
+          className="btn"
+          type="button"
+          onClick={onPayByCard}
+          disabled={paying || cart.length === 0 || !customerId}
+          title={!customerId ? "Open from a customer profile" : "Pay by card"}
+        >
+          {paying ? "Opening Checkout…" : "Pay by card"}
+        </button>
+
         <button className="primary" type="submit" disabled={submitting || cart.length === 0}>
           {submitting ? "Creating Draft Order…" : "Create Draft Order"}
         </button>
