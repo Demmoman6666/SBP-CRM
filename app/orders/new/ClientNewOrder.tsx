@@ -1,13 +1,14 @@
-// app/orders/new/ClientNewOrder.tsx  (your existing page logic, now as a Client Component)
+// app/orders/new/ClientNewOrder.tsx  (CLIENT component)
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 
+/* ---------------- Types ---------------- */
 type Variant = {
   id: string | number;
   title: string;
-  price?: string | number | null;
+  price?: string | number | null; // net (ex VAT) from Shopify
   sku?: string | null;
   available?: boolean;
 };
@@ -22,17 +23,88 @@ type CartLine = {
   variantId: string;
   productTitle: string;
   variantTitle: string;
-  price: number | null;
+  priceNet: number | null; // store net price
   quantity: number;
   sku?: string | null;
 };
 
-const SEARCH_ENDPOINT = "/api/shopify/products"; // expects ?q= query and returns products w/ variants
+type CustomerBrief = {
+  id: string;
+  salonName?: string | null;
+  customerName?: string | null;
+  customerTelephone?: string | null;
+  customerEmailAddress?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  town?: string | null;
+  county?: string | null;
+  postCode?: string | null;
+};
+
+const SEARCH_ENDPOINT = "/api/shopify/products"; // ?q=
+const VAT_RATE = 0.2;
+
+/* ---------------- Helpers ---------------- */
+function toNumber(v: any): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function incVAT(net: number | null | undefined): number {
+  if (!net && net !== 0) return 0;
+  return +(net * (1 + VAT_RATE));
+}
+function fmt(n: number | null | undefined): string {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  return `£${x.toFixed(2)}`;
+}
+function addressLines(c?: CustomerBrief | null) {
+  if (!c) return [];
+  return [c.addressLine1, c.addressLine2, c.town, c.county, c.postCode]
+    .filter(Boolean) as string[];
+}
 
 export default function ClientNewOrder() {
   const router = useRouter();
   const sp = useSearchParams();
   const customerId = sp.get("customerId") || "";
+
+  /* Customer details */
+  const [customer, setCustomer] = useState<CustomerBrief | null>(null);
+  const [custErr, setCustErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      setCustErr(null);
+      setCustomer(null);
+      if (!customerId) return;
+      try {
+        const res = await fetch(`/api/customers/${customerId}`, { cache: "no-store" });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || "Failed to load customer");
+        const c: CustomerBrief = {
+          id: json.id,
+          salonName: json.salonName ?? null,
+          customerName: json.customerName ?? null,
+          customerTelephone: json.customerTelephone ?? null,
+          customerEmailAddress: json.customerEmailAddress ?? null,
+          addressLine1: json.addressLine1 ?? null,
+          addressLine2: json.addressLine2 ?? null,
+          town: json.town ?? null,
+          county: json.county ?? null,
+          postCode: json.postCode ?? null,
+        };
+        if (active) setCustomer(c);
+      } catch (e: any) {
+        if (active) setCustErr(e?.message || "Failed to load customer");
+      }
+    }
+    load();
+    return () => { active = false; };
+  }, [customerId]);
+
+  /* Search + cart */
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [hits, setHits] = useState<ProductHit[]>([]);
@@ -40,7 +112,11 @@ export default function ClientNewOrder() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Hide search after first add; allow toggling back on
+  const [showSearch, setShowSearch] = useState(true);
+
   useEffect(() => {
+    if (!showSearch) return; // don't fetch when hidden
     if (!query.trim()) {
       setHits([]);
       return;
@@ -55,15 +131,18 @@ export default function ClientNewOrder() {
         });
         const json = await res.json();
         if (!res.ok) throw new Error(json?.error || "Search failed");
-        // normalize into ProductHit[]
         const mapped: ProductHit[] = (Array.isArray(json) ? json : []).map((p: any) => ({
           id: String(p.id ?? ""),
           title: String(p.title ?? "-"),
-          image: p.image?.src ? { src: p.image.src } : p.images?.[0]?.src ? { src: p.images[0].src } : null,
+          image: p.image?.src
+            ? { src: p.image.src }
+            : p.images?.[0]?.src
+            ? { src: p.images[0].src }
+            : null,
           variants: (p.variants ?? []).map((v: any) => ({
             id: String(v.id ?? ""),
             title: String(v.title ?? "Default"),
-            price: v.price ?? v.compare_at_price ?? null,
+            price: v.price ?? v.compare_at_price ?? null, // net
             sku: v.sku ?? null,
             available: v.available ?? true,
           })),
@@ -79,7 +158,7 @@ export default function ClientNewOrder() {
       ac.abort();
       clearTimeout(t);
     };
-  }, [query]);
+  }, [query, showSearch]);
 
   function addVariant(p: ProductHit, v: Variant) {
     const existingIdx = cart.findIndex((l) => l.variantId === String(v.id));
@@ -87,6 +166,7 @@ export default function ClientNewOrder() {
       const next = [...cart];
       next[existingIdx].quantity += 1;
       setCart(next);
+      setShowSearch(false);
       return;
     }
     setCart((c) => [
@@ -95,23 +175,32 @@ export default function ClientNewOrder() {
         variantId: String(v.id),
         productTitle: p.title,
         variantTitle: v.title,
-        price: v.price == null ? null : Number(v.price),
+        priceNet: toNumber(v.price),
         quantity: 1,
         sku: v.sku ?? null,
       },
     ]);
+    setShowSearch(false);
   }
 
   function updateQty(variantId: string, q: number) {
-    const next = cart.map((l) => (l.variantId === variantId ? { ...l, quantity: Math.max(1, q) } : l));
+    const next = cart.map((l) =>
+      l.variantId === variantId ? { ...l, quantity: Math.max(1, q) } : l
+    );
     setCart(next);
   }
   function removeLine(variantId: string) {
     setCart((c) => c.filter((l) => l.variantId !== variantId));
   }
 
-  const subtotal = useMemo(() => {
-    return cart.reduce((sum, l) => sum + (l.price ? l.price * l.quantity : 0), 0);
+  const totals = useMemo(() => {
+    const net = cart.reduce(
+      (sum, l) => sum + (l.priceNet ? l.priceNet * l.quantity : 0),
+      0
+    );
+    const vat = net * VAT_RATE;
+    const gross = net + vat;
+    return { net, vat, gross };
   }, [cart]);
 
   async function onSubmit(e: React.FormEvent) {
@@ -152,88 +241,152 @@ export default function ClientNewOrder() {
   }
 
   return (
-    <div className="grid" style={{ gap: 16 }}>
-      {/* Context row only (main H1 is in the wrapper) */}
+    <>
+      {/* Back + who */}
       <section className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <div className="small muted">For customer ID: {customerId || "—"}</div>
+        <div className="small muted">
+          For customer ID:&nbsp;<b>{customerId || "—"}</b>
+        </div>
         <a className="btn" href={customerId ? `/customers/${customerId}` : "/"}>Back</a>
       </section>
 
+      {/* Customer details */}
       <section className="card">
-        <h3>Search Products</h3>
-        <input
-          placeholder="Search by product title, SKU, vendor…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          autoFocus
-        />
-        {loading ? (
-          <div className="small muted" style={{ marginTop: 8 }}>Searching…</div>
-        ) : hits.length === 0 && query.trim() ? (
-          <div className="small muted" style={{ marginTop: 8 }}>No results.</div>
+        <b>Customer</b>
+        {custErr ? (
+          <p className="small" style={{ marginTop: 6, color: "var(--danger, #b91c1c)" }}>
+            {custErr}
+          </p>
+        ) : !customerId ? (
+          <p className="small" style={{ marginTop: 6 }}>—</p>
+        ) : !customer ? (
+          <p className="small muted" style={{ marginTop: 6 }}>Loading…</p>
         ) : (
-          <div className="grid" style={{ gap: 8, marginTop: 10 }}>
-            {hits.map((p) => (
-              <div key={p.id} className="row" style={{ gap: 12, alignItems: "flex-start" }}>
-                {p.image?.src ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={p.image.src!} alt="" width={48} height={48} style={{ borderRadius: 8, objectFit: "cover" }} />
-                ) : (
-                  <div style={{ width: 48, height: 48, background: "#f3f4f6", borderRadius: 8 }} />
-                )}
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600 }}>{p.title}</div>
-                  <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 6 }}>
-                    {p.variants.map((v) => (
-                      <button
-                        key={v.id}
-                        type="button"
-                        className="btn"
-                        onClick={() => addVariant(p, v)}
-                        disabled={v.available === false}
-                        title={v.available === false ? "Not available" : "Add to order"}
-                      >
-                        {v.title} {v.sku ? `• ${v.sku}` : ""}{" "}
-                        {v.price != null ? `• £${Number(v.price).toFixed(2)}` : ""}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+          <div className="row" style={{ gap: 16, marginTop: 6, alignItems: "flex-start", flexWrap: "wrap" }}>
+            <div style={{ minWidth: 220 }}>
+              <div style={{ fontWeight: 600 }}>{customer.salonName || customer.customerName || "—"}</div>
+              <div className="small muted">
+                {customer.customerName || "—"}
+                {customer.customerTelephone ? ` • ${customer.customerTelephone}` : ""}
+                {customer.customerEmailAddress ? ` • ${customer.customerEmailAddress}` : ""}
               </div>
-            ))}
+            </div>
+            <div className="small" style={{ whiteSpace: "pre-line" }}>
+              {addressLines(customer).length ? addressLines(customer).join("\n") : "—"}
+            </div>
           </div>
         )}
       </section>
 
+      {/* Search (auto-hide after first add) */}
+      {showSearch ? (
+        <section className="card">
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>Search Products</h3>
+            <button type="button" className="btn" onClick={() => setShowSearch(false)}>Hide</button>
+          </div>
+          <input
+            placeholder="Search by product title, SKU, vendor…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            autoFocus
+          />
+          {loading ? (
+            <div className="small muted" style={{ marginTop: 8 }}>Searching…</div>
+          ) : hits.length === 0 && query.trim() ? (
+            <div className="small muted" style={{ marginTop: 8 }}>No results.</div>
+          ) : (
+            <div className="grid" style={{ gap: 8, marginTop: 10 }}>
+              {hits.map((p) => (
+                <div key={p.id} className="row" style={{ gap: 12, alignItems: "flex-start" }}>
+                  {p.image?.src ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={p.image.src!} alt="" width={48} height={48} style={{ borderRadius: 8, objectFit: "cover" }} />
+                  ) : (
+                    <div style={{ width: 48, height: 48, background: "#f3f4f6", borderRadius: 8 }} />
+                  )}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600 }}>{p.title}</div>
+                    <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+                      {p.variants.map((v) => {
+                        const priceNet = toNumber(v.price);
+                        const priceGross = incVAT(priceNet || 0);
+                        return (
+                          <button
+                            key={v.id}
+                            type="button"
+                            className="btn"
+                            onClick={() => addVariant(p, v)}
+                            disabled={v.available === false}
+                            title={v.available === false ? "Not available" : "Add to order"}
+                          >
+                            {v.title}{v.sku ? ` • ${v.sku}` : ""} • {fmt(priceGross)} inc VAT
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      ) : (
+        <div className="row" style={{ justifyContent: "flex-end" }}>
+          <button className="btn" type="button" onClick={() => setShowSearch(true)}>
+            Add more products
+          </button>
+        </div>
+      )}
+
+      {/* Cart */}
       <section className="card">
         <h3>Cart</h3>
         {cart.length === 0 ? (
           <div className="small muted">No items yet.</div>
         ) : (
           <div className="grid" style={{ gap: 8 }}>
-            {cart.map((l) => (
-              <div key={l.variantId} className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontWeight: 600 }}>{l.productTitle}</div>
-                  <div className="small muted">{l.variantTitle}{l.sku ? ` • ${l.sku}` : ""}</div>
-                </div>
-                <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                  <input
-                    type="number"
-                    min={1}
-                    value={l.quantity}
-                    onChange={(e) => updateQty(l.variantId, Number(e.target.value || 1))}
-                    style={{ width: 70 }}
-                  />
-                  <div style={{ width: 90, textAlign: "right" }}>
-                    {l.price != null ? `£${(l.price * l.quantity).toFixed(2)}` : "—"}
+            {cart.map((l) => {
+              const lineNet = l.priceNet ? l.priceNet * l.quantity : 0;
+              const lineVat = lineNet * VAT_RATE;
+              const lineGross = lineNet + lineVat;
+              return (
+                <div key={l.variantId} className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{l.productTitle}</div>
+                    <div className="small muted">
+                      {l.variantTitle}{l.sku ? ` • ${l.sku}` : ""} • {l.priceNet != null ? `${fmt(incVAT(l.priceNet))} inc VAT` : "—"}
+                    </div>
                   </div>
-                  <button className="btn" type="button" onClick={() => removeLine(l.variantId)}>Remove</button>
+                  <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                    <input
+                      type="number"
+                      min={1}
+                      value={l.quantity}
+                      onChange={(e) => updateQty(l.variantId, Number(e.target.value || 1))}
+                      style={{ width: 70 }}
+                    />
+                    <div style={{ textAlign: "right" }}>
+                      <div>{fmt(lineGross)} inc VAT</div>
+                      <div className="small muted" style={{ textAlign: "right" }}>
+                        Net {fmt(lineNet)}
+                      </div>
+                    </div>
+                    <button className="btn" type="button" onClick={() => removeLine(l.variantId)}>Remove</button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
+
             <div className="row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
-              <div style={{ fontWeight: 700 }}>Subtotal: £{subtotal.toFixed(2)}</div>
+              <div style={{ textAlign: "right" }}>
+                <div>Net: <b>{fmt(totals.net)}</b></div>
+                <div>VAT (20%): <b>{fmt(totals.vat)}</b></div>
+                <div style={{ fontWeight: 700, marginTop: 4 }}>Total: {fmt(totals.gross)} inc VAT</div>
+              </div>
+            </div>
+            <div className="small muted" style={{ textAlign: "right" }}>
+              Displayed totals include VAT. Shopify will calculate final tax on the draft order.
             </div>
           </div>
         )}
@@ -245,6 +398,6 @@ export default function ClientNewOrder() {
           {submitting ? "Creating Draft Order…" : "Create Draft Order"}
         </button>
       </form>
-    </div>
+    </>
   );
 }
