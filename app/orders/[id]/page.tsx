@@ -17,12 +17,11 @@ function money(n?: any, currency?: string) {
 }
 
 export default async function OrderDetailPage({ params }: { params: { id: string } }) {
-  // ⬇️ This is the bit you asked about (placed at the top of the page component)
+  // ⬇️ Load order + customer + line items
   const order = await prisma.order.findUnique({
     where: { id: params.id },
     include: {
       customer: { select: { id: true, salonName: true, customerName: true } },
-      // NOTE: your schema's relation is `lineItems` (not `orderLineItems`)
       lineItems: true,
     },
   });
@@ -45,12 +44,19 @@ export default async function OrderDetailPage({ params }: { params: { id: string
       <div className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
           <h1 style={{ margin: 0 }}>{order.shopifyName || `Order ${order.shopifyOrderNumber ?? ""}`}</h1>
-          <Link
-            className="primary"
-            href={order.customer ? `/customers/${order.customer.id}` : "/customers"}
-          >
-            Back to customer
-          </Link>
+
+          {/* Actions: Refund + Back to customer */}
+          <div className="row" style={{ gap: 8 }}>
+            <Link className="btn" href={`/orders/${order.id}/refund`}>
+              Refund
+            </Link>
+            <Link
+              className="primary"
+              href={order.customer ? `/customers/${order.customer.id}` : "/customers"}
+            >
+              Back to customer
+            </Link>
+          </div>
         </div>
 
         <div className="grid grid-2" style={{ marginTop: 10 }}>
