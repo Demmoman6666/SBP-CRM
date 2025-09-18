@@ -100,14 +100,12 @@ export async function POST(req: Request) {
       );
     }
 
-    const stripe = new Stripe(
-      stripeSecret,
-      {
-        apiVersion:
-          (process.env.STRIPE_API_VERSION as Stripe.LatestApiVersion) ||
-          "2024-06-20",
-      }
-    );
+    // Let Stripe use the SDK’s pinned default unless you explicitly set STRIPE_API_VERSION.
+    const apiVersion =
+      (process.env.STRIPE_API_VERSION as Stripe.LatestApiVersion | undefined) ??
+      undefined;
+
+    const stripe = new Stripe(stripeSecret, { apiVersion });
 
     const origin = getOrigin(req);
 
