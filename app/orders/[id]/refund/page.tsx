@@ -1,196 +1,112 @@
-// app/orders/[orderId]/refund/page.tsx
-"use client";
+// app/orders/[id]/refund/page.tsx
+import Link from "next/link";
+import { prisma } from "@/lib/prisma";
 
-import { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
-
-type Line = {
-  id: string;
-  productTitle: string | null;
-  variantTitle: string | null;
-  sku: string | null;
-  quantity: number;
-  // Either grossInc (preferred) or net + vatRate
-  price?: number | null;         // unit price (what your API returns today)
-  total?: number | null;         // unit * qty (what your API returns today)
-};
-
-type OrderJson = {
-  id: string;
-  shopifyOrderId?: string | null;
-  shopifyName?: string | null;
-  taxes?: number | null;
-  subtotal?: number | null;
-  total?: number | null;
-  vatRate?: number | null;       // if your API exposes it
-  lineItems?: Line[];
-};
-
-const VAT_RATE_FALLBACK = 0.2;
-
-function fmt(n: number) {
-  return `£${(Math.round(n * 100) / 100).toFixed(2)}`;
+function money(n?: any, currency?: string) {
+  if (n == null) return "-";
+  const num = typeof n === "string" ? parseFloat(n) : Number(n);
+  if (!Number.isFinite(num)) return String(n);
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: currency || "GBP",
+    }).format(num);
+  } catch {
+    return num.toFixed(2);
+  }
 }
 
-export default function RefundPage() {
-  const router = useRouter();
-  const { orderId } = useParams<{ orderId: string }>();
-  const [loading, setLoading] = useState(true);
-  const [order, setOrder] = useState<OrderJson | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export default async function RefundPage({ params }: { params: { id: string } }) {
+  const order = await prisma.order.findUnique({
+    where: { id: params.id },
+    include: {
+      customer: { select: { id: true, salonName: true, customerName: true } },
+      lineItems: true,
+    },
+  });
 
-  // track refund quantities
-  const [quantities, setQuantities] = useState<Record<string, number>>({});
-
-  useEffect(() => {
-    let active = true;
-    async function load() {
-      try {
-        setLoading(true);
-        setError(null);
-        // Reuse your existing order JSON endpoint if you have it.
-        // If not, this will still render and you can point it to whichever API you use.
-        const res = await fetch(`/api/orders/${orderId}`, { cache: "no-store" });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json?.error || "Failed to load order");
-        if (active) {
-          setOrder(json as OrderJson);
-          const qInit: Record<string, number> = {};
-          for (const li of (json.lineItems || [])) qInit[li.id] = 0;
-          setQuantities(qInit);
-        }
-      } catch (e: any) {
-        if (active) setError(e?.message || "Failed to load order");
-      } finally {
-        if (active) setLoading(false);
-      }
-    }
-    load();
-    return () => { active = false; };
-  }, [orderId]);
-
-  const vatRate =
-    order?.vatRate != null && order.vatRate >= 0 ? order.vatRate : VAT_RATE_FALLBACK;
-
-  // Total selected refund (GROSS) – assumes order.price/total already include VAT
-  const refundTotal = useMemo(() => {
-    if (!order?.lineItems) return 0;
-    let t = 0;
-    for (const li of order.lineItems) {
-      const q = quantities[li.id] || 0;
-      const unitGross =
-        (li.total && li.quantity ? li.total / li.quantity : li.price || 0);
-      t += unitGross * q;
-    }
-    return t;
-  }, [order, quantities]);
-
-  async function submitRefund() {
-    try {
-      if (!order) return;
-      const lines = (order.lineItems || [])
-        .map((li) => {
-          const q = quantities[li.id] || 0;
-          if (!q) return null;
-          const unitGross =
-            (li.total && li.quantity ? li.total / li.quantity : li.price || 0);
-          return {
-            id: li.id,
-            sku: li.sku,
-            productTitle: li.productTitle,
-            variantTitle: li.variantTitle,
-            unitGross,            // £ inc VAT
-            quantity: q,
-          };
-        })
-        .filter(Boolean);
-
-      if (!lines.length) {
-        setError("Choose at least one quantity to refund.");
-        return;
-      }
-
-      const res = await fetch("/api/payments/stripe/refund", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          orderId: order.id,
-          shopifyOrderId: order.shopifyOrderId || null,
-          lines,
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Refund failed");
-      // Back to order page
-      router.push(`/orders/${order.id}?refunded=1`);
-    } catch (e: any) {
-      setError(e?.message || "Refund failed");
-    }
+  if (!order) {
+    return (
+      <div className="card">
+        <h2>Order not found</h2>
+        <Link className="primary" href="/customers">Back</Link>
+      </div>
+    );
   }
 
-  if (loading) return <section className="card">Loading…</section>;
-  if (error) return <section className="card">Error: {error}</section>;
-  if (!order) return <section className="card">Order not found.</section>;
+  const currency = order.currency || "GBP";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <section className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ margin: 0 }}>Refund Order {order.shopifyName ? `(${order.shopifyName})` : ""}</h1>
-        <a className="btn" href={`/orders/${order.id}`}>Back to order</a>
-      </section>
+      <div className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+          <h1 style={{ margin: 0 }}>
+            Refund {order.shopifyName || `Order ${order.shopifyOrderNumber ?? ""}`}
+          </h1>
+          <div className="row" style={{ gap: 8 }}>
+            <Link className="btn" href={`/orders/${order.id}`}>Back to order</Link>
+            <Link className="primary" href={order.customer ? `/customers/${order.customer.id}` : "/customers"}>
+              Back to customer
+            </Link>
+          </div>
+        </div>
 
-      <section className="card">
-        <h3>Items</h3>
-        <div className="grid" style={{ gap: 10 }}>
-          {(order.lineItems || []).map((li) => {
-            const unitGross =
-              (li.total && li.quantity ? li.total / li.quantity : li.price || 0);
-            return (
-              <div key={li.id} className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <p className="small muted" style={{ marginTop: 8 }}>
+          Select the items/quantities to refund. The refund will be issued back via the original payment method.
+        </p>
+
+        <form
+          method="POST"
+          action={`/api/orders/${order.id}/refund`}
+          className="grid"
+          style={{ gap: 12, marginTop: 12 }}
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr",
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
+            <div className="small muted">Product</div>
+            <div className="small muted">SKU</div>
+            <div className="small muted">Qty (max)</div>
+            <div className="small muted">Unit</div>
+            <div className="small muted">Refund Qty</div>
+
+            {order.lineItems.map((li) => (
+              <div key={li.id} style={{ display: "contents" }}>
+                <div>{li.productTitle || li.variantTitle || "-"}</div>
+                <div>{li.sku || "-"}</div>
+                <div>{li.quantity}</div>
+                <div>{money(li.price, currency)}</div>
                 <div>
-                  <div style={{ fontWeight: 600 }}>
-                    {li.productTitle || "—"}
-                  </div>
-                  <div className="small muted">
-                    {li.variantTitle || ""}{li.sku ? ` • ${li.sku}` : ""} • Unit {fmt(unitGross)}
-                  </div>
-                  <div className="small muted">Purchased: {li.quantity}</div>
-                </div>
-                <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                  <label className="small muted" style={{ marginRight: 4 }}>Refund qty</label>
                   <input
                     type="number"
+                    name={`qty_${li.id}`}
                     min={0}
                     max={li.quantity}
-                    value={quantities[li.id] || 0}
-                    onChange={(e) => {
-                      const v = Math.max(0, Math.min(li.quantity, Number(e.target.value || 0)));
-                      setQuantities((q) => ({ ...q, [li.id]: v }));
-                    }}
+                    defaultValue={0}
                     style={{ width: 90 }}
                   />
                 </div>
               </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="card right">
-        <div className="row" style={{ justifyContent: "flex-end" }}>
-          <div style={{ textAlign: "right" }}>
-            <div>VAT rate: {(vatRate * 100).toFixed(0)}%</div>
-            <div style={{ fontWeight: 700, marginTop: 6 }}>
-              Refund total: {fmt(refundTotal)}
-            </div>
+            ))}
           </div>
-        </div>
-      </section>
 
-      <div className="right">
-        <button className="primary" onClick={submitRefund} disabled={refundTotal <= 0}>
-          Refund {fmt(refundTotal)}
-        </button>
+          <textarea
+            name="reason"
+            placeholder="Reason (optional)"
+            className="textarea"
+            rows={3}
+          />
+
+          <div className="right row" style={{ gap: 8 }}>
+            <Link className="btn" href={`/orders/${order.id}`}>Cancel</Link>
+            <button className="primary" type="submit">Process refund</button>
+          </div>
+        </form>
       </div>
     </div>
   );
