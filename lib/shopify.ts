@@ -29,6 +29,13 @@ function tagsToString(tags: string[]): string {
   return Array.from(new Set(tags.map(t => t.trim()).filter(Boolean))).join(", ");
 }
 
+/** Convert a GraphQL gid (e.g. gid://shopify/Product/123456789) → "123456789" */
+export function gidToNumericId(gid?: string | null): string | null {
+  if (!gid || typeof gid !== "string") return null;
+  const m = gid.match(/\/(\d+)$/);
+  return m ? m[1] : null;
+}
+
 /** ───────────────── REST Admin helper ───────────────── */
 export async function shopifyRest(path: string, init: RequestInit = {}) {
   if (!SHOP_DOMAIN || !SHOP_ADMIN_TOKEN) {
@@ -40,6 +47,29 @@ export async function shopifyRest(path: string, init: RequestInit = {}) {
   if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   headers.set("Accept", "application/json");
   return fetch(url, { ...init, headers, cache: "no-store" });
+}
+
+/** ───────────────── GraphQL Admin helper ───────────────── */
+export async function shopifyGraphql<T = any>(query: string, variables?: Record<string, any>): Promise<T> {
+  if (!SHOP_DOMAIN || !SHOP_ADMIN_TOKEN) {
+    throw new Error("Missing SHOPIFY_SHOP_DOMAIN or SHOPIFY_ADMIN_ACCESS_TOKEN");
+  }
+  const url = `https://${SHOP_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
+  const res = await fetch(url, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "X-Shopify-Access-Token": SHOP_ADMIN_TOKEN,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  const json = await res.json();
+  if (!res.ok || json?.errors) {
+    throw new Error(`Shopify GraphQL error: ${res.status} ${JSON.stringify(json?.errors || json)}`);
+  }
+  return json.data as T;
 }
 
 /** ───────────────── HMAC ───────────────── */
@@ -368,4 +398,176 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
       },
     });
   }
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   Product Search (Admin GraphQL) for “Create Order”
+   - searchShopifyCatalog(term) returns flattened variants + product info
+   - createDraftOrderForCustomer(...) to stage an order in Shopify
+   ────────────────────────────────────────────────────────────────── */
+
+export type ShopifySearchVariant = {
+  productGid: string;
+  productId: string | null;
+  productTitle: string;
+  vendor: string | null;
+  imageUrl: string | null;
+  status: string | null;
+
+  variantGid: string;
+  variantId: string | null;
+  variantTitle: string;
+  sku: string | null;
+  barcode: string | null;
+
+  priceAmount: string | null;
+  currencyCode: string | null;
+
+  availableForSale: boolean | null;
+  inventoryQuantity: number | null;
+};
+
+function buildProductQueryString(term: string): string {
+  const t = term.replace(/"/g, '\\"').trim();
+  if (!t) return "";
+  // Match in title, sku, or vendor
+  return `title:*${t}* OR sku:*${t}* OR vendor:*${t}*`;
+}
+
+export async function searchShopifyCatalog(term: string, first = 15): Promise<ShopifySearchVariant[]> {
+  const q = buildProductQueryString(term);
+  if (!q) return [];
+
+  const query = `
+    query SearchProducts($q: String!, $first: Int!) {
+      products(first: $first, query: $q) {
+        edges {
+          node {
+            id
+            title
+            vendor
+            status
+            images(first: 1) { edges { node { url } } }
+            variants(first: 50) {
+              edges {
+                node {
+                  id
+                  title
+                  sku
+                  barcode
+                  availableForSale
+                  inventoryQuantity
+                  price { amount currencyCode }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  type Gx = {
+    products: {
+      edges: Array<{
+        node: {
+          id: string;
+          title: string;
+          vendor?: string | null;
+          status?: string | null;
+          images?: { edges: { node: { url: string } }[] } | null;
+          variants: {
+            edges: Array<{
+              node: {
+                id: string;
+                title: string;
+                sku?: string | null;
+                barcode?: string | null;
+                availableForSale?: boolean | null;
+                inventoryQuantity?: number | null;
+                price?: { amount: string; currencyCode: string } | null;
+              };
+            }>;
+          };
+        };
+      }>;
+    };
+  };
+
+  const data = await shopifyGraphql<Gx>(query, { q, first });
+  const out: ShopifySearchVariant[] = [];
+  for (const pe of data?.products?.edges || []) {
+    const p = pe.node;
+    const productId = gidToNumericId(p.id);
+    const img = p.images?.edges?.[0]?.node?.url || null;
+
+    for (const ve of p.variants?.edges || []) {
+      const v = ve.node;
+      out.push({
+        productGid: p.id,
+        productId,
+        productTitle: p.title,
+        vendor: p.vendor ?? null,
+        imageUrl: img,
+        status: p.status ?? null,
+
+        variantGid: v.id,
+        variantId: gidToNumericId(v.id),
+        variantTitle: v.title,
+        sku: v.sku ?? null,
+        barcode: v.barcode ?? null,
+
+        priceAmount: v.price?.amount ?? null,
+        currencyCode: v.price?.currencyCode ?? null,
+
+        availableForSale: v.availableForSale ?? null,
+        inventoryQuantity: typeof v.inventoryQuantity === "number" ? v.inventoryQuantity : null,
+      });
+    }
+  }
+  return out;
+}
+
+/** Create a Draft Order in Shopify for a CRM customer by their id */
+export async function createDraftOrderForCustomer(
+  crmCustomerId: string,
+  items: Array<{ variantId: string; quantity: number }>,
+  note?: string
+) {
+  // We require a Shopify customer id on the CRM record
+  const customer = await prisma.customer.findUnique({
+    where: { id: crmCustomerId },
+    select: { shopifyCustomerId: true, customerEmailAddress: true, salonName: true, customerName: true },
+  });
+  if (!customer) throw new Error("Customer not found");
+  if (!customer.shopifyCustomerId) throw new Error("This customer is not linked to a Shopify customer");
+
+  // Draft order payload
+  const line_items = items.map(li => ({
+    variant_id: Number(li.variantId),
+    quantity: li.quantity,
+  }));
+
+  const payload = {
+    draft_order: {
+      customer: { id: Number(customer.shopifyCustomerId) },
+      line_items,
+      note: note || undefined,
+      tags: "CRM",
+      use_customer_default_address: true,
+    },
+  };
+
+  const res = await shopifyRest(`/draft_orders.json`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Draft order create failed: ${res.status} ${text}`);
+  }
+
+  const json = await res.json();
+  return json?.draft_order || null;
 }
