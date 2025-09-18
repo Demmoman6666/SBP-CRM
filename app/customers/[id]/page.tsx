@@ -223,6 +223,15 @@ export default async function CustomerDetail({ params }: { params: { id: string 
           </div>
 
           <div className="row" style={{ gap: 8 }}>
+            {/* ✅ NEW: Create Order button */}
+            <Link
+              href={`/orders/new?customerId=${customer.id}`}
+              className="btn primary"
+              style={{ padding: "6px 10px", borderRadius: 10 }}
+            >
+              Create Order
+            </Link>
+
             <Link
               href={`/customers/${customer.id}/edit`}
               className="primary"
@@ -231,7 +240,7 @@ export default async function CustomerDetail({ params }: { params: { id: string 
               Edit
             </Link>
 
-            {/* NEW: Request Education button */}
+            {/* Request Education */}
             <Link
               href={`/education/requests/new?customerId=${customer.id}`}
               className="btn"
