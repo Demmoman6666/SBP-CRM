@@ -13,6 +13,7 @@ type PostBody = {
   note?: string | null;
 };
 
+// VAT: Shopify prices are ex VAT; Stripe unit_amount will be gross (inc VAT)
 const VAT_RATE = Number(process.env.VAT_RATE ?? "0.20");
 
 function getOrigin(req: Request): string {
@@ -41,6 +42,7 @@ async function fetchVariantPricing(variantIds: string[]) {
       }
     }
   `;
+
   const data = await shopifyGraphql<{
     nodes: Array<
       | {
@@ -75,10 +77,9 @@ export async function POST(req: Request) {
     if (!stripeSecret) {
       return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY env var" }, { status: 500 });
     }
-    const stripe = new Stripe(stripeSecret, {
-      // Pin to a concrete version to avoid TS mismatch in Vercel
-      apiVersion: "2023-10-16",
-    });
+
+    // Pin to a concrete version to avoid TS mismatch in Vercel builds
+    const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
 
     const origin = getOrigin(req);
 
@@ -89,6 +90,14 @@ export async function POST(req: Request) {
     if (!Array.isArray(lines) || lines.length === 0) {
       return NextResponse.json({ error: "At least one line item is required" }, { status: 400 });
     }
+    for (const li of lines) {
+      if (!li?.variantId) {
+        return NextResponse.json({ error: "Each line must include variantId" }, { status: 400 });
+      }
+      if (!Number.isFinite(Number(li.quantity)) || Number(li.quantity) <= 0) {
+        return NextResponse.json({ error: "Each line must include a positive quantity" }, { status: 400 });
+      }
+    }
 
     const crm = await prisma.customer.findUnique({
       where: { id: customerId },
@@ -96,17 +105,18 @@ export async function POST(req: Request) {
     });
     if (!crm) return NextResponse.json({ error: "Customer not found" }, { status: 404 });
 
-    // Secure prices from Shopify
+    // Secure prices from Shopify (ex VAT)
     const ids = lines.map((l) => String(l.variantId));
     const catalog = await fetchVariantPricing(ids);
 
-    // Build Stripe line items – include variantId in product metadata
+    // Build Stripe Checkout line items (gross, inc VAT), and attach variantId to product metadata
     const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = lines.map((li) => {
       const v = catalog[String(li.variantId)];
       if (!v) throw new Error(`Variant not found in Shopify: ${li.variantId}`);
-      const ex = v.priceExVat;
-      const inc = ex * (1 + VAT_RATE);
-      const unit_amount = Math.round(inc * 100); // pence
+
+      const ex = v.priceExVat;                     // £ (ex VAT)
+      const inc = ex * (1 + VAT_RATE);             // £ (inc VAT)
+      const unit_amount = Math.round(inc * 100);   // pence
       const name = `${v.productTitle} — ${v.variantTitle}`;
 
       return {
@@ -116,14 +126,19 @@ export async function POST(req: Request) {
           unit_amount,
           product_data: {
             name,
-            // 👇 This is the crucial bit used by the webhook
-            metadata: {
-              variantId: String(li.variantId),
-            },
+            // Used by the webhook to push a real Shopify order
+            metadata: { variantId: String(li.variantId) },
           },
         },
       };
     });
+
+    // Core identifiers we want to be available both on the Session and the Payment Intent
+    const sharedMeta = {
+      crmCustomerId: crm.id,
+      shopifyCustomerId: crm.shopifyCustomerId || "",
+      source: "SBP-CRM",
+    };
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
@@ -131,11 +146,13 @@ export async function POST(req: Request) {
       customer_email: crm.customerEmailAddress || undefined,
       success_url: `${origin}/customers/${customerId}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${origin}/orders/new?customerId=${customerId}`,
-      metadata: {
-        crmCustomerId: crm.id,
-        shopifyCustomerId: crm.shopifyCustomerId || "",
-        source: "SBP-CRM",
+      metadata: sharedMeta,
+      payment_intent_data: {
+        metadata: sharedMeta,
+        receipt_email: crm.customerEmailAddress || undefined,
       },
+      // We already baked VAT into unit_amount to match Shopify's draft/order behavior
+      // automatic_tax: { enabled: false },
     });
 
     return NextResponse.json({ url: session.url }, { status: 200 });
