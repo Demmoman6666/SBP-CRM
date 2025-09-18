@@ -1,4 +1,4 @@
-// app/orders/new/ClientNewOrder.tsx  (CLIENT component)
+// app/orders/new/ClientNewOrder.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -309,8 +309,8 @@ export default function ClientNewOrder() {
                     <div style={{ fontWeight: 600 }}>{p.title}</div>
                     <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 6 }}>
                       {p.variants.map((v) => {
-                        const priceNet = toNumber(v.price);
-                        const priceGross = incVAT(priceNet || 0);
+                        const priceNet = toNumber(v.price) || 0;
+                        const priceGross = incVAT(priceNet);
                         return (
                           <button
                             key={v.id}
@@ -320,7 +320,8 @@ export default function ClientNewOrder() {
                             disabled={v.available === false}
                             title={v.available === false ? "Not available" : "Add to order"}
                           >
-                            {v.title}{v.sku ? ` • ${v.sku}` : ""} • {fmt(priceGross)} inc VAT
+                            {v.title}{v.sku ? ` • ${v.sku}` : ""} • {fmt(priceNet)} ex VAT{" "}
+                            <span className="small muted">({fmt(priceGross)} inc VAT)</span>
                           </button>
                         );
                       })}
@@ -348,14 +349,20 @@ export default function ClientNewOrder() {
           <div className="grid" style={{ gap: 8 }}>
             {cart.map((l) => {
               const lineNet = l.priceNet ? l.priceNet * l.quantity : 0;
-              const lineVat = lineNet * VAT_RATE;
-              const lineGross = lineNet + lineVat;
+              const lineGross = incVAT(lineNet);
               return (
                 <div key={l.variantId} className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
                   <div>
                     <div style={{ fontWeight: 600 }}>{l.productTitle}</div>
                     <div className="small muted">
-                      {l.variantTitle}{l.sku ? ` • ${l.sku}` : ""} • {l.priceNet != null ? `${fmt(incVAT(l.priceNet))} inc VAT` : "—"}
+                      {l.variantTitle}{l.sku ? ` • ${l.sku}` : ""}
+                    </div>
+                    {/* Unit price: ex VAT primary, inc VAT underneath */}
+                    <div className="small" style={{ marginTop: 2 }}>
+                      Unit: {l.priceNet != null ? `${fmt(l.priceNet)} ex VAT` : "—"}
+                    </div>
+                    <div className="small muted" style={{ marginTop: 2 }}>
+                      {l.priceNet != null ? `${fmt(incVAT(l.priceNet))} inc VAT` : ""}
                     </div>
                   </div>
                   <div className="row" style={{ gap: 8, alignItems: "center" }}>
@@ -366,11 +373,10 @@ export default function ClientNewOrder() {
                       onChange={(e) => updateQty(l.variantId, Number(e.target.value || 1))}
                       style={{ width: 70 }}
                     />
+                    {/* Totals: ex VAT first, inc VAT underneath (swapped) */}
                     <div style={{ textAlign: "right" }}>
-                      <div>{fmt(lineGross)} inc VAT</div>
-                      <div className="small muted" style={{ textAlign: "right" }}>
-                        Net {fmt(lineNet)}
-                      </div>
+                      <div>{fmt(lineNet)} ex VAT</div>
+                      <div className="small muted">{fmt(lineGross)} inc VAT</div>
                     </div>
                     <button className="btn" type="button" onClick={() => removeLine(l.variantId)}>Remove</button>
                   </div>
