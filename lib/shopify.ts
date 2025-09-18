@@ -72,6 +72,9 @@ export async function shopifyGraphql<T = any>(query: string, variables?: Record<
   return json.data as T;
 }
 
+/* ➕ Alias export to satisfy imports that use `shopifyGraphQL` (capital QL) */
+export { shopifyGraphql as shopifyGraphQL };
+
 /** ───────────────── HMAC ───────────────── */
 function verifyWithSecret(secret: string, rawBytes: Buffer, hmacHeader: string) {
   if (!secret) return false;
