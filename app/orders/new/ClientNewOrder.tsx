@@ -111,13 +111,10 @@ export default function ClientNewOrder() {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [paying, setPaying] = useState(false);
 
   // Hide search after first add; allow toggling back on
   const [showSearch, setShowSearch] = useState(true);
-
-  // 🔶 Stripe: local state for “Pay by card”
-  const [paying, setPaying] = useState(false);
-  const [payError, setPayError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!showSearch) return; // don't fetch when hidden
@@ -244,39 +241,50 @@ export default function ClientNewOrder() {
     }
   }
 
-  // 🔶 Stripe: Pay by card handler
-  async function onPayByCard() {
-    setPayError(null);
+  // NEW: Pay by card via Stripe (robust JSON parsing to avoid "Unexpected end of JSON input")
+  async function payByCard() {
+    setError(null);
+
     if (!customerId) {
-      setPayError("Missing customerId. Open this page from a customer profile.");
+      setError("Missing customerId. Click the Create Order button from a customer profile.");
       return;
     }
-    if (!cart.length) {
-      setPayError("Add at least one item to pay.");
+    if (cart.length === 0) {
+      setError("Add at least one item to the order.");
       return;
     }
 
     try {
       setPaying(true);
-      const items = cart.map((l) => ({
-        name: `${l.productTitle} — ${l.variantTitle}`,
-        unitAmountExVat: typeof l.priceNet === "number" ? l.priceNet : Number(l.priceNet || 0),
-        quantity: l.quantity,
-        variantId: l.variantId,
-      }));
-
-      const res = await fetch("/api/stripe/checkout", {
+      const res = await fetch("/api/payments/stripe/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId, items }),
+        body: JSON.stringify({
+          customerId,
+          lines: cart.map((l) => ({ variantId: l.variantId, quantity: l.quantity })),
+        }),
       });
-      const json = await res.json();
-      if (!res.ok || !json?.url) {
-        throw new Error(json?.error || "Failed to start Checkout");
+
+      // Parse safely (response might be empty on certain failures or redirects)
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        // leave data as null; we’ll fall back to text
       }
-      window.location.href = json.url as string; // redirect to Stripe
-    } catch (e: any) {
-      setPayError(e?.message || "Stripe error");
+
+      if (!res.ok) {
+        const msg = (data && (data.error || data.message)) || text || "Stripe checkout failed";
+        throw new Error(msg);
+      }
+
+      const url: string | undefined = data?.url;
+      if (!url) throw new Error("Stripe did not return a checkout URL");
+      // Redirect to Stripe Checkout
+      window.location.href = url;
+    } catch (err: any) {
+      setError(err?.message || "Failed to start card payment");
     } finally {
       setPaying(false);
     }
@@ -440,26 +448,19 @@ export default function ClientNewOrder() {
         )}
       </section>
 
-      {/* Footer actions: Pay by card + Create Draft Order */}
       <form onSubmit={onSubmit} className="right row" style={{ gap: 8 }}>
-        {(error || payError) && (
-          <div className="form-error" style={{ marginRight: "auto" }}>
-            {error || payError}
-          </div>
-        )}
-
-        <button
-          className="btn"
-          type="button"
-          onClick={onPayByCard}
-          disabled={paying || cart.length === 0 || !customerId}
-          title={!customerId ? "Open from a customer profile" : "Pay by card"}
-        >
-          {paying ? "Opening Checkout…" : "Pay by card"}
-        </button>
-
+        {error && <div className="form-error" style={{ marginRight: "auto" }}>{error}</div>}
         <button className="primary" type="submit" disabled={submitting || cart.length === 0}>
           {submitting ? "Creating Draft Order…" : "Create Draft Order"}
+        </button>
+        <button
+          type="button"
+          className="btn"
+          onClick={payByCard}
+          disabled={paying || cart.length === 0}
+          title="Take card payment via Stripe"
+        >
+          {paying ? "Starting card payment…" : "Pay by card"}
         </button>
       </form>
     </>
