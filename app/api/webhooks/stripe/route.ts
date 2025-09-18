@@ -1,125 +1,150 @@
 // app/api/webhooks/stripe/route.ts
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
+import { prisma } from "@/lib/prisma";
 import { shopifyRest, upsertOrderFromShopify } from "@/lib/shopify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function POST(req: Request) {
-  const signingSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
-  const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
-  if (!signingSecret || !stripeSecret) {
-    return NextResponse.json({ error: "Missing STRIPE_WEBHOOK_SECRET or STRIPE_SECRET_KEY" }, { status: 500 });
-  }
+// 20% by default — override with VAT_RATE in your env if needed
+const VAT_RATE = Number(process.env.VAT_RATE ?? "0.20");
 
-  // Pin the SDK version (parsing doesn’t need to match your endpoint’s version)
-  const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
+/** helpers */
+function toMoney(n: number) {
+  return Number(n.toFixed(2)); // Shopify accepts number or string; keep 2dp
+}
 
-  // Stripe signature verification requires the RAW body
-  const sig = req.headers.get("stripe-signature") || "";
-  const raw = await req.text();
+async function createPaidShopifyOrderFromSession(session: Stripe.Checkout.Session) {
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2023-10-16" });
 
-  let event: Stripe.Event;
-  try {
-    event = stripe.webhooks.constructEvent(raw, sig, signingSecret);
-  } catch (err: any) {
-    console.error("[stripe:webhook] signature verify failed:", err?.message);
-    return NextResponse.json({ error: `Signature verification failed: ${err?.message}` }, { status: 400 });
-  }
+  const crmCustomerId = String(session.metadata?.crmCustomerId || "");
+  const shopifyCustomerId = String(session.metadata?.shopifyCustomerId || "");
+  if (!crmCustomerId || !shopifyCustomerId) throw new Error("Missing customer ids in session metadata");
 
-  if (event.type === "checkout.session.completed") {
-    try {
-      const session = event.data.object as Stripe.Checkout.Session;
+  // Expand line items so we can access product metadata (variantId added at checkout creation)
+  const full = await stripe.checkout.sessions.retrieve(session.id, {
+    expand: ["line_items.data.price.product"],
+  });
 
-      // IMPORTANT: fetch line items separately and expand the product to read our metadata.variantId
-      const lineItems = await stripe.checkout.sessions.listLineItems(session.id, {
-        limit: 100,
-        expand: ["data.price.product"],
-      });
+  const currency = (full.currency || "gbp").toUpperCase();
 
-      const items = lineItems.data
-        .map((li) => {
-          const product = li.price?.product as Stripe.Product | null;
-          const variantId = product && (product as any).metadata?.variantId;
-          const quantity = li.quantity || 1;
-          return variantId ? { variantId, quantity } : null;
-        })
-        .filter(Boolean) as Array<{ variantId: string; quantity: number }>;
+  type ShopifyLine = {
+    variant_id: number;
+    quantity: number;
+    price: number; // unit ex VAT
+    taxable?: boolean;
+    tax_lines: Array<{ title: string; rate: number; price: number }>; // line tax (amount)
+  };
 
-      if (!items.length) {
-        console.error("[stripe:webhook] No items carried variantId metadata; cannot create Shopify order.");
-        return NextResponse.json({ ok: true }); // acknowledge so Stripe stops retrying
-      }
+  const shopifyLines: ShopifyLine[] = [];
+  let totalTax = 0;
 
-      const shopifyCustomerId = session.metadata?.shopifyCustomerId || "";
-      const currency = (session.currency || "gbp").toUpperCase();
-      const amountTotal = (session.amount_total || 0) / 100;
+  for (const li of full.line_items?.data || []) {
+    const qty = Number(li.quantity || 1);
 
-      const line_items = items.map((it) => ({
-        variant_id: Number(it.variantId),
-        quantity: Number(it.quantity),
-      }));
+    // We charged inc-VAT in Stripe. Convert back to ex-VAT for Shopify and send explicit tax_lines.
+    // Prefer amount_total; fallback to price.unit_amount.
+    const unitInc =
+      li.amount_total && qty > 0
+        ? (li.amount_total / 100) / qty
+        : (li.price?.unit_amount ?? 0) / 100;
 
-      const payload: any = {
-        order: {
-          customer: shopifyCustomerId ? { id: Number(shopifyCustomerId) } : undefined,
-          currency,
-          line_items,
-          // mark as PAID and add a sale transaction
-          financial_status: "paid",
-          transactions: [
-            {
-              kind: "sale",
-              status: "success",
-              amount: amountTotal.toFixed(2),
-              gateway: "stripe",
-              source_name: "web",
-            },
-          ],
-          // keep tags as a comma-separated STRING (Shopify expects string here)
-          tags: "CRM,Stripe",
-          note: `Stripe Checkout ${session.id}`,
-          send_receipt: false,
-          send_fulfillment_receipt: false,
-        },
-      };
+    const unitEx = unitInc / (1 + VAT_RATE);
+    const lineEx = unitEx * qty;
+    const lineTax = lineEx * VAT_RATE;
 
-      const resp = await shopifyRest(`/orders.json`, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        console.error("[shopify] order create failed:", resp.status, text);
-        return NextResponse.json({ error: `Shopify order create failed: ${resp.status}` }, { status: 500 });
-      }
-
-      // Parse safely (in case body is empty) and upsert into your CRM so “Recent orders” updates immediately
-      let created: any = null;
-      try {
-        created = await resp.json();
-      } catch {
-        created = null;
-      }
-
-      const orderObj = created?.order || null;
-      if (orderObj) {
-        try {
-          await upsertOrderFromShopify(orderObj, process.env.SHOPIFY_SHOP_DOMAIN || "");
-        } catch (e) {
-          console.warn("[crm] upsertOrderFromShopify failed (non-fatal):", (e as any)?.message);
-        }
-      }
-
-      return NextResponse.json({ ok: true });
-    } catch (err: any) {
-      console.error("[stripe:webhook] handler error:", err);
-      return NextResponse.json({ error: err?.message || "Webhook failed" }, { status: 500 });
+    // variantId came from product metadata we set when creating the Checkout Session
+    let variantId: string | undefined;
+    if (li.price && typeof li.price.product === "object") {
+      variantId = (li.price.product as Stripe.Product).metadata?.variantId;
     }
+    if (!variantId) throw new Error("Missing variantId on Stripe product metadata");
+
+    shopifyLines.push({
+      variant_id: Number(variantId),
+      quantity: qty,
+      price: toMoney(unitEx), // unit price EX VAT
+      taxable: true,
+      tax_lines: [
+        { title: "VAT", rate: VAT_RATE, price: toMoney(lineTax) }, // tax amount for this line
+      ],
+    });
+
+    totalTax += lineTax;
   }
 
-  // Acknowledge all other events
-  return NextResponse.json({ received: true });
+  // Build Shopify order payload: taxes_included:false + explicit tax_lines so VAT shows on the order
+  const payload: any = {
+    order: {
+      customer: { id: Number(shopifyCustomerId) },
+      line_items: shopifyLines,
+      currency,
+      taxes_included: false,
+      total_tax: toMoney(totalTax),
+      financial_status: "paid",
+      use_customer_default_address: true,
+      note: `Stripe Checkout ${session.id}`,
+      note_attributes: [
+        { name: "Source", value: "CRM + Stripe" },
+        { name: "Stripe Checkout", value: session.id },
+      ],
+    },
+  };
+
+  const resp = await shopifyRest(`/orders.json`, { method: "POST", body: JSON.stringify(payload) });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`Shopify create order failed: ${resp.status} ${text}`);
+  }
+  const json = await resp.json();
+  const order = json?.order;
+
+  // Mirror into CRM for the "Recent Orders" view
+  try {
+    if (order) await upsertOrderFromShopify(order, process.env.SHOPIFY_SHOP_DOMAIN || "");
+  } catch (e) {
+    console.warn("CRM upsert warning:", e);
+  }
+
+  return order;
+}
+
+export async function POST(req: Request) {
+  const sig = req.headers.get("stripe-signature");
+  const whsec = process.env.STRIPE_WEBHOOK_SECRET || "";
+  const sk = process.env.STRIPE_SECRET_KEY || "";
+
+  if (!sig || !whsec || !sk) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const raw = await req.text();
+  let event: Stripe.Event;
+
+  try {
+    const stripe = new Stripe(sk, { apiVersion: "2023-10-16" });
+    event = stripe.webhooks.constructEvent(raw, sig, whsec);
+  } catch (err: any) {
+    console.error("Stripe signature verify failed:", err?.message);
+    return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
+  }
+
+  try {
+    if (event.type === "checkout.session.completed") {
+      const s = event.data.object as Stripe.Checkout.Session;
+      if (s.payment_status === "paid") {
+        await createPaidShopifyOrderFromSession(s);
+      }
+    }
+    return NextResponse.json({ received: true }, { status: 200 });
+  } catch (err: any) {
+    console.error("Stripe webhook handler error:", err);
+    return NextResponse.json({ error: err?.message || "Webhook error" }, { status: 500 });
+  }
+}
+
+// Optional hard 405 for other verbs
+export async function GET() {
+  return NextResponse.json({ error: "Method Not Allowed" }, { status: 405 });
 }
