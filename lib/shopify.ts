@@ -8,7 +8,7 @@ const SHOP_DOMAIN = RAW_SHOP_DOMAIN.replace(/^https?:\/\//i, "");
 const SHOP_ADMIN_TOKEN = (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "").trim();
 export const SHOPIFY_API_VERSION = (process.env.SHOPIFY_API_VERSION || "2024-07").trim();
 
-// Optional: default tag applied to Draft Orders created from the CRM
+// Tag we’ll apply to Draft Orders created via CRM (can be comma-separated for multiple)
 const DEFAULT_DRAFT_TAG = (process.env.SHOPIFY_DRAFT_TAG || "CRM").trim();
 
 const WEBHOOK_SECRET = (process.env.SHOPIFY_WEBHOOK_SECRET || "").trim();
@@ -211,23 +211,17 @@ export async function upsertCustomerFromShopify(
 
   if (existing) {
     const data: any = { ...base };
-    // Only update shopifyTags if this payload actually carried tags
     if ("tags" in shop) data.shopifyTags = { set: tags };
     if (repName) data.salesRep = repName;
-
     await prisma.customer.update({ where: { id: existing.id }, data });
     return;
   }
 
-  if (opts?.updateOnly) {
-    // No match and we were told not to create
-    return;
-  }
+  if (opts?.updateOnly) return;
 
   const createData: any = { ...base };
   if ("tags" in shop) createData.shopifyTags = tags;
   if (repName) createData.salesRep = repName;
-
   await prisma.customer.create({ data: createData });
 }
 
@@ -436,7 +430,6 @@ export type ShopifySearchVariant = {
 function buildProductQueryString(term: string): string {
   const t = term.replace(/"/g, '\\"').trim();
   if (!t) return "";
-  // Match in title, sku, or vendor
   return `title:*${t}* OR sku:*${t}* OR vendor:*${t}*`;
 }
 
@@ -534,11 +527,28 @@ export async function searchShopifyCatalog(term: string, first = 15): Promise<Sh
   return out;
 }
 
+/** Normalize any incoming tags shape to a comma-separated string */
+function normalizeTagsToString(input?: string | string[] | null): string | undefined {
+  if (input == null) return undefined;
+  if (Array.isArray(input)) return tagsToString(input);
+  const s = String(input).trim();
+  if (!s) return undefined;
+  // If someone passes a JSON array string like '["A","B"]', parse it
+  if (s.startsWith("[") && s.endsWith("]")) {
+    try {
+      const arr = JSON.parse(s);
+      if (Array.isArray(arr)) return tagsToString(arr.map(String));
+    } catch {}
+  }
+  return s;
+}
+
 /** Create a Draft Order in Shopify for a CRM customer by their id */
 export async function createDraftOrderForCustomer(
   crmCustomerId: string,
   items: Array<{ variantId: string; quantity: number }>,
-  note?: string
+  note?: string,
+  tags?: string | string[],
 ) {
   // We require a Shopify customer id on the CRM record
   const customer = await prisma.customer.findUnique({
@@ -554,8 +564,13 @@ export async function createDraftOrderForCustomer(
     quantity: li.quantity,
   }));
 
-  // REST requires `tags` to be a comma-separated string (NOT an array)
-  const draftTag = DEFAULT_DRAFT_TAG; // e.g. "CRM" or "CRM, Wholesale"
+  // Combine provided tags with default tag and normalize to string
+  const provided = normalizeTagsToString(tags);
+  const defaults = normalizeTagsToString(DEFAULT_DRAFT_TAG);
+  const combined = tagsToString([
+    ...parseShopifyTags(provided || ""),
+    ...parseShopifyTags(defaults || ""),
+  ]);
 
   const payload: any = {
     draft_order: {
@@ -563,14 +578,18 @@ export async function createDraftOrderForCustomer(
       line_items,
       note: note || undefined,
       use_customer_default_address: true,
-      // Add an attribution without risking a type mismatch on tags
       note_attributes: [{ name: "Source", value: "CRM" }],
     },
   };
 
-  if (draftTag) {
-    // Only include if non-empty string; server will 400 if this is an array
-    payload.draft_order.tags = draftTag;
+  if (combined) {
+    // Ensure this is always a STRING for Shopify REST
+    payload.draft_order.tags = combined;
+  }
+
+  // Final guard: never send an array as tags
+  if (payload?.draft_order?.tags && Array.isArray(payload.draft_order.tags)) {
+    payload.draft_order.tags = tagsToString(payload.draft_order.tags);
   }
 
   const res = await shopifyRest(`/draft_orders.json`, {
