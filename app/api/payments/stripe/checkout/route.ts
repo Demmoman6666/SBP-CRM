@@ -1,4 +1,3 @@
-// app/api/payments/stripe/checkout/route.ts
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
@@ -6,7 +5,6 @@ import { shopifyGraphql } from "@/lib/shopify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
 type PostBody = {
   customerId: string;
@@ -21,10 +19,9 @@ const VAT_RATE = Number(process.env.VAT_RATE ?? "0.20");
 function getOrigin(req: Request): string {
   try {
     const u = new URL(req.url);
-    // If APP_URL is set, prefer it (handles custom domains)
     return (process.env.APP_URL || `${u.protocol}//${u.host}`).replace(/\/$/, "");
   } catch {
-    return (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
+    return process.env.APP_URL || "http://localhost:3000";
   }
 }
 
@@ -37,7 +34,7 @@ async function fetchVariantPricing(
     {
       productTitle: string;
       variantTitle: string;
-      priceExVat: number; // numeric £ (not pence)
+      priceExVat: number; // numeric £
     }
   >
 > {
@@ -56,14 +53,13 @@ async function fetchVariantPricing(
       }
     }
   `;
-
   const data = await shopifyGraphql<{
     nodes: Array<
       | {
           __typename?: "ProductVariant";
           id: string;
           title: string;
-          price: string | null; // Admin API returns scalar string for money
+          price: string | null;
           product: { title: string };
         }
       | null
@@ -78,9 +74,7 @@ async function fetchVariantPricing(
     if (!node || !("id" in node)) continue;
     const restId = node.id.replace(/^gid:\/\/shopify\/ProductVariant\//, "");
     const ex = Number(node.price || "0");
-    if (!Number.isFinite(ex)) {
-      throw new Error(`Invalid price for variant ${restId}`);
-    }
+    if (!Number.isFinite(ex)) throw new Error(`Invalid price for variant ${restId}`);
     out[restId] = {
       productTitle: node.product.title,
       variantTitle: node.title,
@@ -100,12 +94,8 @@ export async function POST(req: Request) {
       );
     }
 
-    // Let Stripe use the SDK’s pinned default unless you explicitly set STRIPE_API_VERSION.
-    const apiVersion =
-      (process.env.STRIPE_API_VERSION as Stripe.LatestApiVersion | undefined) ??
-      undefined;
-
-    const stripe = new Stripe(stripeSecret, { apiVersion });
+    // Pin to a version compatible with your installed stripe types
+    const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
 
     const origin = getOrigin(req);
 
@@ -113,10 +103,7 @@ export async function POST(req: Request) {
     const { customerId, lines } = body || ({} as any);
 
     if (!customerId) {
-      return NextResponse.json(
-        { error: "customerId is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "customerId is required" }, { status: 400 });
     }
     if (!Array.isArray(lines) || lines.length === 0) {
       return NextResponse.json(
@@ -139,11 +126,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 });
     }
 
-    // Secure re-pricing from Shopify Admin (avoid trusting client values)
+    // Secure re-pricing from Shopify
     const ids = lines.map((l) => String(l.variantId));
     const catalog = await fetchVariantPricing(ids);
 
-    // Build Stripe line_items with VAT included (gross)
+    // Build Stripe line_items (include variantId in metadata so webhook can create Shopify order)
     const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = lines.map(
       (li) => {
         const v = catalog[String(li.variantId)];
@@ -153,7 +140,6 @@ export async function POST(req: Request) {
         const ex = v.priceExVat; // £
         const inc = ex * (1 + VAT_RATE);
         const unit_amount = Math.round(inc * 100); // pence
-
         const name = `${v.productTitle} — ${v.variantTitle}`;
 
         return {
@@ -163,13 +149,16 @@ export async function POST(req: Request) {
             unit_amount,
             product_data: {
               name,
+              // 👇 critical: carry Shopify variant id so the webhook can build the order
+              metadata: {
+                variantId: String(li.variantId),
+              },
             },
           },
         };
       }
     );
 
-    // Create Checkout Session
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       line_items,
@@ -181,8 +170,8 @@ export async function POST(req: Request) {
         shopifyCustomerId: crm.shopifyCustomerId || "",
         source: "SBP-CRM",
       },
-      // Optional: we already include VAT in unit_amount
-      // automatic_tax: { enabled: false },
+      // If you want automatic tax by Stripe instead, flip this on and remove your own VAT math:
+      // automatic_tax: { enabled: true },
     });
 
     return NextResponse.json({ url: session.url }, { status: 200 });
