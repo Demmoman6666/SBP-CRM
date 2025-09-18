@@ -1,219 +1,250 @@
-// app/orders/new/ClientNewOrder.tsx
+// app/orders/new/ClientNewOrder.tsx  (your existing page logic, now as a Client Component)
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 
 type Variant = {
-  productGid: string;
-  productId: string | null;
-  productTitle: string;
-  vendor: string | null;
-  imageUrl: string | null;
-  status: string | null;
-  variantGid: string;
-  variantId: string | null;
-  variantTitle: string;
-  sku: string | null;
-  barcode: string | null;
-  priceAmount: string | null;
-  currencyCode: string | null;
-  availableForSale: boolean | null;
-  inventoryQuantity: number | null;
+  id: string | number;
+  title: string;
+  price?: string | number | null;
+  sku?: string | null;
+  available?: boolean;
+};
+type ProductHit = {
+  id: string | number;
+  title: string;
+  image?: { src?: string | null } | null;
+  variants: Variant[];
 };
 
+type CartLine = {
+  variantId: string;
+  productTitle: string;
+  variantTitle: string;
+  price: number | null;
+  quantity: number;
+  sku?: string | null;
+};
+
+const SEARCH_ENDPOINT = "/api/shopify/products"; // expects ?q= query and returns products w/ variants
+
 export default function ClientNewOrder() {
+  const router = useRouter();
   const sp = useSearchParams();
-  const customerId = sp.get("customerId");
-
-  const [q, setQ] = useState("");
-  const [results, setResults] = useState<Variant[]>([]);
+  const customerId = sp.get("customerId") || "";
+  const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  // simple cart: variantId -> qty
-  const [cart, setCart] = useState<Record<string, number>>({});
+  const [hits, setHits] = useState<ProductHit[]>([]);
+  const [cart, setCart] = useState<CartLine[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!q || q.trim().length < 2) {
-      setResults([]);
+    if (!query.trim()) {
+      setHits([]);
       return;
     }
     const ac = new AbortController();
     const t = setTimeout(async () => {
       try {
         setLoading(true);
-        setErr(null);
-        const res = await fetch(`/api/shopify/products?query=${encodeURIComponent(q)}`, {
-          cache: "no-store",
+        const res = await fetch(`${SEARCH_ENDPOINT}?q=${encodeURIComponent(query)}`, {
           signal: ac.signal,
+          cache: "no-store",
         });
-        const data = await res.json();
-        setResults(Array.isArray(data) ? data : []);
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || "Search failed");
+        // normalize into ProductHit[]
+        const mapped: ProductHit[] = (Array.isArray(json) ? json : []).map((p: any) => ({
+          id: String(p.id ?? ""),
+          title: String(p.title ?? "-"),
+          image: p.image?.src ? { src: p.image.src } : p.images?.[0]?.src ? { src: p.images[0].src } : null,
+          variants: (p.variants ?? []).map((v: any) => ({
+            id: String(v.id ?? ""),
+            title: String(v.title ?? "Default"),
+            price: v.price ?? v.compare_at_price ?? null,
+            sku: v.sku ?? null,
+            available: v.available ?? true,
+          })),
+        }));
+        setHits(mapped);
       } catch (e: any) {
-        if (!ac.signal.aborted) setErr(e?.message || "Search failed");
+        if (e?.name !== "AbortError") setHits([]);
       } finally {
-        if (!ac.signal.aborted) setLoading(false);
+        setLoading(false);
       }
     }, 250);
     return () => {
       ac.abort();
       clearTimeout(t);
     };
-  }, [q]);
+  }, [query]);
 
-  const items = useMemo(
-    () =>
-      Object.entries(cart)
-        .map(([variantId, qty]) => ({ variantId, quantity: qty }))
-        .filter((x) => x.quantity > 0),
-    [cart]
-  );
+  function addVariant(p: ProductHit, v: Variant) {
+    const existingIdx = cart.findIndex((l) => l.variantId === String(v.id));
+    if (existingIdx >= 0) {
+      const next = [...cart];
+      next[existingIdx].quantity += 1;
+      setCart(next);
+      return;
+    }
+    setCart((c) => [
+      ...c,
+      {
+        variantId: String(v.id),
+        productTitle: p.title,
+        variantTitle: v.title,
+        price: v.price == null ? null : Number(v.price),
+        quantity: 1,
+        sku: v.sku ?? null,
+      },
+    ]);
+  }
 
-  async function createDraft() {
+  function updateQty(variantId: string, q: number) {
+    const next = cart.map((l) => (l.variantId === variantId ? { ...l, quantity: Math.max(1, q) } : l));
+    setCart(next);
+  }
+  function removeLine(variantId: string) {
+    setCart((c) => c.filter((l) => l.variantId !== variantId));
+  }
+
+  const subtotal = useMemo(() => {
+    return cart.reduce((sum, l) => sum + (l.price ? l.price * l.quantity : 0), 0);
+  }, [cart]);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+
     if (!customerId) {
-      alert("Missing customerId");
+      setError("Missing customerId. Click the Create Order button from a customer profile.");
       return;
     }
-    if (items.length === 0) {
-      alert("Add at least one item");
+    if (cart.length === 0) {
+      setError("Add at least one item to the order.");
       return;
     }
+
     try {
-      setErr(null);
+      setSubmitting(true);
       const res = await fetch("/api/orders/draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId, items }),
+        body: JSON.stringify({
+          customerId,
+          lines: cart.map((l) => ({ variantId: l.variantId, quantity: l.quantity })),
+        }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to create draft order");
 
-      // If your /api/orders/draft returns the invoice or admin URL, you can redirect:
-      if (json?.invoice_url) window.open(json.invoice_url, "_blank");
-      else if (json?.admin_url) window.open(json.admin_url, "_blank");
-      else alert("Draft order created.");
-    } catch (e: any) {
-      setErr(e?.message || "Failed to create draft order");
+      if (json.invoiceUrl) window.open(json.invoiceUrl, "_blank");
+      if (json.shopifyDraftOrderId && json.adminUrl) window.open(json.adminUrl, "_blank");
+
+      router.push(`/customers/${customerId}`);
+    } catch (err: any) {
+      setError(err?.message || "Failed to create draft order");
+    } finally {
+      setSubmitting(false);
     }
   }
 
   return (
-    <section className="card grid" style={{ gap: 12 }}>
-      {!customerId ? (
-        <div className="small">
-          <b>Missing customerId.</b> Use the “Create Order” button on a customer profile, which links to this page like:
-          <br />
-          <code>/orders/new?customerId=&lt;CRM_ID&gt;</code>
-        </div>
-      ) : (
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <div className="small">
-            For customer:{" "}
-            <Link href={`/customers/${customerId}`} className="link">
-              View profile
-            </Link>
-          </div>
-          <button
-            className="primary"
-            onClick={createDraft}
-            disabled={!items.length}
-            title={items.length ? "" : "Add items to enable"}
-          >
-            Create Draft Order
-          </button>
-        </div>
-      )}
+    <div className="grid" style={{ gap: 16 }}>
+      {/* Context row only (main H1 is in the wrapper) */}
+      <section className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <div className="small muted">For customer ID: {customerId || "—"}</div>
+        <a className="btn" href={customerId ? `/customers/${customerId}` : "/"}>Back</a>
+      </section>
 
-      <div className="field">
-        <label>Search products (title / SKU / vendor)</label>
+      <section className="card">
+        <h3>Search Products</h3>
         <input
-          placeholder="e.g. shampoo, 12345, Wella"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search by product title, SKU, vendor…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
           autoFocus
         />
-      </div>
-
-      {err && <div className="form-error">{err}</div>}
-      {loading && <div className="small muted">Searching…</div>}
-
-      {/* Results */}
-      <div className="grid" style={{ gap: 8 }}>
-        {results.map((v) => {
-          const id = v.variantId || v.variantGid;
-          const qty = cart[id] || 0;
-          return (
-            <div
-              key={v.variantGid}
-              className="row"
-              style={{ justifyContent: "space-between", border: "1px solid var(--border)", borderRadius: 10, padding: 10 }}
-            >
-              <div className="row" style={{ gap: 10 }}>
-                {v.imageUrl ? (
+        {loading ? (
+          <div className="small muted" style={{ marginTop: 8 }}>Searching…</div>
+        ) : hits.length === 0 && query.trim() ? (
+          <div className="small muted" style={{ marginTop: 8 }}>No results.</div>
+        ) : (
+          <div className="grid" style={{ gap: 8, marginTop: 10 }}>
+            {hits.map((p) => (
+              <div key={p.id} className="row" style={{ gap: 12, alignItems: "flex-start" }}>
+                {p.image?.src ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={v.imageUrl} alt="" width={48} height={48} style={{ objectFit: "cover", borderRadius: 8 }} />
+                  <img src={p.image.src!} alt="" width={48} height={48} style={{ borderRadius: 8, objectFit: "cover" }} />
                 ) : (
                   <div style={{ width: 48, height: 48, background: "#f3f4f6", borderRadius: 8 }} />
                 )}
-                <div>
-                  <div style={{ fontWeight: 600 }}>{v.productTitle}</div>
-                  <div className="small muted">
-                    {v.variantTitle !== "Default Title" ? v.variantTitle : ""}
-                    {v.sku ? ` • SKU ${v.sku}` : ""}
-                    {v.vendor ? ` • ${v.vendor}` : ""}
-                    {v.priceAmount ? ` • ${v.priceAmount} ${v.currencyCode || ""}` : ""}
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600 }}>{p.title}</div>
+                  <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+                    {p.variants.map((v) => (
+                      <button
+                        key={v.id}
+                        type="button"
+                        className="btn"
+                        onClick={() => addVariant(p, v)}
+                        disabled={v.available === false}
+                        title={v.available === false ? "Not available" : "Add to order"}
+                      >
+                        {v.title} {v.sku ? `• ${v.sku}` : ""}{" "}
+                        {v.price != null ? `• £${Number(v.price).toFixed(2)}` : ""}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
-
-              <div className="row" style={{ gap: 6, alignItems: "center" }}>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => setCart((c) => ({ ...c, [id]: Math.max(0, (c[id] || 0) - 1) }))}
-                >
-                  −
-                </button>
-                <input
-                  value={qty}
-                  onChange={(e) => {
-                    const n = Math.max(0, Number(e.target.value) || 0);
-                    setCart((c) => ({ ...c, [id]: n }));
-                  }}
-                  style={{ width: 56, textAlign: "center" }}
-                />
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => setCart((c) => ({ ...c, [id]: (c[id] || 0) + 1 }))}
-                >
-                  +
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Cart summary */}
-      <div className="card" style={{ padding: 10, borderRadius: 10, background: "#fafafa" }}>
-        <b>Items</b>
-        {items.length === 0 ? (
-          <div className="small muted" style={{ marginTop: 6 }}>
-            No items added yet.
-          </div>
-        ) : (
-          <ul className="small" style={{ marginTop: 6 }}>
-            {items.map((it) => (
-              <li key={it.variantId}>
-                {it.variantId}: ×{it.quantity}
-              </li>
             ))}
-          </ul>
+          </div>
         )}
-      </div>
-    </section>
+      </section>
+
+      <section className="card">
+        <h3>Cart</h3>
+        {cart.length === 0 ? (
+          <div className="small muted">No items yet.</div>
+        ) : (
+          <div className="grid" style={{ gap: 8 }}>
+            {cart.map((l) => (
+              <div key={l.variantId} className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>{l.productTitle}</div>
+                  <div className="small muted">{l.variantTitle}{l.sku ? ` • ${l.sku}` : ""}</div>
+                </div>
+                <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <input
+                    type="number"
+                    min={1}
+                    value={l.quantity}
+                    onChange={(e) => updateQty(l.variantId, Number(e.target.value || 1))}
+                    style={{ width: 70 }}
+                  />
+                  <div style={{ width: 90, textAlign: "right" }}>
+                    {l.price != null ? `£${(l.price * l.quantity).toFixed(2)}` : "—"}
+                  </div>
+                  <button className="btn" type="button" onClick={() => removeLine(l.variantId)}>Remove</button>
+                </div>
+              </div>
+            ))}
+            <div className="row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
+              <div style={{ fontWeight: 700 }}>Subtotal: £{subtotal.toFixed(2)}</div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <form onSubmit={onSubmit} className="right row" style={{ gap: 8 }}>
+        {error && <div className="form-error" style={{ marginRight: "auto" }}>{error}</div>}
+        <button className="primary" type="submit" disabled={submitting || cart.length === 0}>
+          {submitting ? "Creating Draft Order…" : "Create Draft Order"}
+        </button>
+      </form>
+    </div>
   );
 }
