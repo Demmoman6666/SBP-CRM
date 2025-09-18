@@ -6,6 +6,7 @@ import { shopifyGraphql } from "@/lib/shopify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 type PostBody = {
   customerId: string;
@@ -23,7 +24,7 @@ function getOrigin(req: Request): string {
     // If APP_URL is set, prefer it (handles custom domains)
     return (process.env.APP_URL || `${u.protocol}//${u.host}`).replace(/\/$/, "");
   } catch {
-    return process.env.APP_URL || "http://localhost:3000";
+    return (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
   }
 }
 
@@ -55,13 +56,14 @@ async function fetchVariantPricing(
       }
     }
   `;
+
   const data = await shopifyGraphql<{
     nodes: Array<
       | {
           __typename?: "ProductVariant";
           id: string;
           title: string;
-          price: string | null;
+          price: string | null; // Admin API returns scalar string for money
           product: { title: string };
         }
       | null
@@ -97,9 +99,15 @@ export async function POST(req: Request) {
         { status: 500 }
       );
     }
-    const stripe = new Stripe(stripeSecret, {
-      apiVersion: (process.env.STRIPE_API_VERSION as Stripe.LatestApiVersion) || "2024-06-20",
-    });
+
+    const stripe = new Stripe(
+      stripeSecret,
+      {
+        apiVersion:
+          (process.env.STRIPE_API_VERSION as Stripe.LatestApiVersion) ||
+          "2024-06-20",
+      }
+    );
 
     const origin = getOrigin(req);
 
@@ -133,11 +141,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 });
     }
 
-    // Secure re-pricing from Shopify
+    // Secure re-pricing from Shopify Admin (avoid trusting client values)
     const ids = lines.map((l) => String(l.variantId));
     const catalog = await fetchVariantPricing(ids);
 
-    // Build Stripe line_items with VAT included
+    // Build Stripe line_items with VAT included (gross)
     const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = lines.map(
       (li) => {
         const v = catalog[String(li.variantId)];
@@ -175,7 +183,7 @@ export async function POST(req: Request) {
         shopifyCustomerId: crm.shopifyCustomerId || "",
         source: "SBP-CRM",
       },
-      // Optional: mark prices include VAT already
+      // Optional: we already include VAT in unit_amount
       // automatic_tax: { enabled: false },
     });
 
