@@ -1,3 +1,4 @@
+// middleware.ts
 import { NextResponse, NextRequest } from "next/server";
 
 /** Edge-safe verification (Web Crypto). Must mirror the server logic from lib/auth. */
@@ -78,6 +79,9 @@ function isPublicPath(pathname: string) {
 
   // Shopify webhooks unauthenticated
   if (pathname.startsWith("/api/shopify/webhooks")) return true;
+
+  // ✅ Stripe webhooks unauthenticated
+  if (pathname.startsWith("/api/webhooks/stripe")) return true;
 
   // Google OAuth (prefix allow)
   if (pathname.startsWith("/api/google/oauth")) return true;
