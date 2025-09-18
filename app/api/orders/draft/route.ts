@@ -9,12 +9,35 @@ export const dynamic = "force-dynamic";
 type PostBody = {
   customerId: string;
   lines: Array<{ variantId: string; quantity: number }>;
+  note?: string;
+  // allow either a string or an array to be sent; we’ll normalize to a comma-separated string
+  tags?: string | string[];
 };
+
+function normalizeTags(input?: string | string[] | null): string | undefined {
+  if (input == null) return undefined;
+  if (Array.isArray(input)) {
+    return input.map(String).map(s => s.trim()).filter(Boolean).join(", ");
+  }
+  const s = String(input).trim();
+  if (!s) return undefined;
+  // If someone sent a JSON array encoded as a string (e.g. '["A","B"]'), parse it.
+  if (s.startsWith("[") && s.endsWith("]")) {
+    try {
+      const arr = JSON.parse(s);
+      if (Array.isArray(arr)) {
+        return arr.map(String).map(t => t.trim()).filter(Boolean).join(", ");
+      }
+    } catch {}
+  }
+  return s;
+}
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as PostBody;
+    const body = (await req.json().catch(() => ({}))) as PostBody;
     const { customerId, lines } = body || ({} as any);
+    const note = typeof body?.note === "string" ? body.note : undefined;
 
     if (!customerId) {
       return NextResponse.json({ error: "customerId is required" }, { status: 400 });
@@ -39,16 +62,19 @@ export async function POST(req: Request) {
 
     const line_items = lines.map((l) => ({
       variant_id: Number(l.variantId),
-      quantity: Number(l.quantity || 1),
+      quantity: Math.max(1, Number(l.quantity || 1)),
     }));
+
+    // REST requires a *string* for tags, not an array
+    const tagString = normalizeTags(body?.tags) ?? "CRM";
 
     const payload = {
       draft_order: {
         customer: { id: Number(shopifyCustomerId) },
         line_items,
         use_customer_default_address: true,
-        tags: ["CRM"], // optional
-        note: `Created from CRM for ${crm.salonName || crm.customerName || "Customer"}`,
+        tags: tagString, // ✅ always a comma-separated string
+        note: note ?? `Created from CRM for ${crm.salonName || crm.customerName || "Customer"}`,
       },
     };
 
@@ -66,7 +92,7 @@ export async function POST(req: Request) {
     const draftId = draft?.id ? String(draft.id) : null;
 
     const adminUrl = draftId
-      ? `https://${process.env.SHOPIFY_SHOP_DOMAIN?.replace(/^https?:\/\//, "")}/admin/draft_orders/${draftId}`
+      ? `https://${(process.env.SHOPIFY_SHOP_DOMAIN || "").replace(/^https?:\/\//, "")}/admin/draft_orders/${draftId}`
       : null;
 
     return NextResponse.json({
