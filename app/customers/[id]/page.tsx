@@ -1,475 +1,373 @@
 // app/customers/[id]/page.tsx
 import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
-import { revalidatePath } from "next/cache";
-import DeleteCustomerButton from "@/components/DeleteCustomerButton";
-import RecentOrders from "./RecentOrders";
-import { formatDateTimeUK } from "@/lib/dates";
+import { shopifyRest } from "@/lib/shopify";
 
-const DOW: Array<"Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"> = [
-  "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
-];
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-type OpeningForDay = { open?: boolean; from?: string | null; to?: string | null };
-type OpeningHoursObj = Record<string, OpeningForDay>;
+const VAT_RATE = Number(process.env.VAT_RATE ?? "0.20");
 
-/* ---------------- helpers ---------------- */
-function addressLines(c: any): string[] {
-  return [c.addressLine1, c.addressLine2, c.town, c.county, c.postCode].filter(Boolean);
-}
-
-function parseOpeningHours(src?: string | null): OpeningHoursObj | null {
-  if (!src) return null;
+function money(n?: any, currency: string = "GBP") {
+  if (n == null) return "-";
+  const num = typeof n === "string" ? parseFloat(n) : Number(n);
+  if (!Number.isFinite(num)) return String(n);
   try {
-    const obj = JSON.parse(src);
-    if (obj && typeof obj === "object") return obj as OpeningHoursObj;
-  } catch {}
-  return null;
-}
-
-function prettyTime(s?: string | null): string | null {
-  if (!s) return null;
-  const t = String(s).trim();
-  return /^\d{1,2}:\d{2}$/.test(t) ? t : null; // accept HH:mm or H:mm
-}
-
-function renderOpeningHours(openingHours?: string | null) {
-  const parsed = parseOpeningHours(openingHours);
-  if (!parsed) return <p className="small">{openingHours || "-"}</p>;
-
-  return (
-    <div
-      className="small"
-      style={{
-        display: "grid",
-        gridTemplateColumns: "56px 1fr",
-        rowGap: 4,
-        columnGap: 10,
-        alignItems: "baseline",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {DOW.map((d) => {
-        const it: OpeningForDay = (parsed as any)[d] || {};
-        const isOpen = !!it.open;
-        const from = prettyTime(it.from);
-        const to = prettyTime(it.to);
-        const text = isOpen ? (from && to ? `${from} – ${to}` : "Open") : "Closed";
-
-        return (
-          <div key={d} style={{ display: "contents" }}>
-            <div style={{ color: "var(--muted)" }}>{d}</div>
-            <div>{text}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/* ---------- stage helpers (label + color + normalization) ---------- */
-type Stage = "LEAD" | "APPOINTMENT_BOOKED" | "SAMPLING" | "CUSTOMER";
-
-function stageLabel(s?: string | null) {
-  switch ((s || "").toUpperCase()) {
-    case "APPOINTMENT_BOOKED": return "Appointment booked";
-    case "SAMPLING":           return "Sampling";
-    case "CUSTOMER":           return "Customer";
-    case "LEAD":
-    default:                   return "Lead";
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+    }).format(num);
+  } catch {
+    return num.toFixed(2);
   }
 }
-function stageColor(s?: string | null) {
-  switch ((s || "").toUpperCase()) {
-    case "APPOINTMENT_BOOKED": return { bg: "#e0f2fe", fg: "#075985" }; // sky
-    case "SAMPLING":           return { bg: "#fef9c3", fg: "#854d0e" }; // amber
-    case "CUSTOMER":           return { bg: "#dcfce7", fg: "#065f46" }; // green
-    case "LEAD":
-    default:                   return { bg: "#f1f5f9", fg: "#334155" }; // slate
-  }
-}
-function normalizeStage(input: FormDataEntryValue | null): Stage {
-  const s = String(input ?? "").trim().toUpperCase();
-  if (!s) return "LEAD";
-  if (s === "LEAD") return "LEAD";
-  if (s === "CUSTOMER" || s === "CLIENT") return "CUSTOMER";
-  if (s === "SAMPLING" || s === "SAMPLE") return "SAMPLING";
-  if (s === "APPOINTMENT_BOOKED" || s === "APPOINTMENT BOOKED" || s === "APPT" || s === "APPT_BOOKED")
-    return "APPOINTMENT_BOOKED";
-  return "LEAD";
-}
 
-// -------- Route Planning helpers --------
-const ROUTE_DAY_LABELS: Array<{ val: "MONDAY"|"TUESDAY"|"WEDNESDAY"|"THURSDAY"|"FRIDAY"; label: string }> = [
-  { val: "MONDAY", label: "Monday" },
-  { val: "TUESDAY", label: "Tuesday" },
-  { val: "WEDNESDAY", label: "Wednesday" },
-  { val: "THURSDAY", label: "Thursday" },
-  { val: "FRIDAY", label: "Friday" },
-];
-const ROUTE_DAY_SET = new Set(ROUTE_DAY_LABELS.map(d => d.val));
+type PageProps = {
+  params: { id: string };
+  searchParams?: Record<string, string | string[] | undefined>;
+};
 
-export default async function CustomerDetail({ params }: { params: { id: string } }) {
+export default async function CustomerPage({ params, searchParams }: PageProps) {
+  const tab = (Array.isArray(searchParams?.tab)
+    ? searchParams?.tab[0]
+    : searchParams?.tab) as "orders" | "drafts" | undefined;
+
+  const view: "orders" | "drafts" = tab === "drafts" ? "drafts" : "orders";
+
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
-    include: {
-      visits: { orderBy: { date: "desc" } },
-      notesLog: { orderBy: { createdAt: "desc" } },
-      callLogs: { orderBy: { createdAt: "desc" } },
+    select: {
+      id: true,
+      salonName: true,
+      customerName: true,
+      customerTelephone: true,
+      customerEmailAddress: true,
+      addressLine1: true,
+      addressLine2: true,
+      town: true,
+      county: true,
+      postCode: true,
+      shopifyCustomerId: true,
     },
   });
 
-  if (!customer) return <div className="card">Not found.</div>;
+  if (!customer) return notFound();
 
-  /* -------- server action: Add Note -------- */
-  async function addNote(formData: FormData) {
-    "use server";
-    const text = String(formData.get("text") || "");
-    const staff = String(formData.get("staff") || "");
-    if (!text.trim()) return;
-    await prisma.note.create({
-      data: { text, staff: staff || null, customerId: customer.id },
-    });
-    revalidatePath(`/customers/${customer.id}`);
+  // Orders (from CRM DB)
+  const orders = await prisma.order.findMany({
+    where: { customerId: customer.id },
+    orderBy: [{ createdAt: "desc" }],
+    take: 50,
+  });
+
+  // Drafts (live from Shopify, filtered by this customer)
+  let drafts: any[] = [];
+  if (customer.shopifyCustomerId) {
+    try {
+      const res = await shopifyRest(`/draft_orders.json?status=open&limit=50`, {
+        method: "GET",
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const scid = Number(customer.shopifyCustomerId);
+        drafts = (json?.draft_orders || []).filter(
+          (d: any) => Number(d?.customer?.id) === scid
+        );
+      }
+    } catch {
+      drafts = [];
+    }
   }
 
-  /* -------- server action: Update Stage -------- */
-  async function updateStage(formData: FormData) {
+  const currency = "GBP";
+  const addr = [
+    customer.addressLine1,
+    customer.addressLine2,
+    customer.town,
+    customer.county,
+    customer.postCode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  // ---------- Server Action: create Stripe Payment Link from a Shopify draft ----------
+  async function createPaymentLinkAction(formData: FormData) {
     "use server";
-    const stage = normalizeStage(formData.get("stage"));
-    await prisma.customer.update({
-      where: { id: customer.id },
-      data: { stage },
-    });
-    revalidatePath(`/customers/${customer.id}`);
-  }
+    const draftId = String(formData.get("draftId") || "");
+    if (!draftId) throw new Error("Missing draftId");
 
-  /* -------- server action: Update Route Plan -------- */
-  async function updateRoutePlan(formData: FormData) {
-    "use server";
+    const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
+    if (!stripeSecret) throw new Error("Missing STRIPE_SECRET_KEY");
 
-    const enabled = formData.get("routePlanEnabled") === "on";
+    // 1) Load the draft (for line items and titles)
+    const resp = await shopifyRest(`/draft_orders/${draftId}.json`, { method: "GET" });
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => "");
+      throw new Error(`Failed to load draft: ${resp.status} ${txt}`);
+    }
+    const draft = (await resp.json())?.draft_order as any;
+    const draftLines = (draft?.line_items || []) as Array<{
+      variant_id?: number;
+      quantity?: number;
+      price?: string | number; // unit ex VAT
+      title?: string;
+      variant_title?: string | null;
+    }>;
 
-    // Weeks: from checkboxes named routeWeeks, values "1".."4"
-    const weeksRaw = formData.getAll("routeWeeks").map((v) => Number(String(v)));
-    const weeks = Array.from(
-      new Set(weeksRaw.filter((n) => Number.isInteger(n) && n >= 1 && n <= 4))
-    ).sort((a, b) => a - b);
+    if (!Array.isArray(draftLines) || draftLines.length === 0) {
+      throw new Error("Draft has no line items");
+    }
 
-    // Days: from checkboxes named routeDays, values of ROUTE_DAY_LABELS
-    const daysRaw = formData.getAll("routeDays").map((v) => String(v).toUpperCase());
-    const days = Array.from(new Set(daysRaw.filter((d) => ROUTE_DAY_SET.has(d as any))));
+    // 2) Build Prices (VAT-inclusive) and line_items for Payment Link
+    const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
+    const line_items: Stripe.PaymentLinkCreateParams.LineItem[] = [];
 
-    await prisma.customer.update({
-      where: { id: customer.id },
-      data: {
-        routePlanEnabled: enabled,
-        routeWeeks: weeks,
-        routeDays: days as any, // Prisma RouteDay[]
+    // create ephemeral Prices so TS stays happy (Payment Links prefers `price` over inline `price_data` in this SDK version)
+    for (const li of draftLines) {
+      const ex = Number(li.price ?? 0);
+      const inc = ex * (1 + VAT_RATE);
+      const unit_amount = Math.round(inc * 100);
+
+      const name = `${li.title ?? "Item"}${li.variant_title ? ` — ${li.variant_title}` : ""}`;
+
+      const price = await stripe.prices.create({
+        currency: "gbp",
+        unit_amount,
+        tax_behavior: "inclusive", // total already includes VAT
+        product_data: {
+          name,
+          metadata: {
+            variantId: li.variant_id ? String(li.variant_id) : "",
+          },
+        },
+      });
+
+      line_items.push({
+        price: price.id,
+        quantity: Number(li.quantity || 1),
+      });
+    }
+
+    const sharedMeta = {
+      crmCustomerId: customer.id,
+      shopifyCustomerId: customer.shopifyCustomerId || "",
+      crmDraftOrderId: String(draftId),
+      source: "SBP-CRM",
+    };
+
+    // 3) Create the Payment Link (redirect back to the customer after payment)
+    const origin =
+      process.env.APP_URL?.replace(/\/$/, "") || "https://"+(process.env.VERCEL_URL || "").replace(/\/$/,"");
+
+    const link = await stripe.paymentLinks.create({
+      line_items,
+      after_completion: {
+        type: "redirect",
+        redirect: {
+          url: `${origin}/customers/${customer.id}?paid=1`,
+        },
       },
+      // Make sure webhook can find the draft/order to complete:
+      metadata: sharedMeta,
+      payment_intent_data: { metadata: sharedMeta },
+      // We already included VAT in unit_amount values:
+      automatic_tax: { enabled: false },
     });
 
-    revalidatePath(`/customers/${customer.id}`);
+    redirect(link.url!);
   }
+  // -------------------------------------------------------------------------------
 
-  // Contact number: prefer telephone, fallback to "customerNumber"
-  const contactNumber = customer.customerTelephone || customer.customerNumber || "-";
-  const stageStyle = stageColor(customer.stage);
-
-  const hasWeek = (n: number) => Array.isArray(customer.routeWeeks) && customer.routeWeeks.includes(n);
-  const hasDay = (d: string) =>
-    Array.isArray(customer.routeDays) && (customer.routeDays as any[]).includes(d);
+  const ordersCount = orders.length;
+  const draftsCount = drafts.length;
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      {/* Header card */}
-      <div className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <h2 style={{ marginBottom: 6 }}>{customer.salonName}</h2>
-
-            {/* Stage pill + quick updater */}
-            <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <span
-                className="small"
-                style={{
-                  background: stageStyle.bg,
-                  color: stageStyle.fg,
-                  padding: "2px 8px",
-                  borderRadius: 999,
-                  fontWeight: 600,
-                }}
-              >
-                {stageLabel(customer.stage)}
-              </span>
-
-              <form action={updateStage} className="row" style={{ gap: 6, alignItems: "center" }}>
-                <select
-                  name="stage"
-                  defaultValue={(customer.stage as Stage) || "LEAD"}
-                  className="input"
-                  style={{ height: 30, padding: "2px 8px" }}
-                >
-                  <option value="LEAD">Lead</option>
-                  <option value="APPOINTMENT_BOOKED">Appointment booked</option>
-                  <option value="SAMPLING">Sampling</option>
-                  <option value="CUSTOMER">Customer</option>
-                </select>
-                <button className="btn" type="submit" style={{ height: 30 }}>
-                  Update
-                </button>
-              </form>
-            </div>
-          </div>
-
+      {/* Header / identity */}
+      <section className="card">
+        <div
+          className="row"
+          style={{ justifyContent: "space-between", alignItems: "center" }}
+        >
+          <h1 style={{ margin: 0 }}>
+            {customer.salonName || customer.customerName || "Customer"}
+          </h1>
           <div className="row" style={{ gap: 8 }}>
-            {/* ✅ NEW: Create Order button */}
-            <Link
-              href={`/orders/new?customerId=${customer.id}`}
-              className="btn primary"
-              style={{ padding: "6px 10px", borderRadius: 10 }}
-            >
+            <Link className="btn" href={`/orders/new?customerId=${customer.id}`}>
               Create Order
             </Link>
-
-            <Link
-              href={`/customers/${customer.id}/edit`}
-              className="primary"
-              style={{ padding: "6px 10px", borderRadius: 10 }}
-            >
-              Edit
+            <Link className="primary" href={`/customers`}>
+              Back
             </Link>
-
-            {/* Request Education */}
-            <Link
-              href={`/education/requests/new?customerId=${customer.id}`}
-              className="btn"
-              style={{ padding: "6px 10px", borderRadius: 10, background: "#f3f4f6" }}
-            >
-              Request Education
-            </Link>
-
-            <DeleteCustomerButton id={customer.id} />
           </div>
         </div>
 
         <div className="grid grid-2" style={{ marginTop: 10 }}>
-          {/* Contact */}
           <div>
             <b>Contact</b>
-            <p className="small" style={{ whiteSpace: "pre-line", marginTop: 6 }}>
+            <p className="small" style={{ marginTop: 6 }}>
               {customer.customerName || "-"}
-              {"\n"}
-              {contactNumber}
-              {"\n"}
+              <br />
+              {customer.customerTelephone || "-"}
+              <br />
               {customer.customerEmailAddress || "-"}
             </p>
           </div>
-
-          {/* Location */}
           <div>
             <b>Location</b>
-            <p className="small" style={{ whiteSpace: "pre-line", marginTop: 6 }}>
-              {addressLines(customer).length ? addressLines(customer).join("\n") : "-"}
-            </p>
+            <p className="small" style={{ marginTop: 6 }}>{addr || "-"}</p>
           </div>
+        </div>
+      </section>
 
-          {/* Salon meta + stage */}
-          <div>
-            <b>Salon Information</b>
-            <p className="small" style={{ marginTop: 6 }}>
-              Stage: {stageLabel(customer.stage)}
-              <br />
-              Chairs: {customer.numberOfChairs ?? "-"}
-              <br />
-              Brands Used: {customer.brandsInterestedIn || "-"}
-              <br />
-              Sales Rep: {customer.salesRep || "-"}
-            </p>
-          </div>
-
-          {/* Opening hours */}
-          <div>
-            <b>Opening Hours</b>
-            <div style={{ marginTop: 6 }}>{renderOpeningHours(customer.openingHours)}</div>
+      {/* Orders / Drafts switcher */}
+      <section className="card">
+        <div
+          className="row"
+          style={{ justifyContent: "space-between", alignItems: "center" }}
+        >
+          <h3 style={{ margin: 0 }}>Orders / Drafts</h3>
+          <div className="row" style={{ gap: 8 }}>
+            <Link
+              href={`/customers/${customer.id}?tab=orders`}
+              className={`btn ${view === "orders" ? "primary" : ""}`}
+            >
+              Orders ({ordersCount})
+            </Link>
+            <Link
+              href={`/customers/${customer.id}?tab=drafts`}
+              className={`btn ${view === "drafts" ? "primary" : ""}`}
+            >
+              Drafts ({draftsCount})
+            </Link>
           </div>
         </div>
 
-        {customer.notes && (
-          <div style={{ marginTop: 12 }}>
-            <b>Profile Notes</b>
-            <p className="small">{customer.notes}</p>
-          </div>
-        )}
-      </div>
+        {view === "orders" ? (
+          orders.length === 0 ? (
+            <p className="small muted" style={{ marginTop: 8 }}>
+              No orders yet.
+            </p>
+          ) : (
+            <div style={{ marginTop: 10, overflowX: "auto" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "120px 140px 120px 120px 1fr auto",
+                  gap: 6,
+                  alignItems: "center",
+                }}
+              >
+                <div className="small muted">Date</div>
+                <div className="small muted">Order</div>
+                <div className="small muted">Subtotal</div>
+                <div className="small muted">Taxes</div>
+                <div className="small muted">Total</div>
+                <div className="small muted">Action</div>
 
-      {/* ---------- NEW: Route Planning ---------- */}
-      <div className="card">
-        <h3>Route Planning</h3>
-
-        <form action={updateRoutePlan} style={{ marginTop: 8 }}>
-          {/* CSS-only toggling */}
-          <style>{`
-            /* Show Weeks/Days only when checkbox is checked */
-            #rp-enabled:checked ~ .rp-body { display: block; }
-            .rp-body { display: ${customer.routePlanEnabled ? "block" : "none"}; }
-            .chip {
-              display: inline-flex; align-items: center; gap: 6px;
-              border: 1px solid var(--border); border-radius: 999px;
-              padding: 6px 10px; cursor: pointer; user-select: none;
-            }
-            .chips { display: flex; gap: 8px; flex-wrap: wrap; }
-          `}</style>
-
-          <div className="field" style={{ marginBottom: 10 }}>
-            <label htmlFor="rp-enabled" className="row" style={{ gap: 8, alignItems: "center", cursor: "pointer" }}>
-              <input
-                id="rp-enabled"
-                name="routePlanEnabled"
-                type="checkbox"
-                defaultChecked={!!customer.routePlanEnabled}
-              />
-              <span>Add To Route Plan</span>
-            </label>
-            <div className="form-hint">Include this salon in the 4-week Mon–Fri cycle.</div>
-          </div>
-
-          <div className="rp-body">
-            <div className="grid" style={{ gap: 16, gridTemplateColumns: "1fr 2fr" }}>
-              {/* Weeks */}
-              <div className="field">
-                <label>Weeks</label>
-                <div className="chips">
-                  {[1,2,3,4].map((n) => (
-                    <label key={n} className="chip">
-                      <input
-                        type="checkbox"
-                        name="routeWeeks"
-                        value={n}
-                        defaultChecked={hasWeek(n)}
-                      />
-                      Week {n}
-                    </label>
-                  ))}
-                </div>
-                <div className="form-hint">Pick one or more of the 4 weeks.</div>
-              </div>
-
-              {/* Days */}
-              <div className="field">
-                <label>Days</label>
-                <div className="chips">
-                  {ROUTE_DAY_LABELS.map(({ val, label }) => (
-                    <label key={val} className="chip">
-                      <input
-                        type="checkbox"
-                        name="routeDays"
-                        value={val}
-                        defaultChecked={hasDay(val)}
-                      />
-                      {label}
-                    </label>
-                  ))}
-                </div>
-                <div className="form-hint">Pick one or more days (Mon–Fri).</div>
-              </div>
-            </div>
-          </div>
-
-          <div className="row" style={{ gap: 8, marginTop: 16, alignItems: "center" }}>
-            <button className="primary" type="submit">Save</button>
-            {customer.routePlanEnabled && (
-              <span className="small muted">
-                Planned for weeks: {Array.isArray(customer.routeWeeks) && customer.routeWeeks.length ? customer.routeWeeks.join(", ") : "—"};{" "}
-                days: {Array.isArray(customer.routeDays) && (customer.routeDays as any[]).length ? (customer.routeDays as any[]).map(String).join(", ") : "—"}
-              </span>
-            )}
-          </div>
-        </form>
-      </div>
-      {/* ---------- END: Route Planning ---------- */}
-
-      {/* Recent Orders */}
-      <RecentOrders customerId={params.id} />
-
-      {/* Add Note */}
-      <div className="card">
-        <h3>Add Note</h3>
-        <form action={addNote} className="grid" style={{ gap: 8 }}>
-          <div>
-            <label>Sales Rep (optional)</label>
-            <input name="staff" placeholder="Your name" />
-          </div>
-          <div>
-            <label>Note</label>
-            <textarea name="text" rows={3} required />
-          </div>
-          <button className="primary" type="submit">Save Note</button>
-        </form>
-
-        <h3 style={{ marginTop: 16 }}>Notes</h3>
-        {customer.notesLog.length === 0 ? (
-          <p className="small">No notes yet.</p>
-        ) : (
-          customer.notesLog.map((n) => (
-            <div
-              key={n.id}
-              className="row"
-              style={{
-                justifyContent: "space-between",
-                borderBottom: "1px solid var(--border)",
-                padding: "8px 0",
-              }}
-            >
-              <div>
-                <div className="small">
-                  {formatDateTimeUK(n.createdAt)} {n.staff ? `• ${n.staff}` : ""}
-                </div>
-                <div>{n.text}</div>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-
-      {/* Call Logs */}
-      <div className="card">
-        <h3>Call Logs</h3>
-        {customer.callLogs.length === 0 ? (
-          <p className="small">No calls logged yet.</p>
-        ) : (
-          customer.callLogs.map((c) => (
-            <div
-              key={c.id}
-              className="row"
-              style={{
-                justifyContent: "space-between",
-                borderBottom: "1px solid var(--border)",
-                padding: "8px 0",
-              }}
-            >
-              <div>
-                <div className="small">
-                  {formatDateTimeUK(c.createdAt)}
-                  {c.staff ? ` • ${c.staff}` : ""}
-                  {c.callType ? ` • ${c.callType}` : ""}
-                  {c.outcome ? ` • ${c.outcome}` : ""}
-                  {c.followUpAt ? ` • follow-up ${formatDateTimeUK(c.followUpAt)}` : ""}
-                </div>
-                <div>{c.summary || "-"}</div>
-
-                {!c.isExistingCustomer && (
-                  <div className="small muted">
-                    Lead: {c.customerName || "-"}
-                    {c.contactPhone ? ` • ${c.contactPhone}` : ""}
-                    {c.contactEmail ? ` • ${c.contactEmail}` : ""}
+                {orders.map((o) => (
+                  <div key={o.id} style={{ display: "contents" }}>
+                    <div className="small">
+                      {new Date(o.createdAt).toLocaleString()}
+                    </div>
+                    <div>{o.shopifyName || `#${o.shopifyOrderNumber ?? "-"}`}</div>
+                    <div>{money(o.subtotal, currency)}</div>
+                    <div>{money(o.taxes, currency)}</div>
+                    <div style={{ fontWeight: 600 }}>
+                      {money(o.total, currency)}
+                    </div>
+                    <div>
+                      <Link className="btn" href={`/orders/${o.id}`}>
+                        View
+                      </Link>
+                    </div>
                   </div>
-                )}
+                ))}
               </div>
             </div>
-          ))
+          )
+        ) : drafts.length === 0 ? (
+          <p className="small muted" style={{ marginTop: 8 }}>
+            No draft orders for this customer.
+          </p>
+        ) : (
+          <div style={{ marginTop: 10, overflowX: "auto" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "140px 160px 120px 120px 120px auto",
+                gap: 6,
+                alignItems: "center",
+              }}
+            >
+              <div className="small muted">Created</div>
+              <div className="small muted">Draft ID</div>
+              <div className="small muted">Subtotal</div>
+              <div className="small muted">Taxes</div>
+              <div className="small muted">Total</div>
+              <div className="small muted">Action</div>
+
+              {drafts.map((d: any) => {
+                const adminUrl =
+                  `https://${(process.env.SHOPIFY_SHOP_DOMAIN || "")
+                    .replace(/^https?:\/\//, "")
+                    .replace(/\/$/, "")}/admin/draft_orders/${d.id}`;
+
+                const subtotal =
+                  d.subtotal_price ?? d.subtotal ?? d.total_line_items_price;
+                const taxes = d.total_tax ?? 0;
+                const total = d.total_price ?? 0;
+
+                return (
+                  <div key={d.id} style={{ display: "contents" }}>
+                    <div className="small">
+                      {d.created_at
+                        ? new Date(d.created_at).toLocaleString()
+                        : "-"}
+                    </div>
+                    <div>#{d.id}</div>
+                    <div>{money(subtotal, currency)}</div>
+                    <div>{money(taxes, currency)}</div>
+                    <div style={{ fontWeight: 600 }}>
+                      {money(total, currency)}
+                    </div>
+                    <div className="row" style={{ gap: 6 }}>
+                      <a
+                        className="btn"
+                        href={adminUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open in Shopify"
+                      >
+                        View in Shopify
+                      </a>
+
+                      {/* Create Stripe Payment Link (server action) */}
+                      <form action={createPaymentLinkAction}>
+                        <input type="hidden" name="draftId" value={String(d.id)} />
+                        <button
+                          className="primary"
+                          type="submit"
+                          disabled={!customer.shopifyCustomerId}
+                          title={
+                            customer.shopifyCustomerId
+                              ? "Create Stripe payment link for this draft"
+                              : "Customer is not linked to Shopify"
+                          }
+                        >
+                          Payment link
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
-      </div>
+      </section>
     </div>
   );
 }
