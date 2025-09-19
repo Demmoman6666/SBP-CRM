@@ -10,6 +10,7 @@ export const revalidate = 0;
 
 const VAT_RATE = Number(process.env.VAT_RATE ?? "0.20");
 
+/* ------------ money + tiny prettifiers ------------ */
 function money(n?: any, currency: string = "GBP") {
   if (n == null) return "-";
   const num = typeof n === "string" ? parseFloat(n) : Number(n);
@@ -20,6 +21,25 @@ function money(n?: any, currency: string = "GBP") {
     return num.toFixed(2);
   }
 }
+const prettyFinancial = (s?: string | null) => {
+  const k = (s || "").toLowerCase();
+  if (!k) return "—";
+  if (k.includes("paid")) return "Paid";
+  if (k.includes("authorized") || k.includes("pending")) return "Pending";
+  if (k.includes("partially")) return "Partially paid";
+  if (k.includes("refunded") || k.includes("void")) return "Refunded";
+  return s!;
+};
+const prettyFulfillment = (s?: string | null) => {
+  const k = (s || "").toLowerCase();
+  if (!k) return "—";
+  if (k.includes("fulfilled")) return "Fulfilled";
+  if (k.includes("partial")) return "Partially fulfilled";
+  if (k.includes("unfulfilled")) return "Unfulfilled";
+  if (k.includes("cancel")) return "Cancelled";
+  return s!;
+};
+/* -------------------------------------------------- */
 
 type PageProps = {
   params: { id: string };
@@ -59,6 +79,39 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     orderBy: [{ createdAt: "desc" }],
     take: 50,
   });
+
+  // Enrich orders with Shopify payment/fulfillment status (best-effort)
+  // We look for a numeric Shopify order id on each order record.
+  const idCandidates = orders
+    .map((o: any) => Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id))
+    .filter((n) => Number.isFinite(n)) as number[];
+
+  let statusByShopifyId = new Map<
+    number,
+    { financial_status?: string | null; fulfillment_status?: string | null }
+  >();
+  if (idCandidates.length) {
+    try {
+      // Fetch in one go (Shopify REST supports comma-separated ids)
+      const idsParam = encodeURIComponent(idCandidates.join(","));
+      const res = await shopifyRest(
+        `/orders.json?ids=${idsParam}&status=any&fields=id,financial_status,fulfillment_status`,
+        { method: "GET" }
+      );
+      if (res.ok) {
+        const json = await res.json();
+        const arr: Array<any> = json?.orders || [];
+        for (const o of arr) {
+          statusByShopifyId.set(Number(o.id), {
+            financial_status: o.financial_status ?? null,
+            fulfillment_status: o.fulfillment_status ?? null,
+          });
+        }
+      }
+    } catch {
+      // ignore – statuses will render as "—"
+    }
+  }
 
   // Drafts (live from Shopify for this customer) – newest first
   let drafts: any[] = [];
@@ -227,32 +280,44 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "170px 140px 120px 120px 1fr auto",
+                  gridTemplateColumns:
+                    "170px 140px 140px 160px 120px 120px 120px auto", // + Payment + Fulfillment
                   gap: 6,
                   alignItems: "center",
                 }}
               >
                 <div className="small muted">Date</div>
                 <div className="small muted">Order</div>
+                <div className="small muted">Payment</div>
+                <div className="small muted">Fulfillment</div>
                 <div className="small muted">Subtotal</div>
                 <div className="small muted">Taxes</div>
                 <div className="small muted">Total</div>
                 <div className="small muted">Action</div>
 
-                {orders.map((o) => (
-                  <div key={o.id} style={{ display: "contents" }}>
-                    <div className="small">{new Date(o.createdAt).toLocaleString()}</div>
-                    <div>{o.shopifyName || `#${o.shopifyOrderNumber ?? "-"}`}</div>
-                    <div>{money(o.subtotal, currency)}</div>
-                    <div>{money(o.taxes, currency)}</div>
-                    <div style={{ fontWeight: 600 }}>{money(o.total, currency)}</div>
-                    <div>
-                      <Link className="btn" href={`/orders/${o.id}`}>
-                        View
-                      </Link>
+                {orders.map((o: any) => {
+                  const created = new Date(o.createdAt).toLocaleString();
+                  const name = o.shopifyName || (o.shopifyOrderNumber ? `#${o.shopifyOrderNumber}` : "-");
+                  const sid = Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id);
+                  const st = Number.isFinite(sid) ? statusByShopifyId.get(sid) : undefined;
+
+                  return (
+                    <div key={o.id} style={{ display: "contents" }}>
+                      <div className="small">{created}</div>
+                      <div className="nowrap">{name}</div>
+                      <div><span className="badge">{prettyFinancial(st?.financial_status)}</span></div>
+                      <div><span className="badge">{prettyFulfillment(st?.fulfillment_status)}</span></div>
+                      <div>{money(o.subtotal, currency)}</div>
+                      <div>{money(o.taxes, currency)}</div>
+                      <div style={{ fontWeight: 600 }}>{money(o.total, currency)}</div>
+                      <div>
+                        <Link className="btn" href={`/orders/${o.id}`}>
+                          View
+                        </Link>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )
@@ -263,13 +328,16 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "170px 160px 120px 120px 120px auto",
+                gridTemplateColumns:
+                  "170px 160px 140px 160px 120px 120px 120px auto", // columns aligned with Orders
                 gap: 6,
                 alignItems: "center",
               }}
             >
               <div className="small muted">Created</div>
               <div className="small muted">Draft ID</div>
+              <div className="small muted">Payment</div>
+              <div className="small muted">Fulfillment</div>
               <div className="small muted">Subtotal</div>
               <div className="small muted">Taxes</div>
               <div className="small muted">Total</div>
@@ -289,6 +357,8 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                       {d.created_at ? new Date(d.created_at).toLocaleString() : "-"}
                     </div>
                     <div>#{d.id}</div>
+                    <div><span className="badge">—</span></div>
+                    <div><span className="badge">—</span></div>
                     <div>{money(subtotal, currency)}</div>
                     <div>{money(taxes, currency)}</div>
                     <div style={{ fontWeight: 600 }}>{money(total, currency)}</div>
