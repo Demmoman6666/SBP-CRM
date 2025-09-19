@@ -2,16 +2,14 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
-import { shopifyGraphql } from "@/lib/shopify";
+import { shopifyGraphql, shopifyRest } from "@/lib/shopify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type PostBody = {
-  customerId: string;
-  lines: Array<{ variantId: string; quantity: number }>;
-  note?: string | null;
-};
+type PostBody =
+  | { draftId: string | number; customerId?: string | null; note?: string | null }
+  | { customerId: string; lines: Array<{ variantId: string; quantity: number }>; note?: string | null };
 
 // VAT: Shopify prices are ex VAT; Stripe unit_amount will be gross (inc VAT)
 const VAT_RATE = Number(process.env.VAT_RATE ?? "0.20");
@@ -25,7 +23,7 @@ function getOrigin(req: Request): string {
   }
 }
 
-// Trusted price lookup direct from Shopify Admin GraphQL
+/** Trusted price lookup direct from Shopify Admin GraphQL — returns ex-VAT */
 async function fetchVariantPricing(variantIds: string[]) {
   if (!variantIds.length) return {};
   const gids = variantIds.map((id) => `gid://shopify/ProductVariant/${id}`);
@@ -71,29 +69,111 @@ async function fetchVariantPricing(variantIds: string[]) {
   return out;
 }
 
+/** Fetch a Shopify draft order (REST) */
+async function loadDraft(draftId: string | number) {
+  const res = await shopifyRest(`/draft_orders/${draftId}.json`, { method: "GET" });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) throw new Error(`Failed to fetch draft: ${res.status} ${text}`);
+  const json = JSON.parse(text);
+  return json?.draft_order as any;
+}
+
+/** Create a Checkout Session *from an existing draft* (preferred flow) */
+async function createCheckoutFromDraft(req: Request, draftId: string | number) {
+  const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
+  if (!stripeSecret) return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY env var" }, { status: 500 });
+  const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
+
+  const origin = getOrigin(req);
+  const draft = await loadDraft(draftId);
+
+  const items = draft?.line_items || [];
+  if (!Array.isArray(items) || items.length === 0) {
+    return NextResponse.json({ error: "Draft has no line items" }, { status: 400 });
+  }
+
+  const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = items.map((li: any) => ({
+    quantity: Number(li?.quantity || 1),
+    price_data: {
+      currency: "gbp",
+      // Shopify draft line_items[].price is ex-VAT; convert to inc-VAT for Stripe
+      unit_amount: Math.round(Number(li?.price ?? 0) * (1 + VAT_RATE) * 100),
+      product_data: {
+        name: `${li?.title ?? "Item"}${li?.variant_title ? ` — ${li.variant_title}` : ""}`,
+        metadata: {
+          variantId: li?.variant_id ? String(li.variant_id) : "",
+          crmDraftOrderId: String(draftId),
+        },
+      },
+    },
+  }));
+
+  const meta = {
+    crmDraftOrderId: String(draftId),
+    shopifyCustomerId: draft?.customer?.id ? String(draft.customer.id) : "",
+    source: "SBP-CRM",
+  };
+
+  const session = await stripe.checkout.sessions.create({
+    mode: "payment",
+    line_items,
+    // we may not know the CRM id here, so bounce back to the builder
+    success_url: `${origin}/orders/new?paid=1&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${origin}/orders/new`,
+    metadata: meta,
+    payment_intent_data: { metadata: meta },
+    // automatic_tax disabled — prices are already VAT-inclusive
+  });
+
+  if (req.method === "GET") {
+    // Directly open Checkout when called via GET (used by your “Pay by card” button)
+    return NextResponse.redirect(session.url!, { status: 303 });
+  }
+  return NextResponse.json({ url: session.url, draftOrderId: Number(draftId) }, { status: 200 });
+}
+
+/** GET — allow /api/payments/stripe/checkout?draftId=123 to open Stripe directly */
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const draftId = url.searchParams.get("draftId");
+  if (!draftId) return NextResponse.json({ error: "Missing draftId" }, { status: 400 });
+  try {
+    return await createCheckoutFromDraft(req, draftId);
+  } catch (err: any) {
+    console.error("Stripe checkout (GET) error:", err);
+    return NextResponse.json({ error: err?.message || "Stripe checkout failed" }, { status: 500 });
+  }
+}
+
+/** POST — supports BOTH:
+ *  (A) { draftId }  -> build from draft (preferred)
+ *  (B) { customerId, lines } -> legacy flow: price from Shopify and build directly
+ */
 export async function POST(req: Request) {
   try {
     const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
     if (!stripeSecret) {
       return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY env var" }, { status: 500 });
     }
-
-    // Pin to a concrete version to avoid TS mismatch in Vercel builds
     const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
-
     const origin = getOrigin(req);
 
-    const body = (await req.json()) as PostBody;
-    const { customerId, lines } = body || ({} as any);
+    const body = (await req.json().catch(() => ({}))) as PostBody;
+
+    // --- (A) Preferred: draft-backed checkout --------------------------------
+    if ("draftId" in body && body.draftId) {
+      return await createCheckoutFromDraft(req, String(body.draftId));
+    }
+
+    // --- (B) Legacy: direct lines --------------------------------------------
+    const { customerId, lines } = body as Extract<PostBody, { customerId: string; lines: any[] }>;
 
     if (!customerId) return NextResponse.json({ error: "customerId is required" }, { status: 400 });
     if (!Array.isArray(lines) || lines.length === 0) {
       return NextResponse.json({ error: "At least one line item is required" }, { status: 400 });
     }
     for (const li of lines) {
-      if (!li?.variantId) {
-        return NextResponse.json({ error: "Each line must include variantId" }, { status: 400 });
-      }
+      if (!li?.variantId) return NextResponse.json({ error: "Each line must include variantId" }, { status: 400 });
       if (!Number.isFinite(Number(li.quantity)) || Number(li.quantity) <= 0) {
         return NextResponse.json({ error: "Each line must include a positive quantity" }, { status: 400 });
       }
@@ -114,26 +194,20 @@ export async function POST(req: Request) {
       const v = catalog[String(li.variantId)];
       if (!v) throw new Error(`Variant not found in Shopify: ${li.variantId}`);
 
-      const ex = v.priceExVat;                     // £ (ex VAT)
-      const inc = ex * (1 + VAT_RATE);             // £ (inc VAT)
-      const unit_amount = Math.round(inc * 100);   // pence
-      const name = `${v.productTitle} — ${v.variantTitle}`;
-
+      const inc = v.priceExVat * (1 + VAT_RATE);
       return {
         quantity: Number(li.quantity || 1),
         price_data: {
           currency: "gbp",
-          unit_amount,
+          unit_amount: Math.round(inc * 100),
           product_data: {
-            name,
-            // Used by the webhook to push a real Shopify order
+            name: `${v.productTitle} — ${v.variantTitle}`,
             metadata: { variantId: String(li.variantId) },
           },
         },
       };
     });
 
-    // Core identifiers we want to be available both on the Session and the Payment Intent
     const sharedMeta = {
       crmCustomerId: crm.id,
       shopifyCustomerId: crm.shopifyCustomerId || "",
@@ -151,13 +225,11 @@ export async function POST(req: Request) {
         metadata: sharedMeta,
         receipt_email: crm.customerEmailAddress || undefined,
       },
-      // We already baked VAT into unit_amount to match Shopify's draft/order behavior
-      // automatic_tax: { enabled: false },
     });
 
     return NextResponse.json({ url: session.url }, { status: 200 });
   } catch (err: any) {
-    console.error("Stripe checkout error:", err);
+    console.error("Stripe checkout (POST) error:", err);
     return NextResponse.json({ error: err?.message || "Stripe checkout failed" }, { status: 500 });
   }
 }
