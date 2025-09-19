@@ -32,8 +32,12 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      {/* Extra links/meta that aren't covered nicely by Metadata */}
       <head>
+        {/* 📱 Make pages fit the device width and disable pinch-zoom */}
+        <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+        />
         {/* Safari pinned tab (monochrome mask icon) */}
         <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#f7a8d8" />
         {/* Ensure manifest is fetched even if Metadata changes are cached */}
@@ -56,7 +60,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         >
           {/* 3-column grid: [left/back] [centered logo] [settings] */}
           <div
-            className="container"
+            className="container header-wrap"
             style={{
               display: "grid",
               gridTemplateColumns: "1fr auto 1fr",
@@ -74,6 +78,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {/* Center: Logo */}
             <Link
               href="/"
+              className="header-logo"
               style={{
                 justifySelf: "center",
                 display: "inline-flex",
