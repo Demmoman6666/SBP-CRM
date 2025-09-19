@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { shopifyRest } from "@/lib/shopify";
 
+// Turn any Shopify id (GID or numeric) into a number
 function toNumericId(v: any): number | null {
   if (v == null) return null;
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -20,16 +21,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ stock: {} }, { status: 200 });
     }
 
-    // Just like the price fix, hit /variants.json and read inventory_quantity.
-    // This is Shopify’s total across locations and works reliably when “Track quantity” is enabled.
+    // Read inventory_quantity directly from variants (works like the price fix)
     const out: Record<string, number> = {};
     const size = 50;
 
     for (let i = 0; i < variantIds.length; i += size) {
       const slice = variantIds.slice(i, i + size);
-      const qs = encodeURIComponent(slice.join(","));
+
+      // Use ids[]=..&ids[]=.. to avoid comma-encoding quirks
+      const params = new URLSearchParams();
+      slice.forEach((id) => params.append("ids[]", String(id)));
+
       const res = await shopifyRest(
-        `/variants.json?ids=${qs}&fields=id,inventory_quantity`,
+        `/variants.json?${params.toString()}&fields=id,inventory_quantity`,
         { method: "GET" }
       );
       if (!res.ok) continue;
@@ -41,8 +45,7 @@ export async function POST(req: Request) {
         const vid = Number(v?.id);
         const qty = Number(v?.inventory_quantity);
         if (!Number.isFinite(vid)) continue;
-        // keep 0 if it’s zero; use 0 when inventory_quantity is missing
-        out[String(vid)] = Number.isFinite(qty) ? qty : 0;
+        out[String(vid)] = Number.isFinite(qty) ? qty : 0; // keep zero when zero
       }
     }
 
