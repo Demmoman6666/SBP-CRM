@@ -1,4 +1,3 @@
-// app/api/orders/[id]/refund/preview/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { shopifyRest } from "@/lib/shopify";
@@ -7,81 +6,65 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Body = {
-  items: Array<{ crmLineId: string; quantity: number }>;
-  reason?: string | null;
+  items: Array<{ line_item_id: number; quantity: number }>;
 };
-
-function decimalToMinor(amount: string | number) {
-  const n = typeof amount === "string" ? Number(amount) : amount;
-  return Math.round((Number.isFinite(n) ? n : 0) * 100);
-}
 
 export async function POST(req: Request, ctx: { params: { id: string } }) {
   try {
-    const { items, reason } = (await req.json()) as Body;
-    if (!Array.isArray(items) || items.length === 0) {
-      return NextResponse.json({ amount: "0.00" }, { status: 200 });
+    const orderId = ctx.params.id;
+    const body = (await req.json()) as Body;
+
+    if (!Array.isArray(body?.items) || body.items.length === 0) {
+      return NextResponse.json({ amount: 0 }, { status: 200 });
     }
 
-    const order = await prisma.order.findUnique({
-      where: { id: ctx.params.id },
-      include: { lineItems: true },
-    });
-    if (!order?.shopifyOrderId) {
+    const crmOrder = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!crmOrder?.shopifyOrderId) {
       return NextResponse.json({ error: "Order not linked to Shopify" }, { status: 400 });
     }
 
-    const byId = new Map(order.lineItems.map((li) => [li.id, li]));
-    const refund_line_items = items
-      .map((i) => {
-        const li = byId.get(i.crmLineId);
-        if (!li?.shopifyLineItemId) return null;
-        const max = Math.max(0, Number(li.quantity || 0));
-        const qty = Math.min(Math.max(0, Number(i.quantity || 0)), max);
-        if (!qty) return null;
-        return {
-          line_item_id: Number(li.shopifyLineItemId),
-          quantity: qty,
-          restock_type: "no_restock" as const,
-        };
-      })
-      .filter(Boolean);
-
-    if (!refund_line_items.length) {
-      return NextResponse.json({ amount: "0.00" }, { status: 200 });
-    }
-
-    const calcRes = await shopifyRest(`/orders/${order.shopifyOrderId}/refunds/calculate.json`, {
+    // Ask Shopify to calculate totals (VAT/discounts etc.)
+    const resp = await shopifyRest(`/orders/${crmOrder.shopifyOrderId}/refunds/calculate.json`, {
       method: "POST",
       body: JSON.stringify({
         refund: {
-          currency: order.currency || "GBP",
-          note: reason || undefined,
-          shipping: { amount: "0.00" },
-          refund_line_items,
+          shipping: { full_refund: false },
+          refund_line_items: body.items.map((x) => ({
+            line_item_id: Number(x.line_item_id),
+            quantity: Number(x.quantity),
+            restock_type: "no_restock",
+          })),
         },
       }),
     });
-    const text = await calcRes.text();
-    if (!calcRes.ok) {
-      return NextResponse.json(
-        { error: `Shopify calculate failed: ${calcRes.status} ${text}` },
-        { status: 502 }
-      );
+
+    const text = await resp.text();
+    if (!resp.ok) {
+      return NextResponse.json({ error: `Shopify calculate failed: ${resp.status} ${text}` }, { status: 502 });
     }
 
-    const j = JSON.parse(text);
-    const amountStr =
-      j?.refund?.transactions?.[0]?.amount ??
-      j?.refund?.amount ??
-      "0.00";
+    const json = JSON.parse(text);
+    const refund = json?.refund || json;
 
-    // also return minor units if you want to show it elsewhere later
-    return NextResponse.json({
-      amount: amountStr,
-      amount_minor: decimalToMinor(amountStr),
-      currency: order.currency || "GBP",
-    });
+    // Prefer Shopify’s computed transaction amount; fallback to subtotal+tax sum
+    let amount = 0;
+    const t0 = refund?.transactions?.[0];
+    if (t0?.amount != null) {
+      amount = Number(t0.amount);
+    } else {
+      const items: any[] = Array.isArray(refund?.refund_line_items) ? refund.refund_line_items : [];
+      const subtotal = items.reduce((s, it) => s + (Number(it?.subtotal) || 0), 0);
+      const tax = items.reduce((s, it) => s + (Number(it?.total_tax) || 0), 0);
+      amount = subtotal + tax;
+    }
+
+    return NextResponse.json(
+      {
+        amount,
+        currency: crmOrder.currency || "GBP",
+      },
+      { status: 200 }
+    );
   } catch (err: any) {
     console.error("Refund preview error:", err);
     return NextResponse.json({ error: err?.message || "Preview failed" }, { status: 500 });
