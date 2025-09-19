@@ -1,7 +1,8 @@
+// app/orders/new/ClientNewOrder.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import ShopifyProductPicker from "@/components/ShopifyProductPicker"; // the clean, Shopify-like picker
+import ShopifyProductPicker from "@/components/ShopifyProductPicker";
 
 // ---- Types ---------------------------------------------------------------
 type Customer = {
@@ -32,7 +33,7 @@ type CartLine = {
 const VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE ?? "0.20");
 
 // money helper
-const £ = (n: number) =>
+const formatGBP = (n: number) =>
   new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
     Number.isFinite(n) ? n : 0
   );
@@ -127,7 +128,6 @@ export default function ClientNewOrder() {
     try {
       const body = {
         customerId: customerId, // CRM id (server will attach Shopify customer/address)
-        // 👇 the only thing Shopify truly needs
         lines: cart.map((l) => ({
           variant_id: l.variantId,
           quantity: l.qty,
@@ -160,7 +160,6 @@ export default function ClientNewOrder() {
   async function payByCard() {
     try {
       const id = await ensureDraft();
-      // Your existing endpoint that creates a Checkout Session from a draft id.
       const r = await fetch("/api/stripe/checkout-from-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -183,7 +182,6 @@ export default function ClientNewOrder() {
   async function createPaymentLink() {
     try {
       const id = await ensureDraft();
-      // Your existing endpoint that creates a Stripe Payment Link from a draft id.
       const r = await fetch("/api/stripe/payment-link-from-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -198,7 +196,6 @@ export default function ClientNewOrder() {
       }
       const { url } = await r.json();
       if (url) {
-        // open in a new tab and copy to clipboard for SMS/email
         window.open(url, "_blank", "noopener,noreferrer");
         try {
           await navigator.clipboard.writeText(url);
@@ -327,8 +324,8 @@ export default function ClientNewOrder() {
                       {l.title}
                     </div>
                     <div className="small" style={{ marginTop: 6 }}>
-                      Ex VAT: <b>{£(unitNet)}</b> &nbsp; VAT ({Math.round(VAT_RATE * 100)}%):{" "}
-                      <b>{£(unitVat)}</b> &nbsp; Inc VAT: <b>{£(unitInc)}</b>
+                      Ex VAT: <b>{formatGBP(unitNet)}</b> &nbsp; VAT ({Math.round(VAT_RATE * 100)}%):{" "}
+                      <b>{formatGBP(unitVat)}</b> &nbsp; Inc VAT: <b>{formatGBP(unitInc)}</b>
                     </div>
                   </div>
 
@@ -359,18 +356,18 @@ export default function ClientNewOrder() {
             {/* Totals */}
             <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
               <div className="small muted">Net:</div>
-              <div style={{ textAlign: "right", minWidth: 100 }}>{£(totals.net)}</div>
+              <div style={{ textAlign: "right", minWidth: 100 }}>{formatGBP(totals.net)}</div>
             </div>
             <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
               <div className="small muted">VAT ({Math.round(VAT_RATE * 100)}%):</div>
-              <div style={{ textAlign: "right", minWidth: 100 }}>{£(totals.vat)}</div>
+              <div style={{ textAlign: "right", minWidth: 100 }}>{formatGBP(totals.vat)}</div>
             </div>
             <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
               <div className="small muted" style={{ fontWeight: 700 }}>
                 Total:
               </div>
               <div style={{ textAlign: "right", minWidth: 100, fontWeight: 700 }}>
-                {£(totals.inc)}
+                {formatGBP(totals.inc)}
               </div>
             </div>
 
