@@ -14,24 +14,20 @@ type Item = {
 };
 
 type Props = {
-  /** Placeholder for the search input */
   placeholder?: string;
-  /** Called when the user clicks Save with all selected items */
   onConfirm: (items: Item[]) => void;
 };
 
 /* ---------- helpers ---------- */
 
-// robustly turn Shopify ids (including GIDs) into a number
 function toNumericId(v: any): number | null {
   if (v == null) return null;
   if (typeof v === "number" && Number.isFinite(v)) return v;
   const s = String(v);
-  const m = s.match(/(\d+)(?!.*\d)/); // last run of digits
+  const m = s.match(/(\d+)(?!.*\d)/);
   return m ? Number(m[1]) : null;
 }
 
-// parse prices from many shapes ("£3.71", "3,71", MoneyV2, etc.)
 function parsePrice(val: any): number | null {
   if (val == null || val === "") return null;
   if (typeof val === "number") return Number.isFinite(val) ? val : null;
@@ -51,20 +47,21 @@ function parsePrice(val: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function cleanVariantTitle(t?: string | null) {
+  if (!t) return null;
+  return /^default title$/i.test(t.trim()) ? null : t;
+}
+
 function normaliseRow(row: any): Item | null {
   if (!row) return null;
 
-  // ----- ALWAYS resolve a VARIANT id (never a product id) -----
-  // 1) direct variant id fields
   let rawVariantId =
     row.variantId ??
     row.variant_id ??
     row.variantID ??
     row.variant?.id ??
-    row.node?.id; // GraphQL may return a variant id here
+    row.node?.id;
 
-  // 2) if we still don't have a variant id, many search endpoints return product-level rows
-  //    -> take the first variant from common shapes
   if (!rawVariantId) {
     rawVariantId =
       row?.variants?.[0]?.id ??
@@ -75,7 +72,6 @@ function normaliseRow(row: any): Item | null {
 
   const variantId = toNumericId(rawVariantId);
   if (!Number.isFinite(Number(variantId))) return null;
-  // ------------------------------------------------------------
 
   const productTitle =
     row.productTitle ??
@@ -84,11 +80,10 @@ function normaliseRow(row: any): Item | null {
     row.title?.product ??
     row.node?.product?.title ??
     row.title ??
-    row.title?.split(" / ")?.[0] ?? // sometimes combined "Product / Variant"
+    row.title?.split(" / ")?.[0] ??
     "Product";
 
-  // prefer explicit variant title; otherwise try the first variant on product-level rows
-  const variantTitle =
+  const variantTitleRaw =
     row.variantTitle ??
     row.variant_title ??
     row.variant?.title ??
@@ -98,6 +93,7 @@ function normaliseRow(row: any): Item | null {
     row?.product?.variants?.[0]?.title ??
     row?.node?.variants?.edges?.[0]?.node?.title ??
     null;
+  const variantTitle = cleanVariantTitle(variantTitleRaw);
 
   const sku =
     row.sku ??
@@ -108,17 +104,16 @@ function normaliseRow(row: any): Item | null {
     row?.node?.variants?.edges?.[0]?.node?.sku ??
     null;
 
-  // price fallbacks (ex VAT preferred, but show something if present)
   const priceExVatRaw =
     row.priceExVat ??
     row.price_ex_vat ??
     row.unit_price ??
     row.price ??
     row.variant?.price ??
-    row.price?.amount ?? // MoneyV2
+    row.price?.amount ??
     row.node?.price ??
-    row.node?.priceV2?.amount ?? // MoneyV2
-    row.node?.unitPrice?.amount ?? // MoneyV2
+    row.node?.priceV2?.amount ??
+    row.node?.unitPrice?.amount ??
     row.presentment_prices?.[0]?.price?.amount ??
     row?.variants?.[0]?.price ??
     row?.product?.variants?.[0]?.price ??
@@ -168,21 +163,16 @@ function normaliseRow(row: any): Item | null {
 
 async function fetchProducts(q: string): Promise<Item[]> {
   if (!q.trim()) return [];
-
-  // Try a few likely endpoints — whichever you have will respond.
   const endpoints = [
     `/api/shopify/products/search?q=${encodeURIComponent(q)}`,
     `/api/shopify/search-products?q=${encodeURIComponent(q)}`,
     `/api/shopify/products?q=${encodeURIComponent(q)}`,
   ];
-
   for (const url of endpoints) {
     try {
       const r = await fetch(url, { headers: { Accept: "application/json" } });
       if (!r.ok) continue;
       const j = await r.json();
-
-      // Accept: [], {items:[]}, {results:[]}, {variants:[]}
       const rows: any[] = Array.isArray(j)
         ? j
         : Array.isArray(j?.items)
@@ -192,17 +182,13 @@ async function fetchProducts(q: string): Promise<Item[]> {
         : Array.isArray(j?.variants)
         ? j.variants
         : [];
-
       const items = rows.map(normaliseRow).filter(Boolean) as Item[];
       return items;
-    } catch {
-      // try next endpoint
-    }
+    } catch {}
   }
   return [];
 }
 
-// show "—" when price is missing (don’t coerce to 0)
 function fmtGBP(n?: number | null) {
   if (n == null || !Number.isFinite(Number(n))) return "—";
   return new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
@@ -237,7 +223,7 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
     return () => clearTimeout(t);
   }, [query]);
 
-  // Keep: price hydration via /api/shopify/variant-prices (works with variant ids)
+  // Price hydration (kept as-is)
   useEffect(() => {
     const missing = items.filter(
       (i) => (i.priceExVat == null || !Number.isFinite(Number(i.priceExVat))) && Number.isFinite(i.variantId)
@@ -253,7 +239,6 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
         });
         const j = await r.json().catch(() => ({}));
         const map = (j?.prices || {}) as Record<string, { priceExVat?: number }>;
-
         if (map && typeof map === "object") {
           setItems((prev) =>
             prev.map((it) => {
@@ -263,42 +248,35 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
             })
           );
         }
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     })();
   }, [items]);
 
-  /* ✅ NEW: live stock hydration via /api/shopify/variant-stock
-     Fills `available` for rows that didn't include it from search endpoints. */
+  // ✅ NEW: Stock hydration via inventory_levels (multi-location safe)
   useEffect(() => {
-    const needStock = items.filter(
+    const missing = items.filter(
       (i) => (i.available == null || !Number.isFinite(Number(i.available))) && Number.isFinite(i.variantId)
     );
-    if (needStock.length === 0) return;
+    if (missing.length === 0) return;
 
     (async () => {
       try {
         const r = await fetch("/api/shopify/variant-stock", {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ ids: needStock.map((m) => m.variantId) }),
+          body: JSON.stringify({ ids: missing.map((m) => m.variantId) }),
         });
         const j = await r.json().catch(() => ({}));
         const map = (j?.stock || {}) as Record<string, number>;
+        if (!map || typeof map !== "object") return;
 
-        if (map && typeof map === "object") {
-          setItems((prev) =>
-            prev.map((it) => {
-              const v = map[String(it.variantId)];
-              if (v == null || !Number.isFinite(Number(v))) return it;
-              return { ...it, available: Number(v) };
-            })
-          );
-        }
-      } catch {
-        /* ignore */
-      }
+        setItems((prev) =>
+          prev.map((it) => {
+            const qty = map[String(it.variantId)];
+            return qty == null ? it : { ...it, available: Number(qty) };
+          })
+        );
+      } catch {}
     })();
   }, [items]);
 
@@ -331,14 +309,12 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
 
   return (
     <div>
-      {/* Header with Cancel / Products / Save */}
+      {/* Header */}
       <div className="row" style={{ alignItems: "center", marginBottom: 6, gap: 8 }}>
         <button className="btn" type="button" onClick={cancel} aria-label="Cancel selection">
           Cancel
         </button>
-        <div className="small muted" style={{ flex: 1, textAlign: "center" }}>
-          Products
-        </div>
+        <div className="small muted" style={{ flex: 1, textAlign: "center" }}>Products</div>
         <button
           className="primary"
           type="button"
@@ -361,7 +337,6 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
       {/* Results */}
       <div style={{ marginTop: 8 }}>
         {busy && <div className="small muted">Searching…</div>}
-
         {!busy && query && items.length === 0 && (
           <div className="small muted">No products match “{query}”.</div>
         )}
@@ -389,11 +364,12 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600 }}>
                   {v.productTitle}
+                  {/* hide "Default Title" */}
                   {v.variantTitle ? ` — ${v.variantTitle}` : ""}
                 </div>
                 <div className="small muted">
                   {fmtGBP(v.priceExVat)}
-                  {v.available != null ? ` • ${v.available} available` : ""}
+                  {v.available != null ? ` • ${v.available} in stock` : ""}
                   {v.sku ? ` • SKU ${v.sku}` : ""}
                 </div>
               </div>
