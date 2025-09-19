@@ -1,38 +1,95 @@
-// app/orders/new/ClientNewOrder.tsx
 "use client";
 
-import { useMemo, useState } from "react";
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useMemo, useState, useEffect } from "react";
 import ShopifyProductPicker from "@/components/ShopifyProductPicker";
+
+type Customer = {
+  id: string;
+  salonName?: string | null;
+  customerName?: string | null;
+  customerEmailAddress?: string | null;
+  customerTelephone?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  town?: string | null;
+  county?: string | null;
+  postCode?: string | null;
+  country?: string | null;
+};
 
 type CartLine = {
   variantId: number;
   productTitle: string;
-  title: string;          // variant title (may be "Default Title")
+  title: string;
   sku?: string | null;
   qty: number;
-  priceEx: number;        // unit price ex VAT
+  priceEx: number; // ex VAT
 };
 
-const VAT_RATE = 0.20;
+const VAT_RATE = 0.2;
 
 function money(n: number) {
   return new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(n);
 }
 
-export default function ClientNewOrder() {
-  const sp = useSearchParams();
-  const customerId = sp.get("customerId") || "";
+async function searchCustomers(q: string) {
+  if (!q.trim()) return [];
+  const r = await fetch(`/api/customers?q=${encodeURIComponent(q)}&limit=25`, {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+  if (!r.ok) return [];
+  const j = await r.json().catch(() => []);
+  return Array.isArray(j) ? j : [];
+}
 
+export default function ClientNewOrder({
+  initialCustomer,
+}: {
+  initialCustomer: Customer | null;
+}) {
+  const [customer, setCustomer] = useState<Customer | null>(initialCustomer);
+
+  /** --------- inline “Select customer” search (shown only when none picked) --------- */
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let abort = false;
+    if (!customer && q.trim().length >= 2) {
+      setLoading(true);
+      const t = setTimeout(async () => {
+        const rows = await searchCustomers(q);
+        if (!abort) setResults(rows);
+        setLoading(false);
+      }, 200);
+      return () => {
+        abort = true;
+        clearTimeout(t);
+      };
+    } else {
+      setResults([]);
+    }
+  }, [q, customer]);
+
+  function selectCustomer(c: any) {
+    const id = c?.id || c?.customerId || c?.customer_id;
+    if (!id) return;
+    window.location.href = `/orders/new?customerId=${encodeURIComponent(id)}`;
+  }
+
+  /** --------------------------------- cart --------------------------------- */
   const [cart, setCart] = useState<CartLine[]>([]);
+  const [creating, setCreating] = useState(false);
+  const [draftId, setDraftId] = useState<string | null>(null);
 
   function addToCart(v: {
     id: string | number;
     productTitle: string;
     title: string;
     sku?: string | null;
-    price: string | null; // ex VAT from /api/shopify/products
+    price: string | null; // ex VAT (string from Admin API)
   }) {
     const variantId = Number(v.id);
     const unitEx = v.price ? Number(v.price) : 0;
@@ -62,7 +119,6 @@ export default function ClientNewOrder() {
       prev.map((l) => (l.variantId === variantId ? { ...l, qty: Math.max(1, qty) } : l)),
     );
   }
-
   function removeLine(variantId: number) {
     setCart((prev) => prev.filter((l) => l.variantId !== variantId));
   }
@@ -74,15 +130,24 @@ export default function ClientNewOrder() {
     return { ex, tax, inc };
   }, [cart]);
 
-  // Wire this to your existing draft-order endpoint if you already have one.
-  async function createDraft() {
-    if (cart.length === 0) return;
+  /** -------------------------- Draft creation / reuse -------------------------- */
+  async function ensureDraft(): Promise<string | null> {
+    if (draftId) return draftId;
+    if (!customer) {
+      alert("Select a customer first.");
+      return null;
+    }
+    if (cart.length === 0) {
+      alert("Add at least one product first.");
+      return null;
+    }
     try {
+      setCreating(true);
       const r = await fetch("/api/shopify/draft-orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          customerId, // your server can translate this to Shopify customer id
+          customerId: customer.id,
           lines: cart.map((l) => ({
             variant_id: l.variantId,
             quantity: l.qty,
@@ -93,44 +158,181 @@ export default function ClientNewOrder() {
           vat_rate: VAT_RATE,
         }),
       });
+      setCreating(false);
       if (!r.ok) {
         const t = await r.text();
         alert(`Draft creation failed: ${r.status}\n${t}`);
+        return null;
+      }
+      const j = await r.json().catch(() => null);
+      const id = j?.draft?.id || j?.draft_order?.id || null;
+      if (!id) {
+        alert("Draft created but no ID returned.");
+        return null;
+      }
+      setDraftId(String(id));
+      return String(id);
+    } catch (e: any) {
+      setCreating(false);
+      alert(e?.message || "Draft creation error");
+      return null;
+    }
+  }
+
+  async function handleCreateDraftClick() {
+    await ensureDraft();
+  }
+
+  /** ----------------------------- Payments ----------------------------- */
+  async function payByCard() {
+    const id = await ensureDraft();
+    if (!id || !customer) return;
+
+    try {
+      const r = await fetch("/api/payments/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          draftId: id,
+          customerId: customer.id,
+        }),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        alert(`Checkout creation failed: ${r.status}\n${t}`);
         return;
       }
       const j = await r.json().catch(() => null);
-      const draftId = j?.draft?.id || j?.draft_order?.id || null;
-      if (draftId) {
-        // open admin draft – adjust domain if you want to redirect somewhere else
-        window.open(
-          `https://${(process.env.NEXT_PUBLIC_SHOPIFY_DOMAIN || "")
-            .replace(/^https?:\/\//, "")
-            .replace(/\/$/, "")}/admin/draft_orders/${draftId}`,
-          "_blank",
-        );
+      const url = j?.url || j?.session_url;
+      if (url) {
+        window.location.href = url;
+      } else {
+        alert("No checkout URL returned from server.");
       }
     } catch (e: any) {
-      alert(e?.message || "Draft creation error");
+      alert(e?.message || "Checkout error");
+    }
+  }
+
+  async function createPaymentLink() {
+    const id = await ensureDraft();
+    if (!id || !customer) return;
+
+    try {
+      const r = await fetch("/api/payments/stripe/payment-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          draftId: id,
+          customerId: customer.id,
+        }),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        alert(`Payment link failed: ${r.status}\n${t}`);
+        return;
+      }
+      const j = await r.json().catch(() => null);
+      const url = j?.url || j?.link?.url;
+      if (url) {
+        try {
+          await navigator.clipboard.writeText(url);
+        } catch {}
+        window.open(url, "_blank"); // open the hosted page; you can paste the URL into SMS/email
+      } else {
+        alert("No payment link URL returned from server.");
+      }
+    } catch (e: any) {
+      alert(e?.message || "Payment link error");
     }
   }
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      {/* Context / navigation */}
-      <section className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <div className="row" style={{ gap: 8, alignItems: "center" }}>
-            <Link className="btn" href="/customers">Back</Link>
-            <span className="small muted">
-              {customerId ? `For customer ID: ${customerId}` : "No customer selected"}
-            </span>
+      {/* CUSTOMER PANEL — replaces the old Back/ID block */}
+      {customer ? (
+        <section className="card">
+          <b>Customer</b>
+          <div className="small" style={{ marginTop: 6 }}>
+            <div style={{ fontWeight: 700, fontSize: "1.05rem" }}>
+              {customer.salonName || customer.customerName || "Customer"}
+            </div>
+            <div className="small muted">
+              {customer.customerName || "-"}
+              {customer.customerTelephone ? ` • ${customer.customerTelephone}` : ""}
+              {customer.customerEmailAddress ? ` • ${customer.customerEmailAddress}` : ""}
+            </div>
+            <div style={{ marginTop: 10, whiteSpace: "pre-line" }}>
+              {[customer.addressLine1, customer.addressLine2, customer.town, customer.county, customer.postCode]
+                .filter(Boolean)
+                .join("\n")}
+            </div>
           </div>
-        </div>
-      </section>
+          <div className="right" style={{ marginTop: 10 }}>
+            <a className="btn" href="/customers">Change customer</a>
+          </div>
+        </section>
+      ) : (
+        <section className="card">
+          <b>Select customer</b>
+          <input
+            placeholder="Search name, email, town…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            style={{ marginTop: 8 }}
+          />
+          {q.trim().length < 2 ? (
+            <p className="small muted" style={{ marginTop: 8 }}>
+              Type at least 2 characters to search.
+            </p>
+          ) : loading ? (
+            <p className="small muted" style={{ marginTop: 8 }}>Searching…</p>
+          ) : results.length === 0 ? (
+            <p className="small muted" style={{ marginTop: 8 }}>No matches.</p>
+          ) : (
+            <div style={{ marginTop: 8 }}>
+              {results.map((c: any) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => selectCustomer(c)}
+                  className="result-row"
+                  title="Select customer"
+                >
+                  <div className="result-main">
+                    <div className="result-title">{c.salonName || c.customerName || "Customer"}</div>
+                    <div className="result-sub">
+                      {[c.customerName, c.town, c.customerEmailAddress].filter(Boolean).join(" • ")}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          <style jsx>{`
+            .result-row {
+              width: 100%;
+              display: grid;
+              grid-template-columns: 1fr;
+              gap: 6px;
+              align-items: center;
+              background: #fff;
+              border: 1px solid var(--border);
+              border-radius: 12px;
+              padding: 10px 12px;
+              margin: 8px 0;
+              text-align: left;
+              cursor: pointer;
+              transition: border-color .15s ease, box-shadow .15s ease;
+            }
+            .result-row:hover { border-color: #e9cde1; box-shadow: 0 4px 18px rgba(0,0,0,.06); }
+            .result-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .result-sub { font-size: .9rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+          `}</style>
+        </section>
+      )}
 
-      {/* Customer summary could go here (left as-is in your project) */}
-
-      {/* Shopify-style product search */}
+      {/* PRODUCT SEARCH (Shopify-like) */}
       <ShopifyProductPicker
         placeholder="Search by product title, SKU, vendor…"
         onAdd={(v) =>
@@ -144,7 +346,7 @@ export default function ClientNewOrder() {
         }
       />
 
-      {/* Cart */}
+      {/* CART */}
       <section className="card">
         <h3 style={{ marginTop: 0 }}>Cart</h3>
         {cart.length === 0 ? (
@@ -196,16 +398,25 @@ export default function ClientNewOrder() {
                 <div style={{ minWidth: 100, textAlign: "right" }}>{money(totals.tax)}</div>
               </div>
               <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
-                <div className="small" style={{ fontWeight: 700 }}>Total to refund:</div>
+                <div className="small" style={{ fontWeight: 700 }}>Total:</div>
                 <div style={{ minWidth: 100, textAlign: "right", fontWeight: 700 }}>
                   {money(totals.inc)}
                 </div>
               </div>
             </div>
 
-            <div className="right" style={{ marginTop: 14 }}>
-              <button className="primary" type="button" onClick={createDraft} disabled={!cart.length}>
-                Create Draft Order
+            {/* Actions */}
+            <div className="row" style={{ marginTop: 14, gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <button className="btn" type="button" onClick={handleCreateDraftClick} disabled={creating}>
+                {creating ? "Creating draft…" : draftId ? "Re-create draft" : "Create draft order"}
+              </button>
+
+              <button className="primary" type="button" onClick={payByCard}>
+                Pay by card
+              </button>
+
+              <button className="btn" type="button" onClick={createPaymentLink}>
+                Payment link
               </button>
             </div>
           </div>
