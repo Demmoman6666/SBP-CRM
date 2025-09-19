@@ -22,26 +22,36 @@ type Props = {
 
 /* ---------- helpers ---------- */
 
+// NEW: robustly turn Shopify ids (including GIDs) into a number
+function toNumericId(v: any): number | null {
+  if (v == null) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const s = String(v);
+  // common forms: "1234567890", "gid://shopify/ProductVariant/1234567890"
+  const m = s.match(/(\d+)(?!.*\d)/); // last run of digits
+  return m ? Number(m[1]) : null;
+}
+
 function normaliseRow(row: any): Item | null {
   if (!row) return null;
 
   // Try multiple common shapes from Shopify-search endpoints and normalize.
-  const variantId = Number(
+  const rawId =
     row.variantId ??
-      row.variant_id ??
-      row.variantID ??
-      row.id ??
-      row.variant?.id ??
-      row.node?.id ??
-      NaN
-  );
-  if (!Number.isFinite(variantId)) return null;
+    row.variant_id ??
+    row.variantID ??
+    row.id ??
+    row.variant?.id ??
+    row.node?.id;
+  const variantId = toNumericId(rawId);
+  if (!Number.isFinite(Number(variantId))) return null;
 
   const productTitle =
     row.productTitle ??
     row.product_title ??
     row.product?.title ??
     row.title?.product ??
+    row.node?.product?.title ??
     row.title ??
     "Product";
 
@@ -50,16 +60,21 @@ function normaliseRow(row: any): Item | null {
     row.variant_title ??
     row.variant?.title ??
     row.title?.variant ??
+    row.node?.title ??
     null;
 
-  const sku = row.sku ?? row.variant?.sku ?? null;
+  const sku = row.sku ?? row.variant?.sku ?? row.node?.sku ?? null;
 
+  // price fallbacks (ex VAT preferred, but show something if present)
   const priceExVatRaw =
     row.priceExVat ??
     row.price_ex_vat ??
     row.price ??
     row.variant?.price ??
-    row.unit_price;
+    row.unit_price ??
+    row.price?.amount ??           // MoneyV2
+    row.node?.price ??             // some custom APIs
+    row.node?.priceV2?.amount;     // MoneyV2
   const priceExVat =
     priceExVatRaw == null || priceExVatRaw === ""
       ? null
@@ -72,7 +87,8 @@ function normaliseRow(row: any): Item | null {
     row.inventoryQuantity ??
     row.inventory_quantity ??
     row.inventory ??
-    row.variant?.inventoryQuantity;
+    row.variant?.inventoryQuantity ??
+    row.node?.availableForSaleQuantity;
   const available =
     availableRaw == null || availableRaw === ""
       ? null
@@ -86,10 +102,11 @@ function normaliseRow(row: any): Item | null {
     row.image?.src ??
     row.product?.image?.src ??
     row.variant?.image?.src ??
+    row.node?.image?.src ??
     null;
 
   return {
-    variantId,
+    variantId: Number(variantId),
     productTitle,
     variantTitle: variantTitle ?? null,
     sku: sku ?? null,
@@ -259,8 +276,7 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
                   {v.variantTitle ? ` — ${v.variantTitle}` : ""}
                 </div>
                 <div className="small muted">
-                  {fmtGBP(v.priceExVat)} • {v.available ?? 0} available
-                  {v.sku ? ` • SKU ${v.sku}` : ""}
+                  {fmtGBP(v.priceExVat)}{v.available != null ? ` • ${v.available} available` : ""}{v.sku ? ` • SKU ${v.sku}` : ""}
                 </div>
               </div>
             </label>
