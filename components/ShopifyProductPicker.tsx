@@ -269,6 +269,39 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
     })();
   }, [items]);
 
+  /* ✅ NEW: live stock hydration via /api/shopify/variant-stock
+     Fills `available` for rows that didn't include it from search endpoints. */
+  useEffect(() => {
+    const needStock = items.filter(
+      (i) => (i.available == null || !Number.isFinite(Number(i.available))) && Number.isFinite(i.variantId)
+    );
+    if (needStock.length === 0) return;
+
+    (async () => {
+      try {
+        const r = await fetch("/api/shopify/variant-stock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ ids: needStock.map((m) => m.variantId) }),
+        });
+        const j = await r.json().catch(() => ({}));
+        const map = (j?.stock || {}) as Record<string, number>;
+
+        if (map && typeof map === "object") {
+          setItems((prev) =>
+            prev.map((it) => {
+              const v = map[String(it.variantId)];
+              if (v == null || !Number.isFinite(Number(v))) return it;
+              return { ...it, available: Number(v) };
+            })
+          );
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, [items]);
+
   const selectedList = useMemo(() => Object.values(selected), [selected]);
 
   function toggle(v: Item) {
