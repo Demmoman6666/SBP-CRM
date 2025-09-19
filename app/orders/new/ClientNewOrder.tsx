@@ -111,10 +111,9 @@ export default function ClientNewOrder() {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  // Payment Link UI state
+  const [checkingOut, setCheckingOut] = useState(false);
   const [creatingLink, setCreatingLink] = useState(false);
-  const [linkMsg, setLinkMsg] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState<string | null>(null);
 
   // Hide search after first add; allow toggling back on
   const [showSearch, setShowSearch] = useState(true);
@@ -207,7 +206,7 @@ export default function ClientNewOrder() {
     return { net, vat, gross };
   }, [cart]);
 
-  async function onSubmit(e: React.FormEvent) {
+  async function createDraftOrder(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
 
@@ -244,18 +243,35 @@ export default function ClientNewOrder() {
     }
   }
 
-  async function onCreatePaymentLink() {
-    setLinkMsg(null);
+  async function handlePayByCard() {
     setError(null);
+    setLinkCopied(null);
+    if (!customerId || cart.length === 0) return;
 
-    if (!customerId) {
-      setError("Missing customerId. Open this page from a customer profile.");
-      return;
+    try {
+      setCheckingOut(true);
+      const res = await fetch("/api/payments/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerId,
+          lines: cart.map((l) => ({ variantId: l.variantId, quantity: l.quantity })),
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.url) throw new Error(json?.error || "Failed to start checkout");
+      window.open(json.url as string, "_blank");
+    } catch (err: any) {
+      setError(err?.message || "Failed to start checkout");
+    } finally {
+      setCheckingOut(false);
     }
-    if (cart.length === 0) {
-      setError("Add at least one item to the order.");
-      return;
-    }
+  }
+
+  async function handleCreatePaymentLink() {
+    setError(null);
+    setLinkCopied(null);
+    if (!customerId || cart.length === 0) return;
 
     try {
       setCreatingLink(true);
@@ -268,22 +284,21 @@ export default function ClientNewOrder() {
         }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Failed to create payment link");
+      if (!res.ok || !json?.url) throw new Error(json?.error || "Failed to create payment link");
 
-      // Open in a new tab and copy to clipboard for convenience
-      if (json?.url) {
-        try {
-          await navigator.clipboard.writeText(json.url);
-          setLinkMsg("Payment link copied to clipboard.");
-        } catch {
-          setLinkMsg("Payment link ready.");
-        }
-        window.open(json.url, "_blank");
+      // Copy to clipboard for convenience and open in a new tab
+      try {
+        await navigator.clipboard.writeText(json.url as string);
+        setLinkCopied("Payment link copied to clipboard.");
+      } catch {
+        setLinkCopied(null);
       }
+      window.open(json.url as string, "_blank");
     } catch (err: any) {
       setError(err?.message || "Failed to create payment link");
     } finally {
       setCreatingLink(false);
+      setTimeout(() => setLinkCopied(null), 3000);
     }
   }
 
@@ -420,7 +435,7 @@ export default function ClientNewOrder() {
                       onChange={(e) => updateQty(l.variantId, Number(e.target.value || 1))}
                       style={{ width: 70 }}
                     />
-                    {/* Totals: ex VAT first, inc VAT underneath */}
+                    {/* Totals: ex VAT first, inc VAT underneath (swapped) */}
                     <div style={{ textAlign: "right" }}>
                       <div>{fmt(lineNet)} ex VAT</div>
                       <div className="small muted">{fmt(lineGross)} inc VAT</div>
@@ -439,18 +454,35 @@ export default function ClientNewOrder() {
               </div>
             </div>
             <div className="small muted" style={{ textAlign: "right" }}>
-              Displayed totals include VAT. Stripe Payment Link uses VAT-inclusive unit prices.
+              Displayed totals include VAT. Shopify will calculate final tax on the order.
             </div>
           </div>
         )}
       </section>
 
-      <form onSubmit={onSubmit} className="right row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      {/* Actions */}
+      <form onSubmit={createDraftOrder} className="right row" style={{ gap: 8, alignItems: "center" }}>
         {error && <div className="form-error" style={{ marginRight: "auto" }}>{error}</div>}
-        {linkMsg && <div className="small" style={{ marginRight: "auto" }}>{linkMsg}</div>}
+        {linkCopied && <div className="small" style={{ marginRight: "auto", color: "#059669" }}>{linkCopied}</div>}
 
-        <button className="btn" type="button" onClick={onCreatePaymentLink} disabled={creatingLink || cart.length === 0}>
-          {creatingLink ? "Creating payment link…" : "Create Payment Link"}
+        <button
+          className="btn"
+          type="button"
+          onClick={handleCreatePaymentLink}
+          disabled={creatingLink || cart.length === 0 || !customerId}
+          title="Generate a shareable payment link"
+        >
+          {creatingLink ? "Creating link…" : "Create payment link"}
+        </button>
+
+        <button
+          className="btn"
+          type="button"
+          onClick={handlePayByCard}
+          disabled={checkingOut || cart.length === 0 || !customerId}
+          title="Open Stripe Checkout to pay now"
+        >
+          {checkingOut ? "Opening checkout…" : "Pay by card"}
         </button>
 
         <button className="primary" type="submit" disabled={submitting || cart.length === 0}>
