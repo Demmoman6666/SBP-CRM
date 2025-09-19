@@ -1,7 +1,7 @@
 // app/orders/[id]/refund/page.tsx
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import RefundClient, { type Line as RefundLine } from "./RefundClient";
+import RefundClient from "./RefundClient";
 
 function money(n?: any, currency?: string) {
   if (n == null) return "-";
@@ -40,19 +40,19 @@ export default async function RefundPage({ params }: { params: { id: string } })
   const currency = order.currency || "GBP";
 
   // Build the shape RefundClient expects
-  const lines: RefundLine[] = order.lineItems.map((li) => ({
+  const lines = order.lineItems.map((li) => ({
     id: li.id,
     maxQty: Number(li.quantity || 0),
-    // pass through for Shopify's refund API mapping
+    // required by RefundClient for Shopify refunds
     shopifyLineItemId: li.shopifyLineItemId ? String(li.shopifyLineItemId) : null,
-    // unit price (ex VAT) so the client can show a rough calc if needed
+    // unit price (ex VAT) for preview maths
     unitNet:
       typeof li.price === "number"
         ? li.price
         : Number.isFinite(Number(li.price))
         ? Number(li.price)
         : null,
-    // optional display helpers (RefundClient may ignore these)
+    // optional display helpers
     productTitle: li.productTitle ?? li.variantTitle ?? null,
     sku: li.sku ?? null,
   }));
