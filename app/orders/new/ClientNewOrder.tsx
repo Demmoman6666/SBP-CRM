@@ -110,10 +110,15 @@ export default function ClientNewOrder() {
   const [hits, setHits] = useState<ProductHit[]>([]);
   const [cart, setCart] = useState<CartLine[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // submission states
   const [submitting, setSubmitting] = useState(false);
   const [checkingOut, setCheckingOut] = useState(false);
   const [creatingLink, setCreatingLink] = useState(false);
-  const [linkCopied, setLinkCopied] = useState<string | null>(null);
+
+  // payment link UI state
+  const [paymentLinkUrl, setPaymentLinkUrl] = useState<string | null>(null);
+  const [linkMsg, setLinkMsg] = useState<string | null>(null);
 
   // Hide search after first add; allow toggling back on
   const [showSearch, setShowSearch] = useState(true);
@@ -245,7 +250,8 @@ export default function ClientNewOrder() {
 
   async function handlePayByCard() {
     setError(null);
-    setLinkCopied(null);
+    setPaymentLinkUrl(null);
+    setLinkMsg(null);
     if (!customerId || cart.length === 0) return;
 
     try {
@@ -270,7 +276,8 @@ export default function ClientNewOrder() {
 
   async function handleCreatePaymentLink() {
     setError(null);
-    setLinkCopied(null);
+    setLinkMsg(null);
+    setPaymentLinkUrl(null);
     if (!customerId || cart.length === 0) return;
 
     try {
@@ -286,19 +293,33 @@ export default function ClientNewOrder() {
       const json = await res.json();
       if (!res.ok || !json?.url) throw new Error(json?.error || "Failed to create payment link");
 
-      // Copy to clipboard for convenience and open in a new tab
+      const url = String(json.url);
+      setPaymentLinkUrl(url);
+
+      // Try to copy automatically (and show a message)
       try {
-        await navigator.clipboard.writeText(json.url as string);
-        setLinkCopied("Payment link copied to clipboard.");
+        await navigator.clipboard.writeText(url);
+        setLinkMsg("Payment link copied to clipboard.");
       } catch {
-        setLinkCopied(null);
+        setLinkMsg("Payment link created.");
       }
-      window.open(json.url as string, "_blank");
     } catch (err: any) {
       setError(err?.message || "Failed to create payment link");
     } finally {
       setCreatingLink(false);
-      setTimeout(() => setLinkCopied(null), 3000);
+      setTimeout(() => setLinkMsg(null), 3000);
+    }
+  }
+
+  function copyLinkManually() {
+    if (!paymentLinkUrl) return;
+    try {
+      navigator.clipboard.writeText(paymentLinkUrl);
+      setLinkMsg("Copied!");
+      setTimeout(() => setLinkMsg(null), 1500);
+    } catch {
+      setLinkMsg("Copy failed");
+      setTimeout(() => setLinkMsg(null), 1500);
     }
   }
 
@@ -355,7 +376,7 @@ export default function ClientNewOrder() {
           />
           {loading ? (
             <div className="small muted" style={{ marginTop: 8 }}>Searching…</div>
-          ) : hits.length === 0 && query.trim() ? (
+          ) : hits.length === 0 && query.trim ? (
             <div className="small muted" style={{ marginTop: 8 }}>No results.</div>
           ) : (
             <div className="grid" style={{ gap: 8, marginTop: 10 }}>
@@ -461,10 +482,10 @@ export default function ClientNewOrder() {
       </section>
 
       {/* Actions */}
-      <form onSubmit={createDraftOrder} className="right row" style={{ gap: 8, alignItems: "center" }}>
+      <form onSubmit={createDraftOrder} className="right row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         {error && <div className="form-error" style={{ marginRight: "auto" }}>{error}</div>}
-        {linkCopied && <div className="small" style={{ marginRight: "auto", color: "#059669" }}>{linkCopied}</div>}
 
+        {/* Payment Link button */}
         <button
           className="btn"
           type="button"
@@ -475,6 +496,7 @@ export default function ClientNewOrder() {
           {creatingLink ? "Creating link…" : "Create payment link"}
         </button>
 
+        {/* Pay by card (Stripe Checkout) */}
         <button
           className="btn"
           type="button"
@@ -485,10 +507,34 @@ export default function ClientNewOrder() {
           {checkingOut ? "Opening checkout…" : "Pay by card"}
         </button>
 
+        {/* Draft order */}
         <button className="primary" type="submit" disabled={submitting || cart.length === 0}>
           {submitting ? "Creating Draft Order…" : "Create Draft Order"}
         </button>
       </form>
+
+      {/* Payment Link panel */}
+      {paymentLinkUrl && (
+        <section className="card" style={{ marginTop: 12 }}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>Payment link</h3>
+            {linkMsg && <span className="small muted">{linkMsg}</span>}
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              readOnly
+              value={paymentLinkUrl}
+              onFocus={(e) => e.currentTarget.select()}
+              style={{ flex: 1, minWidth: 260 }}
+            />
+            <button className="btn" type="button" onClick={copyLinkManually}>Copy</button>
+            <a className="btn" href={paymentLinkUrl} target="_blank" rel="noreferrer">Open</a>
+          </div>
+          <p className="small muted" style={{ marginTop: 8 }}>
+            Share this URL with the customer. When paid, your Stripe webhook will create a paid Shopify order automatically.
+          </p>
+        </section>
+      )}
     </>
   );
 }
