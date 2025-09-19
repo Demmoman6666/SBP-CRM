@@ -23,7 +23,7 @@ type CartLine = {
   title: string;
   sku?: string | null;
   qty: number;
-  priceEx: number; // ex VAT
+  priceEx: number; // unit EX VAT
 };
 
 const VAT_RATE = 0.2;
@@ -46,7 +46,7 @@ async function searchCustomers(q: string) {
 export default function ClientNewOrder({ initialCustomer }: { initialCustomer: Customer | null }) {
   const [customer, setCustomer] = useState<Customer | null>(initialCustomer);
 
-  /** --------- inline “Select customer” search (shown only when none picked) --------- */
+  // ------------------------ Select customer (when none) ------------------------
   const [q, setQ] = useState("");
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -75,7 +75,7 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
     window.location.href = `/orders/new?customerId=${encodeURIComponent(id)}`;
   }
 
-  /** --------------------------------- cart --------------------------------- */
+  // ---------------------------------- cart ----------------------------------
   const [cart, setCart] = useState<CartLine[]>([]);
   const [creating, setCreating] = useState(false);
   const [draftId, setDraftId] = useState<string | null>(null);
@@ -85,7 +85,7 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
     productTitle: string;
     title: string;
     sku?: string | null;
-    price: string | null; // ex VAT (string from Admin API)
+    price: string | null; // unit EX VAT as string from Admin API
   }) {
     const variantId = Number(v.id);
     const unitEx = v.price ? Number(v.price) : 0;
@@ -126,7 +126,7 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
     return { ex, tax, inc };
   }, [cart]);
 
-  /** -------------------------- Draft creation / reuse -------------------------- */
+  // ----------------------- Draft creation / reuse -----------------------
   async function ensureDraft(): Promise<string | null> {
     if (draftId) return draftId;
     if (!customer) {
@@ -141,34 +141,47 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
     try {
       setCreating(true);
 
-      // ✅ FIX: send `line_items` (not `lines`) to match your API / Shopify
+      // Build Shopify-style line items once
+      const items = cart.map((l) => ({
+        variant_id: l.variantId,
+        quantity: l.qty,
+        price: Number(l.priceEx), // EX VAT
+        title: l.productTitle,
+      }));
+
+      // POST a payload that’s compatible with both your custom handler and Shopify’s draft_order shape.
       const payload = {
         customerId: customer.id,
-        line_items: cart.map((l) => ({
-          variant_id: l.variantId,
-          quantity: l.qty,
-          price: Number(l.priceEx), // ex VAT, numeric is fine
-          title: l.productTitle,
-        })),
-        // Optional hints the server may use:
-        taxes_included: false,
+        // old handler shape:
+        lines: items,
+        // new handler shape:
+        line_items: items,
+        // direct Shopify shape (in case your route forwards this as-is):
+        draft_order: {
+          line_items: items,
+          taxes_included: false,
+          use_customer_default_address: true,
+        },
         vat_rate: VAT_RATE,
       };
 
       const r = await fetch("/api/shopify/draft-orders", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug-Cart-Count": String(cart.length),
+        },
         body: JSON.stringify(payload),
       });
+
       setCreating(false);
 
       if (!r.ok) {
         const t = await r.text();
-        // If server still objects, show the exact body for debugging
         console.error("Draft create failed:", r.status, t, payload);
-        alert(`Draft creation failed: ${r.status}\n${t}`);
+        alert(`Draft creation failed: ${r.status}\n${t || "(no body)"}`);
         return null;
-      }
+        }
 
       const j = await r.json().catch(() => null);
       const id =
@@ -197,7 +210,7 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
     await ensureDraft();
   }
 
-  /** ----------------------------- Payments ----------------------------- */
+  // ----------------------------- Payments -----------------------------
   async function payByCard() {
     const id = await ensureDraft();
     if (!id || !customer) return;
@@ -215,11 +228,8 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
       }
       const j = await r.json().catch(() => null);
       const url = j?.url || j?.session_url;
-      if (url) {
-        window.location.href = url;
-      } else {
-        alert("No checkout URL returned from server.");
-      }
+      if (url) window.location.href = url;
+      else alert("No checkout URL returned from server.");
     } catch (e: any) {
       alert(e?.message || "Checkout error");
     }
@@ -243,9 +253,7 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
       const j = await r.json().catch(() => null);
       const url = j?.url || j?.link?.url;
       if (url) {
-        try {
-          await navigator.clipboard.writeText(url);
-        } catch {}
+        try { await navigator.clipboard.writeText(url); } catch {}
         window.open(url, "_blank");
       } else {
         alert("No payment link URL returned from server.");
@@ -340,7 +348,7 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
         </section>
       )}
 
-      {/* PRODUCT SEARCH (Shopify-like) */}
+      {/* PRODUCT SEARCH */}
       <ShopifyProductPicker
         placeholder="Search by product title, SKU, vendor…"
         onAdd={(v) =>
@@ -361,39 +369,43 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
           <p className="small muted">No items yet.</p>
         ) : (
           <div style={{ marginTop: 8 }}>
-            {cart.map((l) => (
-              <div
-                key={l.variantId}
-                className="row"
-                style={{
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "8px 0",
-                  borderBottom: "1px solid var(--border)",
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 600 }}>{l.productTitle}</div>
-                  {l.title && l.title !== "Default Title" && (
-                    <div className="small muted">{l.title}</div>
-                  )}
-                  {l.sku && <div className="small muted">SKU: {l.sku}</div>}
+            {cart.map((l) => {
+              const lineEx = l.priceEx * l.qty;
+              const lineVat = lineEx * VAT_RATE;
+              const lineInc = lineEx + lineVat;
+              return (
+                <div
+                  key={l.variantId}
+                  className="line"
+                >
+                  <div className="line-left">
+                    <div className="line-title">{l.productTitle}</div>
+                    {l.title && l.title !== "Default Title" && (
+                      <div className="small muted">{l.title}</div>
+                    )}
+                    {l.sku && <div className="small muted">SKU: {l.sku}</div>}
+                    <div className="line-prices">
+                      <div className="small">Ex VAT: <b>{money(lineEx)}</b></div>
+                      <div className="small">VAT (20%): <b>{money(lineVat)}</b></div>
+                      <div className="small">Inc VAT: <b>{money(lineInc)}</b></div>
+                    </div>
+                  </div>
+
+                  <div className="line-right">
+                    <input
+                      className="qty"
+                      type="number"
+                      min={1}
+                      value={l.qty}
+                      onChange={(e) => updateQty(l.variantId, Number(e.target.value || "1"))}
+                    />
+                    <button type="button" className="btn" onClick={() => removeLine(l.variantId)}>
+                      Remove
+                    </button>
+                  </div>
                 </div>
-                <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                  <input
-                    type="number"
-                    min={1}
-                    value={l.qty}
-                    onChange={(e) => updateQty(l.variantId, Number(e.target.value || "1"))}
-                    style={{ width: 70 }}
-                  />
-                  <div className="small">{money(l.priceEx)}</div>
-                  <button type="button" className="btn" onClick={() => removeLine(l.variantId)}>
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
 
             {/* Totals */}
             <div style={{ marginTop: 12 }}>
@@ -430,6 +442,31 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
           </div>
         )}
       </section>
+
+      <style jsx>{`
+        .line {
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: 12px;
+          align-items: center;
+          padding: 10px 0;
+          border-bottom: 1px solid var(--border);
+        }
+        .line-left { min-width: 0; }
+        .line-title { font-weight: 600; }
+        .line-prices { display: grid; grid-template-columns: repeat(3, max-content); gap: 12px; margin-top: 6px; }
+        .line-right { display: flex; gap: 8px; align-items: center; }
+        .qty {
+          width: 64px;
+          height: 40px;
+          text-align: center;
+          border-radius: 12px;
+          font-variant-numeric: tabular-nums;
+        }
+        @media (max-width: 480px) {
+          .line-prices { grid-template-columns: 1fr; gap: 2px; }
+        }
+      `}</style>
     </div>
   );
 }
