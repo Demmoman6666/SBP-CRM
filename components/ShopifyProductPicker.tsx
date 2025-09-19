@@ -6,180 +6,168 @@ import { useEffect, useMemo, useState } from "react";
 type ApiVariant = {
   id: string | number;
   title: string;
+  price: string | null;             // ex VAT (Shopify Admin scalar Money)
   sku?: string | null;
-  price: string | null;       // ex VAT (string from API)
   available?: boolean | null;
-  stock?: number | null;      // live stock when available
+  stock?: number | null;
+  barcode?: string | null;
 };
 
 type ApiProduct = {
   id: string | number;
   title: string;
   vendor?: string | null;
+  status?: string | null;
   image?: { src: string } | null;
   variants: ApiVariant[];
 };
 
-type PickedVariant = {
+type PickValue = {
   variantId: number;
   productTitle: string;
-  title: string;
-  sku?: string | null;
-  priceEx: number;
-  image?: string | null;
+  variantTitle: string;
+  sku: string | null;
+  priceExVat: number;               // numeric ex VAT
+  stock: number | null;
+  image: string | null;
 };
 
 type Props = {
   placeholder?: string;
-  /** Called when a variant row is tapped/clicked */
-  onPick: (v: PickedVariant) => void;
+  onPick: (v: PickValue) => void;
 };
-
-const VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE ?? "0.20");
-
-const money = (n: number) =>
-  new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
-    Number.isFinite(n) ? n : 0
-  );
 
 export default function ShopifyProductPicker({ placeholder, onPick }: Props) {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
-  const [rows, setRows] = useState<ApiProduct[]>([]);
+  const [results, setResults] = useState<ApiProduct[]>([]);
 
-  // debounce search
+  // debounce user input
   useEffect(() => {
     const t = setTimeout(async () => {
       const term = q.trim();
-      if (term.length < 2) {
-        setRows([]);
+      if (!term) {
+        setResults([]);
         return;
       }
       setLoading(true);
       try {
-        const r = await fetch(`/api/shopify/products?q=${encodeURIComponent(term)}`, {
+        const res = await fetch(`/api/shopify/products?q=${encodeURIComponent(term)}&first=15`, {
           cache: "no-store",
         });
-        if (r.ok) {
-          const json = (await r.json()) as ApiProduct[];
-          setRows(Array.isArray(json) ? json : []);
+        if (res.ok) {
+          const json = (await res.json()) as ApiProduct[];
+          setResults(Array.isArray(json) ? json : []);
         } else {
-          setRows([]);
+          setResults([]);
         }
-      } catch {
-        setRows([]);
       } finally {
         setLoading(false);
       }
-    }, 250);
+    }, 220);
     return () => clearTimeout(t);
   }, [q]);
 
-  // flatten to product → variants list
-  const flat = useMemo(
-    () =>
-      rows.flatMap((p) =>
-        (p.variants || []).map((v) => ({
-          productTitle: p.title,
-          productImage: p.image?.src ?? null,
-          variantId: Number(v.id),
-          variantTitle: v.title,
-          sku: v.sku ?? null,
-          priceEx: Number(v.price ?? 0),
-          stock: typeof v.stock === "number" ? v.stock : null,
-        }))
-      ),
-    [rows]
-  );
+  const flat = useMemo(() => {
+    const rows: Array<{ p: ApiProduct; v: ApiVariant }> = [];
+    for (const p of results) {
+      for (const v of p.variants || []) rows.push({ p, v });
+    }
+    return rows;
+  }, [results]);
 
   return (
     <div className="grid" style={{ gap: 10 }}>
       <input
-        placeholder={placeholder ?? "Search by product title, SKU, vendor…"}
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        style={{ height: 44 }}
+        placeholder={placeholder || "Search products…"}
+        aria-label="Search products"
       />
 
-      {/* Results */}
-      <div className="grid" style={{ gap: 6 }}>
-        {loading && <div className="small muted">Searching…</div>}
-        {!loading && q.trim().length >= 2 && flat.length === 0 && (
-          <div className="small muted">No results.</div>
-        )}
+      {/* results */}
+      {q.trim() && (
+        <div className="grid" style={{ gap: 8 }}>
+          {loading && <div className="small muted">Searching…</div>}
 
-        {flat.map((r) => {
-          const inc = r.priceEx * (1 + VAT_RATE);
-          return (
-            <button
-              key={`${r.variantId}`}
-              type="button"
-              onClick={() =>
-                onPick({
-                  variantId: r.variantId,
-                  productTitle: r.productTitle,
-                  title: r.variantTitle,
-                  sku: r.sku ?? undefined,
-                  priceEx: r.priceEx,
-                  image: r.productImage,
-                })
-              }
-              className="btn"
-              style={{
-                // Shopify-like row (no pink)
-                background: "#fff",
-                borderColor: "var(--border)",
-                textAlign: "left",
-                display: "grid",
-                gridTemplateColumns: "46px 1fr auto",
-                alignItems: "center",
-                gap: 12,
-                padding: 10,
-              }}
-            >
-              {/* image */}
-              {r.productImage ? (
-                <img
-                  src={r.productImage}
-                  alt=""
-                  width={46}
-                  height={46}
-                  style={{ borderRadius: 10, objectFit: "cover" }}
-                />
-              ) : (
-                <div
+          {!loading && flat.length === 0 && (
+            <div className="small muted">No matches.</div>
+          )}
+
+          {!loading &&
+            flat.map(({ p, v }) => {
+              const priceExVat = Number(v.price ?? "0");
+              const image = p.image?.src ?? null;
+              return (
+                <button
+                  key={`${p.id}-${v.id}`}
+                  type="button"
+                  className="card"
                   style={{
-                    width: 46,
-                    height: 46,
-                    borderRadius: 10,
-                    background: "#f3f4f6",
-                    border: "1px solid var(--border)",
+                    display: "grid",
+                    gridTemplateColumns: "40px 1fr auto",
+                    gap: 12,
+                    alignItems: "center",
+                    padding: 10,
+                    textAlign: "left",
                   }}
-                />
-              )}
+                  onClick={() =>
+                    onPick({
+                      variantId: Number(v.id),
+                      productTitle: p.title,
+                      variantTitle: v.title,
+                      sku: v.sku ?? null,
+                      priceExVat: Number.isFinite(priceExVat) ? priceExVat : 0,
+                      stock: typeof v.stock === "number" ? v.stock : null,
+                      image,
+                    })
+                  }
+                >
+                  {/* thumb */}
+                  <div
+                    style={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "#fff",
+                      display: "grid",
+                      placeItems: "center",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {image ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={image} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ) : (
+                      <div className="small muted">—</div>
+                    )}
+                  </div>
 
-              {/* titles */}
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {r.productTitle}
-                </div>
-                <div className="small muted" style={{ marginTop: 2 }}>
-                  {r.sku ? `SKU ${r.sku}` : r.variantTitle}
-                  {typeof r.stock === "number" ? ` • ${r.stock} available` : ""}
-                </div>
-              </div>
+                  {/* text */}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {p.title}
+                    </div>
+                    <div className="small muted" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      SKU {v.sku || "—"}
+                    </div>
+                  </div>
 
-              {/* price (EX VAT) on the right */}
-              <div className="small" style={{ justifySelf: "end", textAlign: "right" }}>
-                <div>{money(r.priceEx)}</div>
-                <div className="muted" style={{ fontSize: ".8rem" }}>
-                  ({money(inc)} inc VAT)
-                </div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
+                  {/* price/stock */}
+                  <div className="small" style={{ textAlign: "right" }}>
+                    {new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
+                      Number.isFinite(priceExVat) ? priceExVat : 0
+                    )}
+                    <div className="small muted">
+                      {typeof v.stock === "number" ? `${v.stock} available` : ""}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+        </div>
+      )}
     </div>
   );
 }
