@@ -22,36 +22,33 @@ export async function POST(req: Request) {
       return NextResponse.json({ prices: {} }, { status: 200 });
     }
 
-    // Fetch variants in small batches
+    // Fetch each variant directly: /variants/{id}.json
     const out: Record<
       string,
       { priceExVat: number; variantTitle?: string | null; sku?: string | null }
     > = {};
-    const size = 50;
-    for (let i = 0; i < ids.length; i += size) {
-      const slice = ids.slice(i, i + size);
-      const qs = encodeURIComponent(slice.join(","));
-      const res = await shopifyRest(
-        `/variants.json?ids=${qs}&fields=id,price,sku,title`,
-        { method: "GET" }
-      );
-      if (!res.ok) continue;
 
-      const json = await res.json().catch(() => ({}));
-      const variants: any[] = Array.isArray(json?.variants) ? json.variants : [];
+    for (const id of ids) {
+      try {
+        const res = await shopifyRest(`/variants/${id}.json?fields=id,price,sku,title`, {
+          method: "GET",
+        });
+        if (!res.ok) continue;
 
-      for (const v of variants) {
+        const j = await res.json().catch(() => ({}));
+        const v = j?.variant;
         const inc = Number(v?.price);
         if (!Number.isFinite(inc)) continue;
 
-        // Convert to ex VAT (Shopify store prices are typically VAT-inclusive in the UK)
+        // Convert to ex VAT (UK stores usually store inc-VAT prices)
         const ex = inc / (1 + VAT_RATE);
-        const key = String(v?.id);
-        out[key] = {
+        out[String(id)] = {
           priceExVat: Math.round(ex * 100) / 100,
           variantTitle: v?.title ?? null,
           sku: v?.sku ?? null,
         };
+      } catch {
+        // skip this id
       }
     }
 
