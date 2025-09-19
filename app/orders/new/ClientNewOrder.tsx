@@ -4,151 +4,140 @@
 import { useEffect, useMemo, useState } from "react";
 import ShopifyProductPicker from "@/components/ShopifyProductPicker";
 
-// ---- Types ---------------------------------------------------------------
 type Customer = {
   id: string;
-  salonName?: string | null;
-  customerName?: string | null;
-  customerEmailAddress?: string | null;
-  customerTelephone?: string | null;
-  addressLine1?: string | null;
-  addressLine2?: string | null;
-  town?: string | null;
-  county?: string | null;
-  postCode?: string | null;
-  country?: string | null;
-  shopifyCustomerId?: string | null;
+  salonName: string | null;
+  customerName: string | null;
+  addressLine1: string | null;
+  addressLine2: string | null;
+  town: string | null;
+  county: string | null;
+  postCode: string | null;
+  country: string | null; // e.g. "GB"
+  customerTelephone: string | null;
+  customerEmailAddress: string | null;
 };
 
 type CartLine = {
-  variantId: number;         // Shopify variant id (numeric)
+  variantId: number;
   productTitle: string;
-  title: string;             // variant title
+  title: string;
   sku?: string | null;
-  priceEx: number;           // unit EX VAT
+  priceEx: number; // unit ex VAT
   qty: number;
   image?: string | null;
 };
 
-const VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE ?? "0.20");
-
-// money helper
-const formatGBP = (n: number) =>
-  new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
-    Number.isFinite(n) ? n : 0
-  );
-
-const clampQty = (v: any) => {
-  const n = parseInt(String(v), 10);
-  return Number.isFinite(n) && n > 0 ? n : 1;
+type Props = {
+  initialCustomer?: Customer | null;
 };
 
-// ---- Component -----------------------------------------------------------
-export default function ClientNewOrder() {
-  // detect customerId from the URL so the page works when opened as /orders/new?customerId=...
-  const [customerId, setCustomerId] = useState<string | null>(null);
-  useEffect(() => {
-    try {
-      const u = new URL(window.location.href);
-      const cid = u.searchParams.get("customerId");
-      setCustomerId(cid);
-    } catch {}
-  }, []);
+const VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE ?? "0.20");
 
-  // Load a light customer card for the header (optional)
-  const [customer, setCustomer] = useState<Customer | null>(null);
-  useEffect(() => {
-    if (!customerId) return;
-    (async () => {
-      try {
-        const res = await fetch(`/api/customers/basic?id=${encodeURIComponent(customerId)}`, {
-          cache: "no-store",
-        });
-        if (res.ok) setCustomer(await res.json());
-      } catch {}
-    })();
-  }, [customerId]);
+const money = (n: number) =>
+  new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "GBP",
+  }).format(Number.isFinite(n) ? n : 0);
+
+export default function ClientNewOrder({ initialCustomer }: Props) {
+  // customer
+  const [customer, setCustomer] = useState<Customer | null>(
+    initialCustomer ?? null
+  );
+
+  // show/hide picker
+  const [showPicker, setShowPicker] = useState(true);
 
   // cart
   const [cart, setCart] = useState<CartLine[]>([]);
-  const addToCart = (v: {
-    variantId: number | string;
-    productTitle: string;
-    title: string;
-    sku?: string | null;
-    priceEx: number | string | null;
-    image?: string | null;
-  }) => {
-    const vid = Number(v.variantId);
-    const priceEx = Number(v.priceEx ?? 0);
-    if (!Number.isFinite(vid) || !Number.isFinite(priceEx)) return;
+  const [creating, setCreating] = useState<false | "draft" | "checkout" | "plink">(false);
+  const [draftId, setDraftId] = useState<number | null>(null);
 
+  // helpers
+  function addToCart(line: Omit<CartLine, "qty"> & { qty?: number }) {
     setCart((prev) => {
-      const i = prev.findIndex((x) => x.variantId === vid);
-      if (i >= 0) {
+      const idx = prev.findIndex((x) => x.variantId === line.variantId);
+      if (idx >= 0) {
         const next = [...prev];
-        next[i] = { ...next[i], qty: next[i].qty + 1 };
+        next[idx] = { ...next[idx], qty: next[idx].qty + (line.qty ?? 1) };
         return next;
       }
-      return [
-        ...prev,
-        {
-          variantId: vid,
-          productTitle: v.productTitle,
-          title: v.title,
-          sku: v.sku ?? null,
-          priceEx,
-          qty: 1,
-          image: v.image ?? null,
-        },
-      ];
+      return [...prev, { ...line, qty: line.qty ?? 1 }];
     });
-  };
-  const updateQty = (vid: number, qty: any) =>
-    setCart((prev) => prev.map((l) => (l.variantId === vid ? { ...l, qty: clampQty(qty) } : l)));
-  const removeLine = (vid: number) => setCart((prev) => prev.filter((l) => l.variantId !== vid));
+  }
 
-  // totals (cart-wide)
+  function setQty(variantId: number, qty: number) {
+    setCart((prev) =>
+      prev.map((l) => (l.variantId === variantId ? { ...l, qty } : l))
+    );
+  }
+
+  function removeLine(variantId: number) {
+    setCart((prev) => prev.filter((l) => l.variantId !== variantId));
+  }
+
+  // totals
   const totals = useMemo(() => {
-    let net = 0;
-    for (const l of cart) net += l.priceEx * l.qty;
-    const vat = net * VAT_RATE;
-    const inc = net + vat;
-    return { net, vat, inc };
+    const ex = cart.reduce((s, l) => s + l.priceEx * l.qty, 0);
+    const vat = ex * VAT_RATE;
+    const inc = ex + vat;
+    return { ex, vat, inc };
   }, [cart]);
 
-  // --- Draft handling -----------------------------------------------------
-  const [creating, setCreating] = useState(false);
-  const [draftId, setDraftId] = useState<string | null>(null);
+  // Ensure a Shopify draft exists (or re-create). Posts line items so server always sees them.
+  async function ensureDraft(): Promise<number> {
+    if (!cart.length) throw new Error("Cart is empty");
 
-  /** Always ensure a draft exists on Shopify for the current cart. */
-  async function ensureDraft(): Promise<string> {
-    if (!cart.length) throw new Error("Add at least one product before continuing.");
-    setCreating(true);
+    setCreating("draft");
     try {
-      const body = {
-        customerId: customerId, // CRM id (server will attach Shopify customer/address)
-        lines: cart.map((l) => ({
-          variant_id: l.variantId,
-          quantity: l.qty,
-          price: l.priceEx, // EX VAT; server sets taxes_included:false
-        })),
+      const line_items = cart.map((l) => ({
+        variant_id: l.variantId,
+        quantity: l.qty,
+      }));
+
+      // tolerate both shapes: original `line_items` and a namespaced backup
+      const body: any = {
+        customerId: customer?.id ?? null,
+        email: customer?.customerEmailAddress ?? null,
+        shipping_address: customer
+          ? {
+            address1: customer.addressLine1 ?? "",
+            address2: customer.addressLine2 ?? "",
+            city: customer.town ?? "",
+            province: customer.county ?? "",
+            zip: customer.postCode ?? "",
+            country_code: customer.country ?? "GB",
+            name: customer.salonName || customer.customerName || "",
+            phone: customer.customerTelephone ?? "",
+          }
+          : undefined,
+        line_items,
+        draft_order_line_items: line_items,
       };
 
-      const res = await fetch("/api/shopify/draft-orders", {
+      const resp = await fetch("/api/shopify/draft-orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
 
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({}));
-        throw new Error(String(e?.error || `Draft create failed: ${res.status}`));
+      if (!resp.ok) {
+        const t = await resp.text().catch(() => "");
+        throw new Error(`Draft creation failed: ${resp.status} ${t}`);
       }
 
-      const j = await res.json();
-      const id = String(j?.id || j?.draft_order?.id);
-      if (!id) throw new Error("Draft created but no id returned.");
+      const json = await resp.json().catch(() => ({} as any));
+      // Accept either {id} or {draft_order:{id}} or the full draft payload
+      const id: number | undefined =
+        json?.id ??
+        json?.draft_order?.id ??
+        json?.draft_order?.order_id ??
+        json?.draft?.id;
+
+      if (!id) {
+        throw new Error("Draft created but no id returned");
+      }
       setDraftId(id);
       return id;
     } finally {
@@ -156,234 +145,242 @@ export default function ClientNewOrder() {
     }
   }
 
-  // --- Payment actions ----------------------------------------------------
+  // Pay by card
   async function payByCard() {
     try {
-      const id = await ensureDraft();
-      const r = await fetch("/api/stripe/checkout-from-draft", {
+      const id = draftId ?? (await ensureDraft());
+      setCreating("checkout");
+      // Try POST first (preferred); fall back to GET redirect if server expects it
+      const r = await fetch("/api/stripe/checkout-for-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          draftId: id,
-          crmCustomerId: customerId,
-        }),
+        body: JSON.stringify({ draftId: id }),
       });
-      if (!r.ok) {
-        const e = await r.json().catch(() => ({}));
-        throw new Error(String(e?.error || `Checkout failed: ${r.status}`));
+      if (r.ok) {
+        const j = await r.json();
+        if (j?.url) {
+          window.location.href = j.url as string;
+          return;
+        }
       }
-      const { url } = await r.json();
-      if (url) window.location.href = url;
+      // fallback redirect
+      window.location.href = `/api/stripe/checkout-for-draft?draftId=${id}`;
     } catch (e: any) {
-      alert(`Pay by card failed: ${e?.message || e}`);
+      alert(e?.message || "Checkout failed");
+    } finally {
+      setCreating(false);
     }
   }
 
+  // Payment link
   async function createPaymentLink() {
     try {
-      const id = await ensureDraft();
-      const r = await fetch("/api/stripe/payment-link-from-draft", {
+      const id = draftId ?? (await ensureDraft());
+      setCreating("plink");
+      const r = await fetch("/api/stripe/payment-link-for-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          draftId: id,
-          crmCustomerId: customerId,
-        }),
+        body: JSON.stringify({ draftId: id }),
       });
       if (!r.ok) {
-        const e = await r.json().catch(() => ({}));
-        throw new Error(String(e?.error || `Payment link failed: ${r.status}`));
+        const t = await r.text().catch(() => "");
+        throw new Error(`Payment link failed: ${r.status} ${t}`);
       }
-      const { url } = await r.json();
-      if (url) {
-        window.open(url, "_blank", "noopener,noreferrer");
-        try {
-          await navigator.clipboard.writeText(url);
-        } catch {}
-      }
+      const j = await r.json();
+      const url: string | undefined = j?.url || j?.payment_link?.url;
+      if (!url) throw new Error("No URL returned from payment link API");
+
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {}
+      window.open(url, "_blank", "noopener,noreferrer");
     } catch (e: any) {
-      alert(`Payment link failed: ${e?.message || e}`);
+      alert(e?.message || "Payment link failed");
+    } finally {
+      setCreating(false);
     }
   }
 
-  // --- Rendering helpers --------------------------------------------------
-  const renderCustomer = () => {
-    if (!customer) {
-      return (
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <div className="small muted">No customer selected.</div>
-          <a className="btn" href="/customers">Select customer</a>
-        </div>
-      );
-    }
-    const addr = [
-      customer.addressLine1,
-      customer.addressLine2,
-      customer.town,
-      customer.county,
-      customer.postCode,
-      customer.country,
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    return (
-      <div>
-        <b>{customer.salonName || customer.customerName}</b>
-        <p className="small" style={{ marginTop: 6, whiteSpace: "pre-line" }}>
-          {customer.customerName ? `${customer.customerName} • ` : ""}
-          {customer.customerTelephone || "-"}
-          {customer.customerEmailAddress ? ` • ${customer.customerEmailAddress}` : ""}
-          {"\n\n"}
-          {addr || "-"}
-        </p>
-      </div>
-    );
-  };
+  // --- UI ---
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      {/* Customer panel at the top */}
+      {/* Customer panel */}
       <section className="card">
-        <h1 style={{ marginTop: 0, marginBottom: 12 }}>Create Order</h1>
-        {renderCustomer()}
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <b>Customer</b>
+          <a className="btn" href="/customers" title="Change or pick a different customer">
+            Change customer
+          </a>
+        </div>
+
+        {customer ? (
+          <div className="small" style={{ marginTop: 10 }}>
+            <div style={{ fontWeight: 700 }}>
+              {customer.salonName || customer.customerName || "Customer"}
+            </div>
+            <div className="muted" style={{ marginTop: 2 }}>
+              {customer.customerName || "-"}
+              {customer.customerTelephone ? ` • ${customer.customerTelephone}` : ""}
+              {customer.customerEmailAddress ? ` • ${customer.customerEmailAddress}` : ""}
+            </div>
+            <div className="muted" style={{ marginTop: 10, whiteSpace: "pre-line" }}>
+              {[customer.addressLine1, customer.town, customer.county, customer.postCode]
+                .filter(Boolean)
+                .join("\n")}
+            </div>
+          </div>
+        ) : (
+          <div className="small muted" style={{ marginTop: 10 }}>
+            No customer selected yet — <a href="/customers">choose one</a>.
+          </div>
+        )}
       </section>
 
-      {/* Product search (Shopify-like) */}
+      {/* Search & add products */}
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Search Products</h3>
+          <button type="button" className="btn" onClick={() => setShowPicker((s) => !s)}>
+            {showPicker ? "Hide" : "Show"}
+          </button>
         </div>
 
-        <div style={{ marginTop: 12 }}>
-          <ShopifyProductPicker
-            placeholder="Search by product title, SKU, vendor…"
-            onPick={(v) =>
-              addToCart({
-                variantId: v.variantId,
-                productTitle: v.productTitle,
-                title: v.title,
-                sku: v.sku,
-                priceEx: v.priceEx,
-                image: v.image,
-              })
-            }
-          />
-        </div>
+        {showPicker && (
+          <div style={{ marginTop: 10 }}>
+            <ShopifyProductPicker
+              placeholder="Search by product title, SKU, vendor…"
+              onPick={(v) =>
+                addToCart({
+                  variantId: v.variantId,
+                  productTitle: v.productTitle,
+                  title: v.title,
+                  sku: v.sku,
+                  priceEx: v.priceEx,
+                  image: v.image ?? null,
+                })
+              }
+            />
+          </div>
+        )}
       </section>
 
       {/* Cart */}
       <section className="card">
-        <h3 style={{ marginTop: 0, marginBottom: 12 }}>Cart</h3>
+        <h3 style={{ margin: 0, marginBottom: 8 }}>Cart</h3>
         {cart.length === 0 ? (
-          <p className="small muted">No items yet.</p>
+          <div className="small muted">No items yet.</div>
         ) : (
           <div className="grid" style={{ gap: 12 }}>
             {cart.map((l) => {
-              const unitNet = l.priceEx;
-              const unitVat = unitNet * VAT_RATE;
-              const unitInc = unitNet + unitVat;
-
+              const ex = l.priceEx * l.qty;
+              const vat = ex * VAT_RATE;
+              const inc = ex + vat;
               return (
-                <div
-                  key={l.variantId}
-                  className="row"
-                  style={{
-                    gap: 12,
-                    alignItems: "center",
-                    borderBottom: "1px solid var(--border)",
-                    paddingBottom: 12,
-                  }}
-                >
-                  {/* image */}
-                  {l.image ? (
-                    <img
-                      src={l.image}
-                      alt=""
-                      width={46}
-                      height={46}
-                      style={{ borderRadius: 10, objectFit: "cover" }}
-                    />
-                  ) : (
-                    <div
-                      style={{
-                        width: 46,
-                        height: 46,
-                        borderRadius: 10,
-                        background: "#f3f4f6",
-                        border: "1px solid var(--border)",
-                      }}
-                    />
-                  )}
-
-                  {/* titles & unit prices */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, lineHeight: 1.2 }}>{l.productTitle}</div>
-                    <div className="small muted" style={{ marginTop: 2 }}>
-                      {l.sku ? `SKU: ${l.sku}` : ""} {l.sku ? " • " : ""}
-                      {l.title}
+                <div key={l.variantId} className="card" style={{ borderColor: "var(--border)", boxShadow: "none", padding: 12 }}>
+                  <div className="row" style={{ alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {l.productTitle}
+                      </div>
+                      <div className="small muted">SKU: {l.sku || "—"}</div>
                     </div>
-                    <div className="small" style={{ marginTop: 6 }}>
-                      Ex VAT: <b>{formatGBP(unitNet)}</b> &nbsp; VAT ({Math.round(VAT_RATE * 100)}%):{" "}
-                      <b>{formatGBP(unitVat)}</b> &nbsp; Inc VAT: <b>{formatGBP(unitInc)}</b>
-                    </div>
-                  </div>
 
-                  {/* qty bubble + remove */}
-                  <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                    {/* Consistent qty “bubble” */}
                     <input
                       type="number"
                       min={1}
                       value={l.qty}
-                      onChange={(e) => updateQty(l.variantId, e.target.value)}
+                      onChange={(e) => setQty(l.variantId, Math.max(1, Number(e.target.value || 1)))}
                       style={{
                         width: 64,
-                        height: 40,
-                        borderRadius: 14,
                         textAlign: "center",
-                        border: "1px solid var(--field-border)",
-                        background: "var(--field-bg)",
+                        borderRadius: 14,
+                        height: 42,
                       }}
                     />
-                    <button className="btn" onClick={() => removeLine(l.variantId)}>
+
+                    <button className="btn" type="button" onClick={() => removeLine(l.variantId)}>
                       Remove
                     </button>
+                  </div>
+
+                  {/* per-line pricing */}
+                  <div className="small muted" style={{ marginTop: 8 }}>
+                    Ex VAT: {money(ex)}{" "}
+                    <span style={{ marginInline: 6 }}>•</span>
+                    VAT ({Math.round(VAT_RATE * 100)}%): {money(vat)}{" "}
+                    <span style={{ marginInline: 6 }}>•</span>
+                    Inc VAT: {money(inc)}
                   </div>
                 </div>
               );
             })}
 
             {/* Totals */}
-            <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
-              <div className="small muted">Net:</div>
-              <div style={{ textAlign: "right", minWidth: 100 }}>{formatGBP(totals.net)}</div>
-            </div>
-            <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
-              <div className="small muted">VAT ({Math.round(VAT_RATE * 100)}%):</div>
-              <div style={{ textAlign: "right", minWidth: 100 }}>{formatGBP(totals.vat)}</div>
-            </div>
-            <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
-              <div className="small muted" style={{ fontWeight: 700 }}>
-                Total:
+            <div style={{ marginTop: 12 }}>
+              <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
+                <div className="small muted">Net:</div>
+                <div className="small">{money(totals.ex)}</div>
               </div>
-              <div style={{ textAlign: "right", minWidth: 100, fontWeight: 700 }}>
-                {formatGBP(totals.inc)}
+              <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
+                <div className="small muted">
+                  VAT ({Math.round(VAT_RATE * 100)}%):
+                </div>
+                <div className="small">{money(totals.vat)}</div>
+              </div>
+              <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
+                <div className="small" style={{ fontWeight: 700 }}>
+                  Total:
+                </div>
+                <div className="small" style={{ fontWeight: 700 }}>
+                  {money(totals.inc)}
+                </div>
               </div>
             </div>
 
             {/* Actions */}
             <div
               className="row"
-              style={{ marginTop: 14, gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}
+              style={{
+                marginTop: 14,
+                gap: 8,
+                flexWrap: "wrap",
+                justifyContent: "flex-end",
+              }}
             >
-              <button className="btn" type="button" onClick={ensureDraft} disabled={creating}>
-                {creating ? "Creating draft…" : draftId ? "Re-create draft" : "Create draft order"}
+              <button
+                className="btn"
+                type="button"
+                onClick={async () => {
+                  try {
+                    await ensureDraft();
+                    alert("Draft created (or refreshed).");
+                  } catch (e: any) {
+                    alert(e?.message || "Draft error");
+                  }
+                }}
+                disabled={creating !== false}
+              >
+                {creating === "draft" ? "Creating draft…" : draftId ? "Re-create draft" : "Create draft"}
               </button>
-              <button className="primary" type="button" onClick={payByCard} disabled={creating}>
-                Pay by card
+
+              <button
+                className="primary"
+                type="button"
+                onClick={payByCard}
+                disabled={creating !== false}
+              >
+                {creating === "checkout" ? "Starting checkout…" : "Pay by card"}
               </button>
-              <button className="btn" type="button" onClick={createPaymentLink} disabled={creating}>
-                Payment link
+
+              <button
+                className="btn"
+                type="button"
+                onClick={createPaymentLink}
+                disabled={creating !== false}
+              >
+                {creating === "plink" ? "Creating link…" : "Payment link"}
               </button>
             </div>
           </div>
