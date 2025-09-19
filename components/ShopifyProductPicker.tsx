@@ -1,201 +1,272 @@
+// components/ShopifyProductPicker.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-/* ---------- tiny safe fetch helper ---------- */
-async function safeGet<T = any>(url: string): Promise<T> {
-  const r = await fetch(url, { credentials: "include", cache: "no-store" });
-  if (!r.ok) throw new Error(String(r.status));
-  return (await r.json()) as T;
-}
-
-/* ---------- types ---------- */
-export type ShopifySearchResult = {
-  variantId: number;              // required
-  productTitle: string;           // required
+type Item = {
+  variantId: number;
+  productTitle: string;
   variantTitle?: string | null;
   sku?: string | null;
-  priceExVat?: number | null;     // £ ex VAT
-  available?: number | null;      // inventory qty
-  image?: string | null;
+  priceExVat?: number | null;
+  available?: number | null;
+  imageUrl?: string | null;
 };
 
 type Props = {
+  /** Placeholder for the search input */
   placeholder?: string;
-  /** Called when user taps Save; provides ALL selected results */
-  onConfirm: (items: ShopifySearchResult[]) => void;
-  initialSelectedVariantIds?: number[];
-  clearAfterConfirm?: boolean;
+  /** Called when the user clicks Save with all selected items */
+  onConfirm: (items: Item[]) => void;
 };
 
-/* ---------- currency helper ---------- */
-const fmtGBP = (n: number | null | undefined) =>
-  new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
-    Number.isFinite(Number(n)) ? Number(n) : 0
-  );
+/* ---------- helpers ---------- */
 
-export default function ShopifyProductPicker({
-  placeholder = "Search products…",
-  onConfirm,
-  initialSelectedVariantIds = [],
-  clearAfterConfirm = true,
-}: Props) {
-  const [q, setQ] = useState("");
-  const [results, setResults] = useState<ShopifySearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [selected, setSelected] = useState<Set<number>>(
-    () => new Set(initialSelectedVariantIds)
-  );
+function normaliseRow(row: any): Item | null {
+  if (!row) return null;
 
-  // debounce search
+  // Try multiple common shapes from Shopify-search endpoints and normalize.
+  const variantId = Number(
+    row.variantId ??
+      row.variant_id ??
+      row.variantID ??
+      row.id ??
+      row.variant?.id ??
+      row.node?.id ??
+      NaN
+  );
+  if (!Number.isFinite(variantId)) return null;
+
+  const productTitle =
+    row.productTitle ??
+    row.product_title ??
+    row.product?.title ??
+    row.title?.product ??
+    row.title ??
+    "Product";
+
+  const variantTitle =
+    row.variantTitle ??
+    row.variant_title ??
+    row.variant?.title ??
+    row.title?.variant ??
+    null;
+
+  const sku = row.sku ?? row.variant?.sku ?? null;
+
+  const priceExVatRaw =
+    row.priceExVat ??
+    row.price_ex_vat ??
+    row.price ??
+    row.variant?.price ??
+    row.unit_price;
+  const priceExVat =
+    priceExVatRaw == null || priceExVatRaw === ""
+      ? null
+      : Number.isFinite(Number(priceExVatRaw))
+      ? Number(priceExVatRaw)
+      : null;
+
+  const availableRaw =
+    row.available ??
+    row.inventoryQuantity ??
+    row.inventory_quantity ??
+    row.inventory ??
+    row.variant?.inventoryQuantity;
+  const available =
+    availableRaw == null || availableRaw === ""
+      ? null
+      : Number.isFinite(Number(availableRaw))
+      ? Number(availableRaw)
+      : null;
+
+  const imageUrl =
+    row.imageUrl ??
+    row.image_url ??
+    row.image?.src ??
+    row.product?.image?.src ??
+    row.variant?.image?.src ??
+    null;
+
+  return {
+    variantId,
+    productTitle,
+    variantTitle: variantTitle ?? null,
+    sku: sku ?? null,
+    priceExVat,
+    available,
+    imageUrl,
+  };
+}
+
+async function fetchProducts(q: string): Promise<Item[]> {
+  if (!q.trim()) return [];
+
+  // Try a few likely endpoints — whichever you have will respond.
+  const endpoints = [
+    `/api/shopify/products/search?q=${encodeURIComponent(q)}`,
+    `/api/shopify/search-products?q=${encodeURIComponent(q)}`,
+    `/api/shopify/products?q=${encodeURIComponent(q)}`,
+  ];
+
+  for (const url of endpoints) {
+    try {
+      const r = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!r.ok) continue;
+      const j = await r.json();
+
+      // Accept: [], {items:[]}, {results:[]}, {variants:[]}
+      const rows: any[] = Array.isArray(j)
+        ? j
+        : Array.isArray(j?.items)
+        ? j.items
+        : Array.isArray(j?.results)
+        ? j.results
+        : Array.isArray(j?.variants)
+        ? j.variants
+        : [];
+
+      const items = rows.map(normaliseRow).filter(Boolean) as Item[];
+      return items;
+    } catch {
+      // try next endpoint
+    }
+  }
+  return [];
+}
+
+function fmtGBP(n?: number | null) {
+  if (!Number.isFinite(Number(n))) return "—";
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
+    Number(n || 0)
+  );
+}
+
+/* ---------- component ---------- */
+
+export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) {
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [items, setItems] = useState<Item[]>([]);
+  const [selected, setSelected] = useState<Record<number, Item>>({});
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Debounced search
   useEffect(() => {
-    let alive = true;
     const t = setTimeout(async () => {
-      if (!q.trim()) {
-        setResults([]);
+      if (!query.trim()) {
+        setItems([]);
         return;
       }
-      setLoading(true);
+      setBusy(true);
       try {
-        const data =
-          (await safeGet<ShopifySearchResult[]>(
-            `/api/shopify/products/search?q=${encodeURIComponent(q)}`
-          ).catch(() => [])) ?? [];
-        if (alive) setResults(Array.isArray(data) ? data : []);
+        const res = await fetchProducts(query);
+        setItems(res);
       } finally {
-        if (alive) setLoading(false);
+        setBusy(false);
       }
     }, 250);
-    return () => {
-      alive = false;
-      clearTimeout(t);
-    };
-  }, [q]);
+    return () => clearTimeout(t);
+  }, [query]);
 
-  function toggle(id: number) {
+  const selectedList = useMemo(() => Object.values(selected), [selected]);
+
+  function toggle(v: Item) {
     setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      const next = { ...prev };
+      if (next[v.variantId]) delete next[v.variantId];
+      else next[v.variantId] = v;
       return next;
     });
   }
 
-  function clearSelection() {
-    setSelected(new Set());
+  function cancel() {
+    setSelected({});
+    setQuery("");
+    setItems([]);
+    inputRef.current?.focus();
   }
 
-  function confirmSelection() {
-    const picked = results.filter((r) => selected.has(r.variantId));
-    if (picked.length === 0) return;
-    onConfirm(picked);
-    if (clearAfterConfirm) clearSelection();
+  function confirm() {
+    if (selectedList.length === 0) return;
+    onConfirm(selectedList);
+    setSelected({});
+    setQuery("");
+    setItems([]);
+    inputRef.current?.focus();
   }
 
   return (
-    <div className="picker">
-      {/* header row */}
-      <div className="row header">
-        <button type="button" className="btn" onClick={clearSelection}>
+    <div>
+      {/* Header with Cancel / Products / Save */}
+      <div className="row" style={{ alignItems: "center", marginBottom: 6, gap: 8 }}>
+        <button className="btn" type="button" onClick={cancel} aria-label="Cancel selection">
           Cancel
         </button>
-        <div className="title">Products</div>
+        <div className="small muted" style={{ flex: 1, textAlign: "center" }}>
+          Products
+        </div>
         <button
+          className="primary"
           type="button"
-          className={`btn ${selected.size ? "primary" : ""}`}
-          disabled={!selected.size}
-          onClick={confirmSelection}
+          onClick={confirm}
+          disabled={selectedList.length === 0}
+          aria-label="Save selected products"
         >
           Save
         </button>
       </div>
 
-      {/* search box */}
-      <div className="search">
-        <input
-          placeholder={placeholder}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          aria-label="Search products"
-        />
-      </div>
+      {/* Search box */}
+      <input
+        ref={inputRef}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder={placeholder || "Search products…"}
+      />
 
-      {/* results */}
-      <div className="list">
-        {loading && <div className="muted small">Searching…</div>}
-        {!loading && q && results.length === 0 && (
-          <div className="muted small">No products match “{q}”.</div>
+      {/* Results */}
+      <div style={{ marginTop: 8 }}>
+        {busy && <div className="small muted">Searching…</div>}
+
+        {!busy && query && items.length === 0 && (
+          <div className="small muted">No products match “{query}”.</div>
         )}
 
-        {results.map((r) => {
-          const checked = selected.has(r.variantId);
+        {items.map((v) => {
+          const isChecked = !!selected[v.variantId];
           return (
-            <label key={r.variantId} className="row item">
+            <label
+              key={v.variantId}
+              className="row"
+              style={{
+                gap: 10,
+                alignItems: "center",
+                padding: "10px 0",
+                borderTop: "1px solid #eee",
+                cursor: "pointer",
+              }}
+            >
               <input
                 type="checkbox"
-                checked={checked}
-                onChange={() => toggle(r.variantId)}
+                checked={isChecked}
+                onChange={() => toggle(v)}
+                aria-label={`Select ${v.productTitle} ${v.variantTitle || ""}`}
               />
-              {r.image ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={r.image} alt="" className="thumb" />
-              ) : (
-                <div className="thumb placeholder" />
-              )}
-              <div className="meta">
-                <div className="name" title={`${r.productTitle}${r.variantTitle ? ` — ${r.variantTitle}` : ""}`}>
-                  {r.productTitle}
-                  {r.variantTitle ? <span className="variant"> — {r.variantTitle}</span> : null}
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600 }}>
+                  {v.productTitle}
+                  {v.variantTitle ? ` — ${v.variantTitle}` : ""}
                 </div>
-                <div className="sub muted">
-                  {fmtGBP(r.priceExVat || 0)}{" "}
-                  {Number.isFinite(r.available as any) ? (
-                    <>
-                      • <span className={r.available! > 0 ? "" : "oos"}>
-                        {r.available} available
-                      </span>
-                    </>
-                  ) : null}
+                <div className="small muted">
+                  {fmtGBP(v.priceExVat)} • {v.available ?? 0} available
+                  {v.sku ? ` • SKU ${v.sku}` : ""}
                 </div>
               </div>
             </label>
           );
         })}
       </div>
-
-      {/* plain <style> (no styled-jsx) to avoid SWC crashes */}
-      <style>{`
-        .picker {
-          border: 1px solid var(--border, #eee);
-          border-radius: 14px;
-          padding: 10px;
-          background: var(--card, #fff);
-        }
-        .row { display:flex; align-items:center; gap:10px; }
-        .header { justify-content:space-between; margin-bottom:8px; }
-        .title { font-weight:700; }
-        .btn {
-          border:1px solid #ddd; background:#fafafa; border-radius:10px;
-          padding:6px 10px; font-weight:600;
-        }
-        .btn.primary { background:#ffb3d6; border-color:#ffb3d6; }
-        .btn:disabled { opacity:.55; }
-        .search { margin-bottom:8px; }
-        .search input {
-          width:100%; border:2px solid #f7c6de; border-radius:14px;
-          padding:10px 14px; outline:none;
-        }
-        .list { display:grid; gap:8px; max-height:360px; overflow:auto; }
-        .item { padding:8px; border-radius:12px; border:1px solid #eee; cursor:pointer; }
-        .item input[type="checkbox"] { transform: scale(1.15); }
-        .thumb { width:36px; height:36px; border-radius:6px; object-fit:cover; background:#f4f4f4; }
-        .thumb.placeholder { display:inline-block; }
-        .meta { min-width:0; }
-        .name { font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .variant { font-weight:600; }
-        .sub { font-size:12px; }
-        .muted { color:#6b7280; }
-        .oos { color:#c53030; font-weight:600; }
-      `}</style>
     </div>
   );
 }
