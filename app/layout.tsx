@@ -3,6 +3,7 @@ import "./globals.css";
 import type { Metadata } from "next";
 import Link from "next/link";
 import SettingsMenu from "@/components/SettingsMenu";
+import BackButton from "@/components/BackButton";
 
 export const metadata: Metadata = {
   title: "Salon Brands Pro CRM",
@@ -53,7 +54,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             borderBottom: "1px solid #eee",
           }}
         >
-          {/* 3-column grid: [spacer] [centered logo] [settings] */}
+          {/* 3-column grid: [left/back] [centered logo] [settings] */}
           <div
             className="container"
             style={{
@@ -65,8 +66,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               margin: "0 auto",
             }}
           >
-            <div /> {/* left spacer */}
+            {/* Left: Back button (falls back to /customers if no history) */}
+            <div style={{ justifySelf: "start" }}>
+              <BackButton className="btn" label="Back" fallback="/customers" />
+            </div>
 
+            {/* Center: Logo */}
             <Link
               href="/"
               style={{
@@ -75,7 +80,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 alignItems: "center",
               }}
             >
-              {/* Bigger, centered logo */}
               <img
                 src="/sbp-logo.png"
                 alt="Salon Brands Pro"
@@ -84,6 +88,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               />
             </Link>
 
+            {/* Right: Settings */}
             <div style={{ justifySelf: "end" }}>
               <SettingsMenu />
             </div>
