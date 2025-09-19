@@ -63,7 +63,11 @@ function normaliseRow(row: any): Item | null {
     row.variantID ??
     row.id ??
     row.variant?.id ??
-    row.node?.id;
+    row.node?.id ??
+    // product-level shapes: use first variant id
+    row.variants?.[0]?.id ??
+    row.node?.variants?.edges?.[0]?.node?.id;
+
   const variantId = toNumericId(rawId);
   if (!Number.isFinite(Number(variantId))) return null;
 
@@ -82,17 +86,27 @@ function normaliseRow(row: any): Item | null {
     row.variant?.title ??
     row.title?.variant ??
     row.node?.title ??
+    row.variants?.[0]?.title ??
+    row.node?.variants?.edges?.[0]?.node?.title ??
     null;
 
-  const sku = row.sku ?? row.variant?.sku ?? row.node?.sku ?? null;
+  const sku =
+    row.sku ??
+    row.variant?.sku ??
+    row.node?.sku ??
+    row.variants?.[0]?.sku ??
+    row.node?.variants?.edges?.[0]?.node?.sku ??
+    null;
 
-  // price fallbacks (ex VAT preferred, but show something if present)
+  // price fallbacks (prefer ex VAT; if inc only, we’ll hydrate via API)
   const priceExVatRaw =
     row.priceExVat ??
     row.price_ex_vat ??
     row.unit_price ??
     row.price ??
     row.variant?.price ??
+    row.variants?.[0]?.price ??                      // <-- added
+    row.variants?.[0]?.priceV2?.amount ??            // <-- added
     row.price?.amount ??                 // MoneyV2
     row.node?.price ??
     row.node?.priceV2?.amount ??         // MoneyV2
@@ -107,7 +121,10 @@ function normaliseRow(row: any): Item | null {
     row.inventory_quantity ??
     row.inventory ??
     row.variant?.inventoryQuantity ??
-    row.node?.availableForSaleQuantity;
+    row.node?.availableForSaleQuantity ??
+    row.variants?.[0]?.inventory_quantity ??
+    row.node?.variants?.edges?.[0]?.node?.inventoryQuantity;
+
   const available =
     availableRaw == null || availableRaw === ""
       ? null
@@ -122,6 +139,8 @@ function normaliseRow(row: any): Item | null {
     row.product?.image?.src ??
     row.variant?.image?.src ??
     row.node?.image?.src ??
+    row.variants?.[0]?.image?.src ??
+    row.node?.variants?.edges?.[0]?.node?.image?.src ??
     null;
 
   return {
@@ -206,7 +225,7 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
     return () => clearTimeout(t);
   }, [query]);
 
-  // ✅ NEW: hydrate missing prices from Shopify (ex VAT)
+  // Hydrate missing prices from Shopify (ex VAT)
   useEffect(() => {
     const missing = items.filter(
       (i) => (i.priceExVat == null || !Number.isFinite(Number(i.priceExVat))) && Number.isFinite(i.variantId)
@@ -226,8 +245,8 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
         if (map && typeof map === "object") {
           setItems((prev) =>
             prev.map((it) => {
-              const k1 = String(it.variantId);
-              const hit = map[k1] ?? map[it.variantId as unknown as string];
+              const k = String(it.variantId);
+              const hit = map[k];
               if (!hit || hit.priceExVat == null) return it;
               return { ...it, priceExVat: Number(hit.priceExVat) };
             })
