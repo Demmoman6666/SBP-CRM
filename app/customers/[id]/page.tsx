@@ -10,7 +10,7 @@ export const revalidate = 0;
 
 const VAT_RATE = Number(process.env.VAT_RATE ?? "0.20");
 
-/* ------------ money + tiny prettifiers ------------ */
+/* ------------ helpers: money, statuses, dates ------------ */
 function money(n?: any, currency: string = "GBP") {
   if (n == null) return "-";
   const num = typeof n === "string" ? parseFloat(n) : Number(n);
@@ -39,8 +39,6 @@ const prettyFulfillment = (s?: string | null) => {
   if (k.includes("cancel")) return "Cancelled";
   return s!;
 };
-/* -------------------------------------------------- */
-
 /** DD/MM/YYYY */
 function fmtDate(d: any): string {
   const dt = d instanceof Date ? d : new Date(d);
@@ -49,6 +47,113 @@ function fmtDate(d: any): string {
   const mm = String(dt.getMonth() + 1).padStart(2, "0");
   const yyyy = dt.getFullYear();
   return `${dd}/${mm}/${yyyy}`;
+}
+/* -------------------------------------------------------- */
+
+/* Opening hours normaliser -> neat table rows */
+type DayRow = { day: string; open: boolean; from?: string | null; to?: string | null };
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+function normaliseOpeningHours(raw: any): DayRow[] {
+  if (!raw) return [];
+  let data: any = raw;
+
+  // raw may be JSON string
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      return [];
+    }
+  }
+
+  // shape 1: object keyed by day
+  if (data && !Array.isArray(data) && typeof data === "object") {
+    return DAYS.map((d) => {
+      const entry = data[d] || data[d.toLowerCase()] || data[d.toUpperCase()];
+      if (!entry) return { day: d, open: false };
+      const open = !!(entry.open ?? entry.isOpen ?? entry.enabled);
+      const from = entry.from ?? entry.start ?? null;
+      const to = entry.to ?? entry.end ?? null;
+      return { day: d, open, from, to };
+    });
+  }
+
+  // shape 2: array of rows { day, open, from, to }
+  if (Array.isArray(data)) {
+    // try to index by day -> final ordered list
+    const byDay: Record<string, DayRow> = {};
+    for (const r of data) {
+      if (!r) continue;
+      const key: string =
+        r.day ||
+        r.Day ||
+        r.name ||
+        r.weekday ||
+        "";
+      const d = key.slice(0, 3);
+      if (!d) continue;
+      byDay[d] = {
+        day: d,
+        open: !!(r.open ?? r.isOpen ?? r.enabled),
+        from: r.from ?? r.start ?? null,
+        to: r.to ?? r.end ?? null,
+      };
+    }
+    return DAYS.map((d) => byDay[d] || { day: d, open: false });
+  }
+
+  return [];
+}
+
+/* Load calls & notes robustly, tolerating differing model names/columns */
+async function loadCalls(customerId: string) {
+  const modelNames = ["call", "callLog", "customerCall", "calls"];
+  for (const m of modelNames) {
+    try {
+      const model = (prisma as any)[m];
+      if (!model?.findMany) continue;
+      const rows: any[] = await model.findMany({
+        where: { customerId },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      });
+      if (Array.isArray(rows) && rows.length) {
+        return rows.map((r) => ({
+          id: r.id ?? r.callId ?? r._id,
+          createdAt: r.createdAt ?? r.created_at ?? r.date ?? r.loggedAt,
+          outcome: r.outcome ?? r.result ?? r.status ?? null,
+          notes: r.notes ?? r.note ?? r.message ?? r.description ?? "",
+        }));
+      }
+    } catch {
+      /* try next */
+    }
+  }
+  return [];
+}
+async function loadNotes(customerId: string) {
+  const modelNames = ["note", "customerNote", "notes"];
+  for (const m of modelNames) {
+    try {
+      const model = (prisma as any)[m];
+      if (!model?.findMany) continue;
+      const rows: any[] = await model.findMany({
+        where: { customerId },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      });
+      if (Array.isArray(rows) && rows.length) {
+        return rows.map((r) => ({
+          id: r.id ?? r.noteId ?? r._id,
+          createdAt: r.createdAt ?? r.created_at ?? r.date ?? r.loggedAt,
+          body: r.body ?? r.text ?? r.note ?? r.content ?? "",
+        }));
+      }
+    } catch {
+      /* try next */
+    }
+  }
+  return [];
 }
 
 type PageProps = {
@@ -68,19 +173,19 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
   });
   if (!customer) return notFound();
 
-  // Orders (from CRM DB) – newest first
+  // Orders (from CRM DB)
   const orders = await prisma.order.findMany({
     where: { customerId: customer.id },
     orderBy: [{ createdAt: "desc" }],
     take: 50,
   });
 
-  // Also fetch Shopify statuses + Shopify dates so UI can match Shopify
+  // Fetch Shopify statuses + Shopify dates so UI matches Shopify
   const idCandidates = orders
     .map((o: any) => Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id))
     .filter((n) => Number.isFinite(n)) as number[];
 
-  let shopifyById = new Map<
+  const shopifyById = new Map<
     number,
     {
       financial_status?: string | null;
@@ -93,7 +198,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
   if (idCandidates.length) {
     try {
       const idsParam = encodeURIComponent(idCandidates.join(","));
-      // ⬅️ include created_at and processed_at
       const res = await shopifyRest(
         `/orders.json?ids=${idsParam}&status=any&fields=id,financial_status,fulfillment_status,created_at,processed_at`,
         { method: "GET" }
@@ -111,18 +215,19 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
         }
       }
     } catch {
-      // ignore
+      /* ignore */
     }
   }
 
-  // Drafts (live from Shopify for this customer) – newest first
+  // Drafts (live from Shopify for this customer)
   let drafts: any[] = [];
-  if ((customer as any).shopifyCustomerId) {
+  const shopifyCustomerId = (customer as any).shopifyCustomerId;
+  if (shopifyCustomerId) {
     try {
       const res = await shopifyRest(`/draft_orders.json?status=open&limit=50`, { method: "GET" });
       if (res.ok) {
         const json = await res.json();
-        const scid = Number((customer as any).shopifyCustomerId);
+        const scid = Number(shopifyCustomerId);
         drafts = (json?.draft_orders || [])
           .filter((d: any) => Number(d?.customer?.id) === scid)
           .sort((a: any, b: any) => {
@@ -136,6 +241,11 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     }
   }
 
+  // Calls & notes
+  const calls = await loadCalls(customer.id);
+  const notes = await loadNotes(customer.id);
+
+  // Display bits
   const currency = "GBP";
   const addr = [
     (customer as any).addressLine1,
@@ -147,6 +257,16 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     .filter(Boolean)
     .join(", ");
 
+  const salesRepName =
+    (customer as any).salesRepName ||
+    (customer as any).sales_rep_name ||
+    (customer as any).salesRep ||
+    (customer as any).accountManager ||
+    (customer as any).rep ||
+    null;
+
+  const openingHoursRows = normaliseOpeningHours((customer as any).openingHours ?? (customer as any).opening_hours);
+
   // ---------- Server Action: create Stripe Payment Link from a Shopify draft ----------
   async function createPaymentLinkAction(formData: FormData) {
     "use server";
@@ -156,7 +276,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
     if (!stripeSecret) throw new Error("Missing STRIPE_SECRET_KEY");
 
-    // 1) Load the draft
+    // Load draft
     const resp = await shopifyRest(`/draft_orders/${draftId}.json`, { method: "GET" });
     if (!resp.ok) {
       const txt = await resp.text().catch(() => "");
@@ -166,38 +286,31 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     const draftLines = (draft?.line_items || []) as Array<{
       variant_id?: number;
       quantity?: number;
-      price?: string | number; // unit ex VAT
+      price?: string | number;
       title?: string;
       variant_title?: string | null;
     }>;
     if (!Array.isArray(draftLines) || draftLines.length === 0) throw new Error("Draft has no line items");
 
-    // 2) Build Prices (VAT-inclusive) and line_items for Payment Link
     const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
     const line_items: Stripe.PaymentLinkCreateParams.LineItem[] = [];
-
     for (const li of draftLines) {
       const ex = Number(li.price ?? 0);
       const inc = ex * (1 + VAT_RATE);
       const unit_amount = Math.round(inc * 100);
       const name = `${li.title ?? "Item"}${li.variant_title ? ` — ${li.variant_title}` : ""}`;
-
       const price = await stripe.prices.create({
         currency: "gbp",
         unit_amount,
         tax_behavior: "inclusive",
-        product_data: {
-          name,
-          metadata: { variantId: li.variant_id ? String(li.variant_id) : "" },
-        },
+        product_data: { name, metadata: { variantId: li.variant_id ? String(li.variant_id) : "" } },
       });
-
       line_items.push({ price: price.id, quantity: Number(li.quantity || 1) });
     }
 
     const sharedMeta = {
       crmCustomerId: customer.id,
-      shopifyCustomerId: (customer as any).shopifyCustomerId || "",
+      shopifyCustomerId: shopifyCustomerId || "",
       crmDraftOrderId: String(draftId),
       source: "SBP-CRM",
     };
@@ -208,10 +321,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
     const link = await stripe.paymentLinks.create({
       line_items,
-      after_completion: {
-        type: "redirect",
-        redirect: { url: `${origin}/customers/${customer.id}?paid=1` },
-      },
+      after_completion: { type: "redirect", redirect: { url: `${origin}/customers/${customer.id}?paid=1` } },
       metadata: sharedMeta,
       payment_intent_data: { metadata: sharedMeta },
       automatic_tax: { enabled: false },
@@ -226,19 +336,14 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      {/* Header / identity */}
+      {/* Header / identity (with Edit + Opening hours + Sales rep) */}
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <h1 style={{ margin: 0 }}>
-            {(customer as any).salonName || (customer as any).customerName || "Customer"}
-          </h1>
+          <h1 style={{ margin: 0 }}>{(customer as any).salonName || (customer as any).customerName || "Customer"}</h1>
           <div className="row" style={{ gap: 8 }}>
-            <Link className="btn" href={`/orders/new?customerId=${customer.id}`}>
-              Create Order
-            </Link>
-            <Link className="primary" href={`/customers`}>
-              Back
-            </Link>
+            <Link className="btn" href={`/customers/${customer.id}/edit`}>Edit</Link>
+            <Link className="btn" href={`/orders/new?customerId=${customer.id}`}>Create Order</Link>
+            <Link className="primary" href={`/customers`}>Back</Link>
           </div>
         </div>
 
@@ -251,11 +356,42 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               {(customer as any).customerTelephone || "-"}
               <br />
               {(customer as any).customerEmailAddress || "-"}
+              <br />
+              <span className="muted">Sales rep:</span> {salesRepName || "—"}
             </p>
           </div>
+
           <div>
             <b>Location</b>
             <p className="small" style={{ marginTop: 6 }}>{addr || "-"}</p>
+
+            <b style={{ display: "block", marginTop: 10 }}>Opening hours</b>
+            {openingHoursRows.length === 0 ? (
+              <p className="small muted" style={{ marginTop: 6 }}>No opening hours set.</p>
+            ) : (
+              <div style={{ marginTop: 6, overflowX: "auto" }}>
+                <table className="small" style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", padding: "4px 6px" }}>Day</th>
+                      <th style={{ textAlign: "left", padding: "4px 6px" }}>Status</th>
+                      <th style={{ textAlign: "left", padding: "4px 6px" }}>From</th>
+                      <th style={{ textAlign: "left", padding: "4px 6px" }}>To</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {openingHoursRows.map((r) => (
+                      <tr key={r.day} style={{ borderTop: "1px solid #eee" }}>
+                        <td style={{ padding: "6px" }}>{r.day}</td>
+                        <td style={{ padding: "6px" }}>{r.open ? "Open" : "Closed"}</td>
+                        <td style={{ padding: "6px" }}>{r.open ? (r.from || "—") : "—"}</td>
+                        <td style={{ padding: "6px" }}>{r.open ? (r.to || "—") : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -265,16 +401,10 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Orders / Drafts</h3>
           <div className="row" style={{ gap: 8 }}>
-            <Link
-              href={`/customers/${customer.id}?tab=orders`}
-              className={`btn ${view === "orders" ? "primary" : ""}`}
-            >
+            <Link href={`/customers/${customer.id}?tab=orders`} className={`btn ${view === "orders" ? "primary" : ""}`}>
               Orders ({ordersCount})
             </Link>
-            <Link
-              href={`/customers/${customer.id}?tab=drafts`}
-              className={`btn ${view === "drafts" ? "primary" : ""}`}
-            >
+            <Link href={`/customers/${customer.id}?tab=drafts`} className={`btn ${view === "drafts" ? "primary" : ""}`}>
               Drafts ({draftsCount})
             </Link>
           </div>
@@ -288,8 +418,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns:
-                    "170px 140px 140px 160px 120px 120px 120px auto",
+                  gridTemplateColumns: "170px 140px 140px 160px 120px 120px 120px auto",
                   gap: 6,
                   alignItems: "center",
                 }}
@@ -307,7 +436,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                   const sid = Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id);
                   const st = Number.isFinite(sid) ? shopifyById.get(sid) : undefined;
 
-                  // ✅ Prefer Shopify dates so UI matches Shopify
+                  // Prefer Shopify dates (processed_at -> created_at), fall back to DB timestamps
                   const displayDate =
                     st?.processed_at ||
                     st?.created_at ||
@@ -328,9 +457,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                       <div>{money(o.taxes, currency)}</div>
                       <div style={{ fontWeight: 600 }}>{money(o.total, currency)}</div>
                       <div>
-                        <Link className="btn" href={`/orders/${o.id}`}>
-                          View
-                        </Link>
+                        <Link className="btn" href={`/orders/${o.id}`}>View</Link>
                       </div>
                     </div>
                   );
@@ -345,8 +472,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns:
-                  "170px 160px 140px 160px 120px 120px 120px auto",
+                gridTemplateColumns: "170px 160px 140px 160px 120px 120px 120px auto",
                 gap: 6,
                 alignItems: "center",
               }}
@@ -370,9 +496,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
                 return (
                   <div key={d.id} style={{ display: "contents" }}>
-                    <div className="small">
-                      {fmtDate(d.created_at)}
-                    </div>
+                    <div className="small">{fmtDate(d.created_at)}</div>
                     <div>#{d.id}</div>
                     <div><span className="badge">—</span></div>
                     <div><span className="badge">—</span></div>
@@ -380,21 +504,10 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                     <div>{money(taxes, currency)}</div>
                     <div style={{ fontWeight: 600 }}>{money(total, currency)}</div>
                     <div className="row" style={{ gap: 6 }}>
-                      <a className="btn" href={adminUrl} target="_blank" rel="noreferrer" title="Open in Shopify">
-                        View in Shopify
-                      </a>
+                      <a className="btn" href={adminUrl} target="_blank" rel="noreferrer">View in Shopify</a>
                       <form action={createPaymentLinkAction}>
                         <input type="hidden" name="draftId" value={String(d.id)} />
-                        <button
-                          className="primary"
-                          type="submit"
-                          disabled={!(customer as any).shopifyCustomerId}
-                          title={
-                            (customer as any).shopifyCustomerId
-                              ? "Create Stripe payment link for this draft"
-                              : "Customer is not linked to Shopify"
-                          }
-                        >
+                        <button className="primary" type="submit" disabled={!shopifyCustomerId}>
                           Payment link
                         </button>
                       </form>
@@ -402,6 +515,74 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                   </div>
                 );
               })}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Call log */}
+      <section className="card">
+        <h3 style={{ margin: 0 }}>Call log</h3>
+        {calls.length === 0 ? (
+          <p className="small muted" style={{ marginTop: 8 }}>No calls yet.</p>
+        ) : (
+          <div style={{ marginTop: 10, overflowX: "auto" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "140px 160px 1fr auto",
+                gap: 6,
+                alignItems: "center",
+              }}
+            >
+              <div className="small muted">When</div>
+              <div className="small muted">Outcome</div>
+              <div className="small muted">Notes</div>
+              <div className="small muted">Action</div>
+
+              {calls.map((c: any) => (
+                <div key={c.id} style={{ display: "contents" }}>
+                  <div className="small">{fmtDate(c.createdAt)}</div>
+                  <div className="small">{c.outcome || "—"}</div>
+                  <div className="small">{String(c.notes || "").slice(0, 120) || "—"}</div>
+                  <div>
+                    <Link className="btn" href={`/calls/${c.id}`}>View</Link>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Notes */}
+      <section className="card">
+        <h3 style={{ margin: 0 }}>Notes</h3>
+        {notes.length === 0 ? (
+          <p className="small muted" style={{ marginTop: 8 }}>No notes yet.</p>
+        ) : (
+          <div style={{ marginTop: 10, overflowX: "auto" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "140px 1fr auto",
+                gap: 6,
+                alignItems: "center",
+              }}
+            >
+              <div className="small muted">When</div>
+              <div className="small muted">Note</div>
+              <div className="small muted">Action</div>
+
+              {notes.map((n: any) => (
+                <div key={n.id} style={{ display: "contents" }}>
+                  <div className="small">{fmtDate(n.createdAt)}</div>
+                  <div className="small">{String(n.body || "").slice(0, 160) || "—"}</div>
+                  <div>
+                    <Link className="btn" href={`/notes/${n.id}`}>View</Link>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
