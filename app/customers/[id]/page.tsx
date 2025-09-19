@@ -51,64 +51,119 @@ function fmtDate(d: any): string {
   return `${dd}/${mm}/${yyyy}`;
 }
 
-/** Try to read opening hours from a few common shapes. */
-function extractOpeningHours(cust: any): string | null {
-  if (!cust) return null;
-
-  // 1) Single string field
-  const s =
-    cust.openingHours ??
-    cust.opening_hours ??
-    cust.hours ??
-    cust.openingTimes ??
-    cust.opening_times ??
-    null;
-  if (typeof s === "string" && s.trim()) return s.trim();
-
-  // 2) JSON blob fields
-  const jsonRaw =
-    cust.openingHoursJson ??
-    cust.opening_hours_json ??
-    cust.openingHoursJSON ??
-    cust.hoursJson ??
-    cust.hours_json ??
-    null;
-  try {
-    const j =
-      typeof jsonRaw === "string" ? JSON.parse(jsonRaw) : jsonRaw && typeof jsonRaw === "object" ? jsonRaw : null;
-    if (j && typeof j === "object") {
-      const order = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
-      const pretty = (k: string) => k.slice(0,1).toUpperCase()+k.slice(1,3);
-      const parts: string[] = [];
-      for (const d of order) {
-        const v = (j[d] ?? j[pretty(d)] ?? j[d.slice(0,3)] ?? j[pretty(d).slice(0,3)]) as any;
-        if (!v) continue;
-        const line = typeof v === "string" ? v : v?.hours ?? v?.open ?? v?.time ?? "";
-        if (line) parts.push(`${pretty(d)}: ${line}`);
-      }
-      if (parts.length) return parts.join(" • ");
-    }
-  } catch {}
-
-  // 3) Per-day columns
-  const day = (name: string) =>
-    cust[`${name}Hours`] ??
-    cust[`${name}_hours`] ??
-    cust[`${name}Open`] ??
-    cust[`${name}_open`] ??
-    null;
-
-  const days = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
-    .map((d) => {
-      const v = day(d);
-      if (!v) return null;
-      const label = d.slice(0,1).toUpperCase()+d.slice(1,3);
-      return `${label}: ${String(v)}`;
-    })
-    .filter(Boolean) as string[];
-
-  return days.length ? days.join(" • ") : null;
+/* ---------------- Opening hours + Sales rep helpers ---------------- */
+const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] as const;
+function labelForDay(d: string) {
+  const i = DAYS.findIndex((x) => x.toLowerCase() === d.slice(0,3).toLowerCase());
+  const map = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+  return i >= 0 ? map[i] : d;
 }
+
+/** Robustly extract sales rep string from common fields. */
+function extractSalesRep(cust: any): string | null {
+  const fields = [
+    "salesRep","sales_rep","salesRepresentative","sales_representative",
+    "salesperson","sales_person","accountManager","account_manager",
+    "rep","repName","rep_name","territoryManager","territory_manager",
+  ];
+  for (const f of fields) {
+    const v = cust?.[f];
+    if (!v) continue;
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (typeof v === "object") {
+      const name = v.name || v.fullName || v.displayName || v.email || "";
+      if (String(name).trim()) return String(name).trim();
+    }
+  }
+  return null;
+}
+
+/** Build table rows for opening hours from JSON/per-day columns. */
+function openingHoursRows(cust: any): Array<{ day: string; hours: string }> {
+  // 1) JSON-like blob
+  const jsonCandidates = [
+    "openingHoursJson","opening_hours_json","openingHoursJSON",
+    "openingHours","opening_hours","hoursJson","hours_json"
+  ];
+  for (const key of jsonCandidates) {
+    const raw = cust?.[key];
+    if (!raw) continue;
+
+    try {
+      const blob =
+        typeof raw === "string" && /^[\[{]/.test(raw.trim())
+          ? JSON.parse(raw)
+          : typeof raw === "object"
+          ? raw
+          : null;
+
+      if (blob && typeof blob === "object") {
+        const rows: Array<{ day: string; hours: string }> = [];
+        const keys = Object.keys(blob);
+        // Accept Mon/Tue or full names
+        for (const k of keys) {
+          const v: any = (blob as any)[k];
+          if (v == null) continue;
+          const open = typeof v === "object" ? (v.open ?? v.isOpen ?? true) : true;
+          const from = typeof v === "object" ? (v.from ?? v.start ?? v.openFrom) : null;
+          const to   = typeof v === "object" ? (v.to ?? v.end ?? v.openTo) : null;
+          const hours =
+            open === false ? "Closed" :
+            from && to ? `${from}–${to}` :
+            typeof v === "string" ? v :
+            "Open";
+          rows.push({ day: labelForDay(k), hours: String(hours) });
+        }
+        if (rows.length) {
+          // Order rows Mon..Sun
+          rows.sort(
+            (a,b) => DAYS.indexOf(a.day.slice(0,3) as any) - DAYS.indexOf(b.day.slice(0,3) as any)
+          );
+          return rows;
+        }
+      }
+    } catch {
+      // fall through
+    }
+
+    // If it's a plain string (not JSON) like "Mon: 9-5 • Tue: 9-5 …"
+    if (typeof raw === "string" && raw.trim()) {
+      const parts = raw.split(/[\n;•]+/).map((s) => s.trim()).filter(Boolean);
+      const rows: Array<{ day: string; hours: string }> = [];
+      for (const p of parts) {
+        const m = p.match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*[:\s-]+(.+)$/i);
+        if (m) rows.push({ day: labelForDay(m[1]), hours: m[2].trim() });
+      }
+      if (rows.length) return rows;
+    }
+  }
+
+  // 2) Per-day columns
+  const perDay = (name: string) =>
+    cust?.[`${name}Hours`] ??
+    cust?.[`${name}_hours`] ??
+    cust?.[`${name}Open`] ??
+    cust?.[`${name}_open`] ??
+    cust?.[name];
+
+  const rows: Array<{ day: string; hours: string }> = [];
+  for (const full of ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]) {
+    const v = perDay(full);
+    if (v == null || v === "") continue;
+    let hours = "";
+    if (typeof v === "object") {
+      const open = v.open ?? v.isOpen ?? true;
+      const from = v.from ?? v.start;
+      const to   = v.to ?? v.end;
+      hours = open === false ? "Closed" : from && to ? `${from}–${to}` : JSON.stringify(v);
+    } else {
+      hours = String(v);
+    }
+    rows.push({ day: labelForDay(full), hours });
+  }
+  return rows;
+}
+/* ------------------------------------------------------------------- */
 
 /** Load calls from a handful of likely tables/columns without crashing builds. */
 async function loadCalls(customerId: string): Promise<any[]> {
@@ -184,7 +239,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
   const view: "orders" | "drafts" = tab === "drafts" ? "drafts" : "orders";
 
-  // Fetch the whole record so we can read optional fields (opening hours) safely.
+  // Fetch the whole record so we can read optional fields (opening hours, sales rep) safely.
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
   });
@@ -265,7 +320,15 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     .filter(Boolean)
     .join(", ");
 
-  const openingHours = extractOpeningHours(customer);
+  const openingRows = openingHoursRows(customer);
+  const openingFallbackString =
+    (customer as any).openingHours ??
+    (customer as any).opening_hours ??
+    (customer as any).openingTimes ??
+    (customer as any).opening_times ??
+    (customer as any).hours ??
+    null;
+  const salesRep = extractSalesRep(customer);
 
   // ---------- Server Action: create Stripe Payment Link from a Shopify draft ----------
   async function createPaymentLinkAction(formData: FormData) {
@@ -377,16 +440,41 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               <br />
               {(customer as any).customerEmailAddress || "-"}
             </p>
+
+            <div style={{ marginTop: 10 }}>
+              <b>Sales rep</b>
+              <p className="small" style={{ marginTop: 6 }}>{salesRep || "—"}</p>
+            </div>
           </div>
+
           <div>
             <b>Location</b>
             <p className="small" style={{ marginTop: 6 }}>{addr || "-"}</p>
 
             <div style={{ marginTop: 10 }}>
               <b>Opening hours</b>
-              <p className="small" style={{ marginTop: 6 }}>
-                {openingHours || "—"}
-              </p>
+              {openingRows.length ? (
+                <div style={{ marginTop: 6, overflowX: "auto" }}>
+                  <table className="small" style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <tbody>
+                      {openingRows.map((r) => (
+                        <tr key={r.day}>
+                          <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", width: 130 }}>
+                            <b>{r.day}</b>
+                          </td>
+                          <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee" }}>
+                            {r.hours || "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="small" style={{ marginTop: 6 }}>
+                  {openingFallbackString ? String(openingFallbackString) : "—"}
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -421,7 +509,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                 style={{
                   display: "grid",
                   gridTemplateColumns:
-                    "170px 140px 140px 160px 120px 120px 120px auto", // + Payment + Fulfillment
+                    "170px 140px 140px 160px 120px 120px 120px auto",
                   gap: 6,
                   alignItems: "center",
                 }}
@@ -447,9 +535,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                       <div className="nowrap">{name}</div>
                       <div><span className="badge">{prettyFinancial(st?.financial_status)}</span></div>
                       <div><span className="badge">{prettyFulfillment(st?.fulfillment_status)}</span></div>
-                      <div>{money(o.subtotal, currency)}</div>
-                      <div>{money(o.taxes, currency)}</div>
-                      <div style={{ fontWeight: 600 }}>{money(o.total, currency)}</div>
+                      <div>{money(o.subtotal, "GBP")}</div>
+                      <div>{money(o.taxes, "GBP")}</div>
+                      <div style={{ fontWeight: 600 }}>{money(o.total, "GBP")}</div>
                       <div>
                         <Link className="btn" href={`/orders/${o.id}`}>
                           View
@@ -469,7 +557,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               style={{
                 display: "grid",
                 gridTemplateColumns:
-                  "170px 160px 140px 160px 120px 120px 120px auto", // columns aligned with Orders
+                  "170px 160px 140px 160px 120px 120px 120px auto",
                 gap: 6,
                 alignItems: "center",
               }}
@@ -499,9 +587,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                     <div>#{d.id}</div>
                     <div><span className="badge">—</span></div>
                     <div><span className="badge">—</span></div>
-                    <div>{money(subtotal, currency)}</div>
-                    <div>{money(taxes, currency)}</div>
-                    <div style={{ fontWeight: 600 }}>{money(total, currency)}</div>
+                    <div>{money(subtotal, "GBP")}</div>
+                    <div>{money(taxes, "GBP")}</div>
+                    <div style={{ fontWeight: 600 }}>{money(total, "GBP")}</div>
                     <div className="row" style={{ gap: 6 }}>
                       <a className="btn" href={adminUrl} target="_blank" rel="noreferrer" title="Open in Shopify">
                         View in Shopify
@@ -536,7 +624,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Call log</h3>
-          {/* Buttons removed as requested */}
         </div>
 
         {calls.length === 0 ? (
