@@ -1,39 +1,49 @@
+// components/BackButton.tsx
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback } from "react";
+import * as React from "react";
+
+type Props = {
+  /** Text shown on the button (default: "Back") */
+  label?: string;
+  /** Class names for styling (e.g. "btn") */
+  className?: string;
+  /** Where to go if there’s no browser history (default: "/") */
+  fallback?: string;
+  /** Optional aria-label override */
+  ariaLabel?: string;
+};
 
 export default function BackButton({
-  className = "btn",
   label = "Back",
+  className,
   fallback = "/",
-}: {
-  className?: string;
-  label?: string;
-  /** where to go if there's no history to go back to */
-  fallback?: string;
-}) {
+  ariaLabel,
+}: Props) {
   const router = useRouter();
 
-  const goBack = useCallback(() => {
-    // If we have history, go back, otherwise go to a sensible page
-    if (typeof window !== "undefined" && window.history.length > 1) {
-      router.back();
-    } else {
-      router.push(fallback);
-    }
-  }, [router, fallback]);
+  const handleClick = React.useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      e.preventDefault();
+      // if there’s history, go back; otherwise push fallback
+      if (typeof window !== "undefined" && window.history.length > 1) {
+        router.back();
+      } else {
+        router.push(fallback);
+      }
+    },
+    [router, fallback]
+  );
 
   return (
     <button
       type="button"
-      onClick={goBack}
+      onClick={handleClick}
       className={className}
-      aria-label="Go back"
-      data-testid="back-button"
-      title="Go back"
+      aria-label={ariaLabel || label}
     >
-      ← {label}
+      {label}
     </button>
   );
 }
