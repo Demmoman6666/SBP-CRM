@@ -1,3 +1,4 @@
+// components/ShopifyProductPicker.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -30,24 +31,20 @@ function toNumericId(v: any): number | null {
   return m ? Number(m[1]) : null;
 }
 
-// NEW: parse prices from many shapes ("£3.71", "3,71", MoneyV2, etc.)
+// parse prices from many shapes ("£3.71", "3,71", MoneyV2, etc.)
 function parsePrice(val: any): number | null {
   if (val == null || val === "") return null;
   if (typeof val === "number") return Number.isFinite(val) ? val : null;
   if (typeof val === "object") {
-    // MoneyV2 or similar
     if (typeof val.amount === "string" || typeof val.amount === "number") {
       return parsePrice(val.amount);
     }
   }
   const s = String(val).trim();
-  // strip currency symbols/letters, keep digits, comma, dot, minus
   let cleaned = s.replace(/[^\d.,-]/g, "");
-  // if both comma and dot exist, treat dots as decimal and drop commas (thousands)
   if (cleaned.includes(",") && cleaned.includes(".")) {
     cleaned = cleaned.replace(/,/g, "");
   } else if (cleaned.includes(",") && !cleaned.includes(".")) {
-    // only comma -> decimal
     cleaned = cleaned.replace(",", ".");
   }
   const n = parseFloat(cleaned);
@@ -57,19 +54,28 @@ function parsePrice(val: any): number | null {
 function normaliseRow(row: any): Item | null {
   if (!row) return null;
 
-  const rawId =
+  // ----- ALWAYS resolve a VARIANT id (never a product id) -----
+  // 1) direct variant id fields
+  let rawVariantId =
     row.variantId ??
     row.variant_id ??
     row.variantID ??
-    row.id ??
     row.variant?.id ??
-    row.node?.id ??
-    // product-level shapes: use first variant id
-    row.variants?.[0]?.id ??
-    row.node?.variants?.edges?.[0]?.node?.id;
+    row.node?.id; // GraphQL may return a variant id here
 
-  const variantId = toNumericId(rawId);
+  // 2) if we still don't have a variant id, many search endpoints return product-level rows
+  //    -> take the first variant from common shapes
+  if (!rawVariantId) {
+    rawVariantId =
+      row?.variants?.[0]?.id ??
+      row?.product?.variants?.[0]?.id ??
+      row?.node?.variants?.edges?.[0]?.node?.id ??
+      row?.node?.product?.variants?.edges?.[0]?.node?.id;
+  }
+
+  const variantId = toNumericId(rawVariantId);
   if (!Number.isFinite(Number(variantId))) return null;
+  // ------------------------------------------------------------
 
   const productTitle =
     row.productTitle ??
@@ -78,40 +84,45 @@ function normaliseRow(row: any): Item | null {
     row.title?.product ??
     row.node?.product?.title ??
     row.title ??
+    row.title?.split(" / ")?.[0] ?? // sometimes combined "Product / Variant"
     "Product";
 
+  // prefer explicit variant title; otherwise try the first variant on product-level rows
   const variantTitle =
     row.variantTitle ??
     row.variant_title ??
     row.variant?.title ??
     row.title?.variant ??
     row.node?.title ??
-    row.variants?.[0]?.title ??
-    row.node?.variants?.edges?.[0]?.node?.title ??
+    row?.variants?.[0]?.title ??
+    row?.product?.variants?.[0]?.title ??
+    row?.node?.variants?.edges?.[0]?.node?.title ??
     null;
 
   const sku =
     row.sku ??
     row.variant?.sku ??
     row.node?.sku ??
-    row.variants?.[0]?.sku ??
-    row.node?.variants?.edges?.[0]?.node?.sku ??
+    row?.variants?.[0]?.sku ??
+    row?.product?.variants?.[0]?.sku ??
+    row?.node?.variants?.edges?.[0]?.node?.sku ??
     null;
 
-  // price fallbacks (prefer ex VAT; if inc only, we’ll hydrate via API)
+  // price fallbacks (ex VAT preferred, but show something if present)
   const priceExVatRaw =
     row.priceExVat ??
     row.price_ex_vat ??
     row.unit_price ??
     row.price ??
     row.variant?.price ??
-    row.variants?.[0]?.price ??                      // <-- added
-    row.variants?.[0]?.priceV2?.amount ??            // <-- added
-    row.price?.amount ??                 // MoneyV2
+    row.price?.amount ?? // MoneyV2
     row.node?.price ??
-    row.node?.priceV2?.amount ??         // MoneyV2
-    row.node?.unitPrice?.amount ??       // MoneyV2
-    row.presentment_prices?.[0]?.price?.amount; // REST presentment
+    row.node?.priceV2?.amount ?? // MoneyV2
+    row.node?.unitPrice?.amount ?? // MoneyV2
+    row.presentment_prices?.[0]?.price?.amount ??
+    row?.variants?.[0]?.price ??
+    row?.product?.variants?.[0]?.price ??
+    row?.node?.variants?.edges?.[0]?.node?.price;
 
   const priceExVat = parsePrice(priceExVatRaw);
 
@@ -122,8 +133,9 @@ function normaliseRow(row: any): Item | null {
     row.inventory ??
     row.variant?.inventoryQuantity ??
     row.node?.availableForSaleQuantity ??
-    row.variants?.[0]?.inventory_quantity ??
-    row.node?.variants?.edges?.[0]?.node?.inventoryQuantity;
+    row?.variants?.[0]?.inventory_quantity ??
+    row?.product?.variants?.[0]?.inventory_quantity ??
+    row?.node?.variants?.edges?.[0]?.node?.inventoryQuantity;
 
   const available =
     availableRaw == null || availableRaw === ""
@@ -139,8 +151,8 @@ function normaliseRow(row: any): Item | null {
     row.product?.image?.src ??
     row.variant?.image?.src ??
     row.node?.image?.src ??
-    row.variants?.[0]?.image?.src ??
-    row.node?.variants?.edges?.[0]?.node?.image?.src ??
+    row?.variants?.[0]?.image?.src ??
+    row?.node?.variants?.edges?.[0]?.node?.image?.src ??
     null;
 
   return {
@@ -190,7 +202,7 @@ async function fetchProducts(q: string): Promise<Item[]> {
   return [];
 }
 
-// CHANGED: show "—" when price is missing (don’t coerce to 0)
+// show "—" when price is missing (don’t coerce to 0)
 function fmtGBP(n?: number | null) {
   if (n == null || !Number.isFinite(Number(n))) return "—";
   return new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
@@ -225,7 +237,7 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
     return () => clearTimeout(t);
   }, [query]);
 
-  // Hydrate missing prices from Shopify (ex VAT)
+  // Keep: price hydration via /api/shopify/variant-prices (works with variant ids)
   useEffect(() => {
     const missing = items.filter(
       (i) => (i.priceExVat == null || !Number.isFinite(Number(i.priceExVat))) && Number.isFinite(i.variantId)
@@ -245,15 +257,14 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
         if (map && typeof map === "object") {
           setItems((prev) =>
             prev.map((it) => {
-              const k = String(it.variantId);
-              const hit = map[k];
+              const hit = map[String(it.variantId)];
               if (!hit || hit.priceExVat == null) return it;
               return { ...it, priceExVat: Number(hit.priceExVat) };
             })
           );
         }
       } catch {
-        // ignore – we just keep whatever we already have
+        /* ignore */
       }
     })();
   }, [items]);
