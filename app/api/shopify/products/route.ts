@@ -15,9 +15,15 @@ function qString(term: string) {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const term = (searchParams.get("q") || "").trim();
-  const first = Number(searchParams.get("first") || 15);
+  const firstRaw = Number(searchParams.get("first") || 15);
+  const first = Math.max(1, Math.min(50, isNaN(firstRaw) ? 15 : firstRaw));
 
-  if (!term) return NextResponse.json([], { status: 200 });
+  if (!term) {
+    return new NextResponse(JSON.stringify([]), {
+      status: 200,
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
 
   // Admin GraphQL: variant.price is a scalar Money (string), not MoneyV2.
   const query = `
@@ -92,17 +98,20 @@ export async function GET(req: Request) {
           return {
             id: gidToNumericId(v.id) || v.id,
             title: v.title,
-            price: v.price ?? null, // scalar string from Admin API
+            price: v.price ?? null, // scalar string from Admin API (ex-VAT)
             sku: v.sku ?? null,
             available: v.availableForSale ?? true,
-            stock: typeof v.inventoryQuantity === "number" ? v.inventoryQuantity : null, // ✅ expose live stock
+            stock: typeof v.inventoryQuantity === "number" ? v.inventoryQuantity : null, // live stock
             barcode: v.barcode ?? null,
           };
         }),
       };
     });
 
-    return NextResponse.json(products, { status: 200 });
+    return new NextResponse(JSON.stringify(products), {
+      status: 200,
+      headers: { "Cache-Control": "no-store" },
+    });
   } catch (err) {
     console.error("GraphQL search failed, falling back to REST:", err);
     try {
@@ -113,9 +122,9 @@ export async function GET(req: Request) {
       );
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
-        return NextResponse.json(
-          { error: `Shopify REST search failed: ${res.status} ${txt}` },
-          { status: 500 }
+        return new NextResponse(
+          JSON.stringify({ error: `Shopify REST search failed: ${res.status} ${txt}` }),
+          { status: 500, headers: { "Cache-Control": "no-store" } }
         );
       }
       const json = await res.json();
@@ -128,7 +137,7 @@ export async function GET(req: Request) {
         variants: (p.variants || []).map((v: any) => ({
           id: String(v.id),
           title: v.title,
-          price: v.price ?? v.compare_at_price ?? null,
+          price: v.price ?? v.compare_at_price ?? null, // ex-VAT
           sku: v.sku ?? null,
           available:
             typeof v.inventory_quantity === "number"
@@ -141,12 +150,15 @@ export async function GET(req: Request) {
           barcode: v.barcode ?? null,
         })),
       }));
-      return NextResponse.json(products, { status: 200 });
+      return new NextResponse(JSON.stringify(products), {
+        status: 200,
+        headers: { "Cache-Control": "no-store" },
+      });
     } catch (fallbackErr) {
       console.error("Product search fallback failed:", fallbackErr);
-      return NextResponse.json(
-        { error: "Shopify product search failed (GraphQL and REST)" },
-        { status: 500 }
+      return new NextResponse(
+        JSON.stringify({ error: "Shopify product search failed (GraphQL and REST)" }),
+        { status: 500, headers: { "Cache-Control": "no-store" } }
       );
     }
   }
