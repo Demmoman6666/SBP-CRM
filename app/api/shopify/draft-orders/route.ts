@@ -1,94 +1,134 @@
 // app/api/shopify/draft-orders/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { gidToNumericId } from "@/lib/shopify";
+import { shopifyRest } from "@/lib/shopify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function shopifyRest(path: string, init: RequestInit = {}) {
-  const RAW_SHOP_DOMAIN = (process.env.SHOPIFY_SHOP_DOMAIN || "").trim();
-  const SHOP_DOMAIN = RAW_SHOP_DOMAIN.replace(/^https?:\/\//i, "");
-  const SHOP_ADMIN_TOKEN = (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "").trim();
-  const SHOPIFY_API_VERSION = (process.env.SHOPIFY_API_VERSION || "2024-07").trim();
-  if (!SHOP_DOMAIN || !SHOP_ADMIN_TOKEN) throw new Error("Missing Shopify env vars");
+type AnyLine =
+  | { variant_id?: number | string; variantId?: number | string; quantity?: number | string; price?: number | string; title?: string }
+  | Record<string, any>;
 
-  const url = `https://${SHOP_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}${path}`;
-  const headers = new Headers(init.headers as any);
-  headers.set("X-Shopify-Access-Token", SHOP_ADMIN_TOKEN);
-  headers.set("Content-Type", "application/json");
-  headers.set("Accept", "application/json");
+function toNum(n: any): number | undefined {
+  const v = typeof n === "string" ? Number(n) : n;
+  return Number.isFinite(v) ? v : undefined;
+}
 
-  const res = await fetch(url, { ...init, headers, cache: "no-store" });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`${init.method || "GET"} ${path} failed: ${res.status} ${text}`);
+function pickLines(body: any): Array<{ variant_id: number; quantity: number; price?: number; title?: string }> {
+  const candidates: AnyLine[] =
+    body?.lines ??
+    body?.line_items ??
+    body?.draft_order?.line_items ??
+    body?.draftOrder?.lineItems ??
+    body?.items ??
+    body?.cart?.lines ??
+    [];
+
+  if (!Array.isArray(candidates)) return [];
+
+  const out: Array<{ variant_id: number; quantity: number; price?: number; title?: string }> = [];
+  for (const raw of candidates) {
+    const variant_id = toNum(raw.variant_id ?? raw.variantId);
+    const quantity = toNum(raw.quantity) ?? 1;
+    if (!variant_id || quantity <= 0) continue;
+
+    const price = toNum(raw.price);
+    const title = typeof raw.title === "string" ? raw.title : undefined;
+
+    out.push({ variant_id, quantity, ...(price != null ? { price } : {}), ...(title ? { title } : {}) });
   }
-  return res.json();
+  return out;
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const customerId: string = String(body?.customerId || "");
-    const note: string | undefined = body?.note || undefined;
-    const items: Array<{ variantId?: string; variantGid?: string; quantity?: number }> = Array.isArray(body?.items)
-      ? body.items
-      : [];
+    const body = await req.json().catch(() => ({}));
+    const crmCustomerId: string | undefined = body.customerId ?? body.crmCustomerId ?? body.customer_id;
 
-    if (!customerId) return NextResponse.json({ error: "customerId is required" }, { status: 400 });
-    if (!items.length) return NextResponse.json({ error: "At least one line item is required" }, { status: 400 });
-
-    const crm = await prisma.customer.findUnique({
-      where: { id: customerId },
-      select: { shopifyCustomerId: true, customerEmailAddress: true, salonName: true, customerName: true },
-    });
-    if (!crm) return NextResponse.json({ error: "CRM customer not found" }, { status: 404 });
-
-    // Ensure we have a Shopify Customer reference (by id or email)
-    let customerRef: any = undefined;
-    if (crm.shopifyCustomerId) {
-      customerRef = { id: Number(crm.shopifyCustomerId) };
-    } else if (crm.customerEmailAddress) {
-      // Let Shopify match on email if no id yet (it will attach by email on draft order)
-      customerRef = { email: crm.customerEmailAddress };
+    const line_items = pickLines(body);
+    if (!line_items.length) {
+      return NextResponse.json({ error: "At least one line item is required" }, { status: 400 });
     }
 
-    const line_items = items.map((it) => {
-      const idNum = it.variantId || gidToNumericId(it.variantGid || "");
-      if (!idNum) throw new Error("Each item needs a variantId or variantGid");
-      const qty = Math.max(1, Number(it.quantity || 1));
-      return { variant_id: Number(idNum), quantity: qty };
-    });
+    // Look up CRM customer to attach Shopify customer or address
+    let shopifyCustomerIdNum: number | null = null;
+    let email: string | undefined;
+    let shipping_address: any | undefined;
 
+    if (crmCustomerId) {
+      const c = await prisma.customer.findUnique({
+        where: { id: String(crmCustomerId) },
+        select: {
+          shopifyCustomerId: true,
+          customerEmailAddress: true,
+          customerName: true,
+          salonName: true,
+          addressLine1: true,
+          addressLine2: true,
+          town: true,
+          county: true,
+          postCode: true,
+          country: true,
+        },
+      });
+
+      if (c) {
+        if (c.shopifyCustomerId) shopifyCustomerIdNum = Number(c.shopifyCustomerId);
+        email = c.customerEmailAddress ?? undefined;
+        const name = c.salonName || c.customerName || undefined;
+        shipping_address = {
+          name,
+          address1: c.addressLine1 || undefined,
+          address2: c.addressLine2 || undefined,
+          city: c.town || undefined,
+          province: c.county || undefined,
+          zip: c.postCode || undefined,
+          country_code: (c.country || "GB").toUpperCase(),
+        };
+      }
+    }
+
+    // Build Shopify Draft Order payload (REST Admin API)
     const payload: any = {
       draft_order: {
         line_items,
-        note,
+        taxes_included: false,                 // we send EX VAT unit prices
+        use_customer_default_address: true,
+        note: "Created from SBP CRM",
+        ...(email ? { email } : {}),
+        ...(shopifyCustomerIdNum
+          ? { customer: { id: shopifyCustomerIdNum } }
+          : shipping_address
+          ? { shipping_address }
+          : {}),
       },
     };
-    if (customerRef) payload.draft_order.customer = customerRef;
 
-    const json = await shopifyRest(`/draft_orders.json`, {
+    const resp = await shopifyRest(`/draft_orders.json`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
 
-    const draft = json?.draft_order;
-    const draftId = draft?.id;
-    const adminUrl = draftId
-      ? `https://${(process.env.SHOPIFY_SHOP_DOMAIN || "").replace(/^https?:\/\//i, "")}/admin/draft_orders/${draftId}`
-      : null;
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return NextResponse.json({ error: `Shopify draft create failed: ${resp.status} ${text}` }, { status: 400 });
+    }
 
-    return NextResponse.json({
-      ok: true,
-      draftOrderId: draftId,
-      status: draft?.status || null,
-      invoiceUrl: draft?.invoice_url || null,
-      adminUrl,
-    });
-  } catch (err: any) {
-    console.error("[draft-orders] error:", err?.message || err);
-    return NextResponse.json({ error: err?.message || "Failed to create draft order" }, { status: 500 });
+    const json = await resp.json().catch(() => ({}));
+    const draft = json?.draft_order || null;
+    if (!draft?.id) {
+      return NextResponse.json({ error: "Draft created but response did not include an id", raw: json }, { status: 500 });
+    }
+
+    return NextResponse.json({ id: String(draft.id), draft_order: draft }, { status: 200 });
+  } catch (e: any) {
+    console.error("Create draft error:", e);
+    return NextResponse.json({ error: e?.message || "Server error" }, { status: 500 });
   }
+}
+
+// Optional: block other verbs
+export async function GET() {
+  return NextResponse.json({ error: "Method Not Allowed" }, { status: 405 });
 }
