@@ -1,4 +1,3 @@
-// components/ShopifyProductPicker.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -207,53 +206,35 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
     return () => clearTimeout(t);
   }, [query]);
 
-  // 🔥 NEW: hydrate missing prices from the server (Shopify) and overlay them
+  // ✅ NEW: hydrate missing prices from Shopify (ex VAT)
   useEffect(() => {
-    const missingIds = Array.from(
-      new Set(
-        items
-          .filter((i) => i.priceExVat == null || i.priceExVat === 0)
-          .map((i) => i.variantId)
-          .filter((n) => Number.isFinite(n))
-      )
+    const missing = items.filter(
+      (i) => (i.priceExVat == null || !Number.isFinite(Number(i.priceExVat))) && Number.isFinite(i.variantId)
     );
-    if (missingIds.length === 0) return;
+    if (missing.length === 0) return;
 
     (async () => {
       try {
         const r = await fetch("/api/shopify/variant-prices", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({ variantIds: missingIds }),
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ ids: missing.map((m) => m.variantId) }),
         });
         const j = await r.json().catch(() => ({}));
-        const prices: Record<
-          string,
-          { priceExVat: number; variantTitle?: string; sku?: string | null }
-        > = j?.prices || {};
+        const map = (j?.prices || {}) as Record<string, { priceExVat?: number }>;
 
-        if (!prices || Object.keys(prices).length === 0) return;
-
-        setItems((prev) =>
-          prev.map((it) => {
-            const hit = prices[String(it.variantId)];
-            if (!hit) return it;
-            return {
-              ...it,
-              priceExVat:
-                it.priceExVat != null && Number.isFinite(Number(it.priceExVat)) && it.priceExVat! > 0
-                  ? it.priceExVat
-                  : hit.priceExVat,
-              sku: it.sku ?? hit.sku ?? null,
-              variantTitle: it.variantTitle ?? hit.variantTitle ?? it.variantTitle,
-            };
-          })
-        );
+        if (map && typeof map === "object") {
+          setItems((prev) =>
+            prev.map((it) => {
+              const k1 = String(it.variantId);
+              const hit = map[k1] ?? map[it.variantId as unknown as string];
+              if (!hit || hit.priceExVat == null) return it;
+              return { ...it, priceExVat: Number(hit.priceExVat) };
+            })
+          );
+        }
       } catch {
-        // ignore; UI will keep showing "—"
+        // ignore – we just keep whatever we already have
       }
     })();
   }, [items]);
