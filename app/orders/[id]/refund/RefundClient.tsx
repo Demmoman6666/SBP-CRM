@@ -1,111 +1,107 @@
-// app/orders/[id]/refund/RefundClient.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-type LineMeta = { id: string; maxQty: number };
+type Line = {
+  id: string;                 // CRM line id (used in input name: qty_<id>)
+  shopifyLineItemId: number;  // numeric Shopify line_item_id
+  maxQty: number;
+};
 
 export default function RefundClient({
   orderId,
-  currency,
+  currency = "GBP",
   lines,
 }: {
   orderId: string;
-  currency: string;
-  lines: LineMeta[];
+  currency?: string;
+  lines: Line[];
 }) {
-  const [amount, setAmount] = useState<string>("0.00");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const formRef = useRef<HTMLFormElement | null>(null);
+  const [amount, setAmount] = useState<number>(0);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  // capture the parent form
   useEffect(() => {
-    // find the nearest form (this component is inside it)
-    let el: HTMLElement | null = document.currentScript?.parentElement || null;
-    // fallback: walk up
-    let parent = (document.activeElement as HTMLElement) || null;
-    while (parent && parent.tagName !== "FORM") parent = parent.parentElement as HTMLElement | null;
-    formRef.current = parent as HTMLFormElement | null;
-  }, []);
+    let aborted = false;
+    const inputs = lines
+      .map((l) => document.querySelector<HTMLInputElement>(`input[name="qty_${l.id}"]`))
+      .filter(Boolean) as HTMLInputElement[];
 
-  const readQuantities = () => {
-    const form = formRef.current || (document.querySelector("form[action*='/api/orders/'][method='POST']") as HTMLFormElement | null);
-    if (!form) return [];
-    const items: Array<{ crmLineId: string; quantity: number }> = [];
-    for (const l of lines) {
-      const input = form.querySelector<HTMLInputElement>(`input[name="qty_${l.id}"]`);
-      const q = Number(input?.value || 0);
-      if (Number.isFinite(q) && q > 0) {
-        items.push({ crmLineId: l.id, quantity: Math.min(q, l.maxQty) });
-      }
-    }
-    return items;
-  };
+    async function recalc() {
+      if (aborted) return;
+      setErr(null);
+      const payload = {
+        items: lines
+          .map((l) => {
+            const el = document.querySelector<HTMLInputElement>(`input[name="qty_${l.id}"]`);
+            const q = Number(el?.value || 0);
+            if (!Number.isFinite(q) || q <= 0) return null;
+            return { line_item_id: l.shopifyLineItemId, quantity: Math.min(q, l.maxQty) };
+          })
+          .filter(Boolean),
+      };
 
-  const doPreview = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const items = readQuantities();
-      if (!items.length) {
-        setAmount("0.00");
+      // no refund items → zero
+      if (!payload.items.length) {
+        setAmount(0);
         return;
       }
-      const res = await fetch(`/api/orders/${orderId}/refund/preview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Preview failed");
-      setAmount(String(json?.amount ?? "0.00"));
-    } catch (e: any) {
-      setError(e?.message || "Preview failed");
-    } finally {
-      setLoading(false);
+
+      try {
+        setBusy(true);
+        const res = await fetch(`/api/orders/${orderId}/refund/preview`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          cache: "no-store",
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || "Preview failed");
+        if (!aborted) setAmount(Number(json.amount || 0));
+      } catch (e: any) {
+        if (!aborted) {
+          setAmount(0);
+          setErr(e?.message || "Preview failed");
+        }
+      } finally {
+        if (!aborted) setBusy(false);
+      }
     }
-  };
 
-  // re-run when inputs change (debounced)
-  useEffect(() => {
-    const form = formRef.current || (document.querySelector("form[action*='/api/orders/'][method='POST']") as HTMLFormElement | null);
-    if (!form) return;
-    const inputs = Array.from(form.querySelectorAll<HTMLInputElement>("input[data-refund-qty]"));
-
+    // debounce
     let t: any;
-    const handler = () => {
+    const onChange = () => {
       clearTimeout(t);
-      t = setTimeout(doPreview, 250);
+      t = setTimeout(recalc, 150);
     };
-    inputs.forEach((i) => i.addEventListener("input", handler));
-    // run once initially
-    doPreview();
+
+    inputs.forEach((el) => el.addEventListener("input", onChange));
+    recalc();
 
     return () => {
-      inputs.forEach((i) => i.removeEventListener("input", handler));
+      aborted = true;
       clearTimeout(t);
+      inputs.forEach((el) => el.removeEventListener("input", onChange));
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orderId, lines.map((l) => l.id).join(",")]);
+  }, [orderId, lines]);
 
-  const formatted = useMemo(() => {
-    try {
-      return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(amount));
-    } catch {
-      const n = Number(amount);
-      return Number.isFinite(n) ? `£${n.toFixed(2)}` : "£0.00";
-    }
-  }, [amount, currency]);
+  const fmt = (n: number) =>
+    new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "GBP" }).format(
+      Number.isFinite(n) ? n : 0
+    );
 
   return (
-    <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-      <div className="small muted">
-        {loading ? "Calculating refund…" : error ? <span style={{ color: "var(--danger, #b91c1c)" }}>{error}</span> : "Refund preview from Shopify"}
+    <div className="small" style={{ marginTop: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <span className="muted">Refund preview from Shopify</span>
+        <strong>{busy ? "…" : fmt(amount)}</strong>
       </div>
-      <div style={{ fontWeight: 700 }}>
-        Refund total: {formatted}
-      </div>
+      {err && (
+        <div className="small" style={{ color: "var(--danger, #b91c1c)", marginTop: 4 }}>
+          {err}
+        </div>
+      )}
+      <input type="hidden" name="_refundPreviewAmount" value={String(amount)} />
     </div>
   );
 }
