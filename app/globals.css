@@ -20,7 +20,7 @@ body {
   color: var(--text);
   background: var(--bg);
   line-height: 1.5;
-  overflow-x: hidden;          /* stop tiny sideways scrolls on narrow screens */
+  overflow-x: hidden;
 }
 
 /* 2) Theme Tokens */
@@ -38,16 +38,16 @@ body {
   --radius-sm: 10px;
   --ring: 0 0 0 3px rgba(254,179,228,.55);
 
-  /* unified field tokens */
   --field-bg: #ffffff;
-  --field-border: #111111;     /* prominent border like your preferred style */
-  --field-height: 44px;        /* iOS-friendly tap target */
+  --field-border: #111111;
+  --field-height: 44px;
   --container-pad: clamp(12px, 3.5vw, 16px);
 }
 
-/* 3) Typography (mobile-first with fluid sizes) */
+/* 3) Typography */
 h1,h2,h3,h4 { margin: 0 0 .6rem 0; line-height: 1.2; color: var(--text); }
-h1 { font-size: clamp(1.4rem, 1rem + 2.2vw, 2.1rem); }
+/* slightly smaller on mobile so the home hero isn’t oversized */
+h1 { font-size: clamp(1.3rem, 1rem + 2vw, 2rem); }
 h2 { font-size: clamp(1.2rem, .95rem + 1.2vw, 1.6rem); }
 h3 { font-size: clamp(1rem, .9rem + .6vw, 1.2rem); }
 p  { margin: 0 0 .9rem 0; }
@@ -66,18 +66,13 @@ a:hover { text-decoration: underline; }
   padding-inline: var(--container-pad);
 }
 
-.row { display: flex; gap: 10px; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
 .grid { display: grid; gap: 12px; }
 .grid-2 { grid-template-columns: 1fr; gap: 12px; }
 @media (min-width: 768px) { .grid-2 { grid-template-columns: repeat(2, 1fr); } }
 
 /* 6) Header / logo */
-.brand-logo {
-  height: clamp(40px, 7vw, 60px);
-  width: auto;
-  display: block;
-  image-rendering: -webkit-optimize-contrast;
-}
+.brand-logo { height: clamp(40px, 7vw, 60px); width: auto; display: block; image-rendering: -webkit-optimize-contrast; }
 
 /* 7) Cards */
 .card {
@@ -86,7 +81,7 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   padding: clamp(12px, 3vw, 16px);
-  overflow-x: auto;            /* lets wide tables scroll instead of breaking layout */
+  overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -109,17 +104,15 @@ button, .btn, .primary {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 44px;            /* iOS comfortable tap target */
-  font-size: 16px;             /* prevents iOS zoom on tap */
+  min-height: 44px;
+  font-size: 16px; /* prevent iOS focus zoom */
 }
 .primary:hover { background: var(--pink-600); }
 .primary:active { transform: translateY(1px); }
 .primary:focus-visible { outline: none; box-shadow: var(--ring); }
 button:disabled, .btn:disabled { opacity: .55; cursor: not-allowed; }
 
-/* 9) Forms (mobile-first) */
-
-/* labels */
+/* 9) Forms */
 label {
   display: block;
   font-size: .85rem;
@@ -128,7 +121,6 @@ label {
   font-weight: 600;
 }
 
-/* Only style text-like inputs (not checkboxes/radios/range/file) */
 :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])),
 select,
 textarea {
@@ -144,10 +136,9 @@ textarea {
   outline: none;
   transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
   font-variant-numeric: tabular-nums;
-  font-size: 16px;             /* **critical**: stops iOS auto-zoom on focus */
+  font-size: 16px;
 }
 
-/* keep native checkboxes/radios (restores Opening Hours look) */
 input[type="checkbox"],
 input[type="radio"] {
   appearance: auto;
@@ -156,9 +147,7 @@ input[type="radio"] {
   border: none;
   background: transparent;
   box-shadow: none;
-  padding: 0;
-  margin: 0;
-  vertical-align: middle;
+  padding: 0; margin: 0; vertical-align: middle;
 }
 
 textarea { height: auto; resize: vertical; }
@@ -176,30 +165,20 @@ select:focus {
   box-shadow: var(--ring);
 }
 
-/* number spinners off for cleaner look */
+/* number spinners off */
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type="number"] { -moz-appearance: textfield; }
 
-/* Selects */
 select { padding-right: 28px; }
 
-/* Opening Hours — compact rectangular look */
-.opening-hours { }
+/* Opening Hours – compact */
 .opening-hours table { width: 100%; border-collapse: collapse; }
-.opening-hours th,
-.opening-hours td { padding: 6px 8px; vertical-align: middle; }
-
+.opening-hours th, .opening-hours td { padding: 6px 8px; vertical-align: middle; }
 .opening-hours select {
-  height: 36px;
-  min-width: 72px;
-  border-radius: 10px;
-  border: 1px solid var(--border) !important;
-  background: #fff !important;
-  text-align: center;
-  padding: 6px 10px;
-  font-variant-numeric: tabular-nums;
-  font-size: 16px;
+  height: 36px; min-width: 72px; border-radius: 10px;
+  border: 1px solid var(--border) !important; background: #fff !important;
+  text-align: center; padding: 6px 10px; font-variant-numeric: tabular-nums; font-size: 16px;
 }
 .opening-hours select[data-min="true"] { min-width: 64px; }
 .opening-hours input[type="checkbox"] { margin-right: 6px; }
@@ -216,24 +195,21 @@ select { padding-right: 28px; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden; /* rounded top on header row */
+  overflow: hidden;
   font-size: 0.95rem;
 }
 .table th, .table td {
-  text-align: left;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-  white-space: nowrap;          /* keeps dates/totals tidy */
+  text-align: left; padding: 12px 14px;
+  border-bottom: 1px solid var(--border); vertical-align: middle;
+  white-space: nowrap;
 }
 .table th { font-size: .85rem; color: var(--muted); background: #fafafa; font-weight: 600; }
 .table tr:hover td { background: #fafafa; }
 
-/* Make wide tables usable on phones */
 @media (max-width: 640px) {
   .table th, .table td { padding: 10px 12px; }
   .card:has(.table) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .table { min-width: 640px; } /* allow horizontal scroll instead of squashing */
+  .table { min-width: 640px; }
 }
 
 /* 11) Badges */
@@ -250,42 +226,40 @@ footer small { color: var(--muted); }
 .hidden { display: none !important; }
 
 /* 14) Home Tiles */
-.home-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+.home-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
 .action-tile {
-  aspect-ratio: 1 / 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: flex-start;
+  aspect-ratio: 1 / 1;               /* desktop/tablet */
+  display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
   padding: 20px;
   border-radius: 14px;
   background: #fff;
   border: 1px solid var(--border);
   box-shadow: 0 2px 12px rgba(0,0,0,.04);
-  text-decoration: none;
-  color: #111;
-  position: relative;
-  overflow: hidden;
+  text-decoration: none; color: #111;
+  position: relative; overflow: hidden;
   transition: transform .15s ease, box-shadow .2s ease, border-color .2s ease;
 }
 .action-tile:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(0,0,0,.08); border-color: #f8d2ea; }
 .action-tile::after {
-  content: "";
-  position: absolute;
-  right: -30px;
-  bottom: -30px;
-  width: 120px;
-  height: 120px;
-  background: var(--pink);
-  opacity: .25;
-  border-radius: 50%;
-  filter: blur(12px);
-  pointer-events: none;
+  content: ""; position: absolute; right: -30px; bottom: -30px;
+  width: 120px; height: 120px; background: var(--pink); opacity: .25; border-radius: 50%;
+  filter: blur(12px); pointer-events: none;
 }
 .action-title { font-weight: 800; font-size: 1.1rem; letter-spacing: .2px; margin-bottom: 4px; }
 .action-sub   { font-size: .875rem; color: var(--muted); }
 
-/* 15) Field helper (if used) */
+/* Home tiles – mobile: make them shorter & single-column */
+@media (max-width: 640px) {
+  .home-actions { grid-template-columns: 1fr; gap: 14px; }
+  .action-tile { aspect-ratio: auto; min-height: 140px; padding: 16px; }
+}
+
+/* 15) Field helper */
 .field > input,
 .field > select,
 .field > textarea {
@@ -293,7 +267,7 @@ footer small { color: var(--muted); }
   border-radius: 14px;
   padding: 12px 14px;
   height: var(--field-height);
-  font-size: 16px;   /* again, no zoom on iOS */
+  font-size: 16px;
 }
 .field > textarea { height: auto; }
 .field > label {
@@ -304,6 +278,5 @@ footer small { color: var(--muted); }
   font-weight: 600;
 }
 
-/* 16) Mobile niceties */
+/* 16) Media niceties */
 img, svg, video, canvas { max-width: 100%; height: auto; }
-.row { flex-wrap: wrap; } /* lets button groups wrap on narrow screens */
