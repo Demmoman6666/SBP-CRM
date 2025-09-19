@@ -1,4 +1,3 @@
-// app/orders/new/ClientNewOrder.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -11,6 +10,7 @@ type Variant = {
   price?: string | number | null; // net (ex VAT) from Shopify
   sku?: string | null;
   available?: boolean;
+  stock?: number | null;          // NEW: live stock level
 };
 type ProductHit = {
   id: string | number;
@@ -26,6 +26,7 @@ type CartLine = {
   priceNet: number | null; // store net price
   quantity: number;
   sku?: string | null;
+  stock?: number | null;    // NEW: keep stock on the line for clamping
 };
 
 type CustomerBrief = {
@@ -110,15 +111,7 @@ export default function ClientNewOrder() {
   const [hits, setHits] = useState<ProductHit[]>([]);
   const [cart, setCart] = useState<CartLine[]>([]);
   const [error, setError] = useState<string | null>(null);
-
-  // submission states
   const [submitting, setSubmitting] = useState(false);
-  const [checkingOut, setCheckingOut] = useState(false);
-  const [creatingLink, setCreatingLink] = useState(false);
-
-  // payment link UI state
-  const [paymentLinkUrl, setPaymentLinkUrl] = useState<string | null>(null);
-  const [linkMsg, setLinkMsg] = useState<string | null>(null);
 
   // Hide search after first add; allow toggling back on
   const [showSearch, setShowSearch] = useState(true);
@@ -153,6 +146,7 @@ export default function ClientNewOrder() {
             price: v.price ?? v.compare_at_price ?? null, // net
             sku: v.sku ?? null,
             available: v.available ?? true,
+            stock: typeof v.stock === "number" ? v.stock : null, // NEW
           })),
         }));
         setHits(mapped);
@@ -168,11 +162,22 @@ export default function ClientNewOrder() {
     };
   }, [query, showSearch]);
 
+  // Helper: current quantity of a variant in cart
+  const qtyInCart = (variantId: string) =>
+    cart.find((l) => l.variantId === String(variantId))?.quantity ?? 0;
+
   function addVariant(p: ProductHit, v: Variant) {
+    const current = qtyInCart(String(v.id));
+    const max = typeof v.stock === "number" ? v.stock : Infinity;
+    if (current >= max) {
+      // already at stock limit
+      return;
+    }
+
     const existingIdx = cart.findIndex((l) => l.variantId === String(v.id));
     if (existingIdx >= 0) {
       const next = [...cart];
-      next[existingIdx].quantity += 1;
+      next[existingIdx].quantity = Math.min(next[existingIdx].quantity + 1, max);
       setCart(next);
       setShowSearch(false);
       return;
@@ -186,15 +191,19 @@ export default function ClientNewOrder() {
         priceNet: toNumber(v.price),
         quantity: 1,
         sku: v.sku ?? null,
+        stock: typeof v.stock === "number" ? v.stock : null,
       },
     ]);
     setShowSearch(false);
   }
 
   function updateQty(variantId: string, q: number) {
-    const next = cart.map((l) =>
-      l.variantId === variantId ? { ...l, quantity: Math.max(1, q) } : l
-    );
+    const next = cart.map((l) => {
+      if (l.variantId !== variantId) return l;
+      const max = typeof l.stock === "number" ? l.stock : Infinity;
+      const clamped = Math.max(1, Math.min(q, max));
+      return { ...l, quantity: clamped };
+    });
     setCart(next);
   }
   function removeLine(variantId: string) {
@@ -211,7 +220,7 @@ export default function ClientNewOrder() {
     return { net, vat, gross };
   }, [cart]);
 
-  async function createDraftOrder(e: React.FormEvent) {
+  async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
 
@@ -245,81 +254,6 @@ export default function ClientNewOrder() {
       setError(err?.message || "Failed to create draft order");
     } finally {
       setSubmitting(false);
-    }
-  }
-
-  async function handlePayByCard() {
-    setError(null);
-    setPaymentLinkUrl(null);
-    setLinkMsg(null);
-    if (!customerId || cart.length === 0) return;
-
-    try {
-      setCheckingOut(true);
-      const res = await fetch("/api/payments/stripe/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customerId,
-          lines: cart.map((l) => ({ variantId: l.variantId, quantity: l.quantity })),
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json?.url) throw new Error(json?.error || "Failed to start checkout");
-      window.open(json.url as string, "_blank");
-    } catch (err: any) {
-      setError(err?.message || "Failed to start checkout");
-    } finally {
-      setCheckingOut(false);
-    }
-  }
-
-  async function handleCreatePaymentLink() {
-    setError(null);
-    setLinkMsg(null);
-    setPaymentLinkUrl(null);
-    if (!customerId || cart.length === 0) return;
-
-    try {
-      setCreatingLink(true);
-      const res = await fetch("/api/payments/stripe/payment-link", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customerId,
-          lines: cart.map((l) => ({ variantId: l.variantId, quantity: l.quantity })),
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json?.url) throw new Error(json?.error || "Failed to create payment link");
-
-      const url = String(json.url);
-      setPaymentLinkUrl(url);
-
-      // Try to copy automatically (and show a message)
-      try {
-        await navigator.clipboard.writeText(url);
-        setLinkMsg("Payment link copied to clipboard.");
-      } catch {
-        setLinkMsg("Payment link created.");
-      }
-    } catch (err: any) {
-      setError(err?.message || "Failed to create payment link");
-    } finally {
-      setCreatingLink(false);
-      setTimeout(() => setLinkMsg(null), 3000);
-    }
-  }
-
-  function copyLinkManually() {
-    if (!paymentLinkUrl) return;
-    try {
-      navigator.clipboard.writeText(paymentLinkUrl);
-      setLinkMsg("Copied!");
-      setTimeout(() => setLinkMsg(null), 1500);
-    } catch {
-      setLinkMsg("Copy failed");
-      setTimeout(() => setLinkMsg(null), 1500);
     }
   }
 
@@ -376,7 +310,7 @@ export default function ClientNewOrder() {
           />
           {loading ? (
             <div className="small muted" style={{ marginTop: 8 }}>Searching…</div>
-          ) : hits.length === 0 && query.trim ? (
+          ) : hits.length === 0 && query.trim() ? (
             <div className="small muted" style={{ marginTop: 8 }}>No results.</div>
           ) : (
             <div className="grid" style={{ gap: 8, marginTop: 10 }}>
@@ -394,17 +328,30 @@ export default function ClientNewOrder() {
                       {p.variants.map((v) => {
                         const priceNet = toNumber(v.price) || 0;
                         const priceGross = incVAT(priceNet);
+                        const out = v.available === false || (typeof v.stock === "number" && v.stock <= 0);
+                        const inCart = qtyInCart(String(v.id));
+                        const max = typeof v.stock === "number" ? v.stock : undefined;
+
                         return (
                           <button
                             key={v.id}
                             type="button"
                             className="btn"
                             onClick={() => addVariant(p, v)}
-                            disabled={v.available === false}
-                            title={v.available === false ? "Not available" : "Add to order"}
+                            disabled={out || (typeof max === "number" && inCart >= max)}
+                            title={
+                              out
+                                ? "Not available"
+                                : typeof max === "number"
+                                  ? `Add (in cart: ${inCart} / stock: ${max})`
+                                  : "Add to order"
+                            }
                           >
                             {v.title}{v.sku ? ` • ${v.sku}` : ""} • {fmt(priceNet)} ex VAT{" "}
                             <span className="small muted">({fmt(priceGross)} inc VAT)</span>
+                            {typeof v.stock === "number" && (
+                              <span className="small muted"> • {v.stock} in stock</span>
+                            )}
                           </button>
                         );
                       })}
@@ -433,12 +380,16 @@ export default function ClientNewOrder() {
             {cart.map((l) => {
               const lineNet = l.priceNet ? l.priceNet * l.quantity : 0;
               const lineGross = incVAT(lineNet);
+              const max = typeof l.stock === "number" ? l.stock : undefined;
               return (
                 <div key={l.variantId} className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
                   <div>
                     <div style={{ fontWeight: 600 }}>{l.productTitle}</div>
                     <div className="small muted">
                       {l.variantTitle}{l.sku ? ` • ${l.sku}` : ""}
+                      {typeof l.stock === "number" && (
+                        <> • <b>{l.stock}</b> in stock</>
+                      )}
                     </div>
                     {/* Unit price: ex VAT primary, inc VAT underneath */}
                     <div className="small" style={{ marginTop: 2 }}>
@@ -452,14 +403,20 @@ export default function ClientNewOrder() {
                     <input
                       type="number"
                       min={1}
+                      max={typeof max === "number" ? max : undefined}
                       value={l.quantity}
                       onChange={(e) => updateQty(l.variantId, Number(e.target.value || 1))}
-                      style={{ width: 70 }}
+                      style={{ width: 90 }}
                     />
                     {/* Totals: ex VAT first, inc VAT underneath (swapped) */}
                     <div style={{ textAlign: "right" }}>
                       <div>{fmt(lineNet)} ex VAT</div>
                       <div className="small muted">{fmt(lineGross)} inc VAT</div>
+                      {typeof max === "number" && l.quantity >= max && (
+                        <div className="small" style={{ color: "#b91c1c", marginTop: 4 }}>
+                          Max available reached
+                        </div>
+                      )}
                     </div>
                     <button className="btn" type="button" onClick={() => removeLine(l.variantId)}>Remove</button>
                   </div>
@@ -475,66 +432,18 @@ export default function ClientNewOrder() {
               </div>
             </div>
             <div className="small muted" style={{ textAlign: "right" }}>
-              Displayed totals include VAT. Shopify will calculate final tax on the order.
+              Displayed totals include VAT. Shopify will calculate final tax on the draft order.
             </div>
           </div>
         )}
       </section>
 
-      {/* Actions */}
-      <form onSubmit={createDraftOrder} className="right row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <form onSubmit={onSubmit} className="right row" style={{ gap: 8 }}>
         {error && <div className="form-error" style={{ marginRight: "auto" }}>{error}</div>}
-
-        {/* Payment Link button */}
-        <button
-          className="btn"
-          type="button"
-          onClick={handleCreatePaymentLink}
-          disabled={creatingLink || cart.length === 0 || !customerId}
-          title="Generate a shareable payment link"
-        >
-          {creatingLink ? "Creating link…" : "Create payment link"}
-        </button>
-
-        {/* Pay by card (Stripe Checkout) */}
-        <button
-          className="btn"
-          type="button"
-          onClick={handlePayByCard}
-          disabled={checkingOut || cart.length === 0 || !customerId}
-          title="Open Stripe Checkout to pay now"
-        >
-          {checkingOut ? "Opening checkout…" : "Pay by card"}
-        </button>
-
-        {/* Draft order */}
         <button className="primary" type="submit" disabled={submitting || cart.length === 0}>
           {submitting ? "Creating Draft Order…" : "Create Draft Order"}
         </button>
       </form>
-
-      {/* Payment Link panel */}
-      {paymentLinkUrl && (
-        <section className="card" style={{ marginTop: 12 }}>
-          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-            <h3 style={{ margin: 0 }}>Payment link</h3>
-            {linkMsg && <span className="small muted">{linkMsg}</span>}
-          </div>
-          <div className="row" style={{ gap: 8, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              readOnly
-              value={paymentLinkUrl}
-              onFocus={(e) => e.currentTarget.select()}
-              style={{ flex: 1, minWidth: 260 }}
-            />
-            <button className="btn" type="button" onClick={copyLinkManually}>Copy</button>
-            <a className="btn" href={paymentLinkUrl} target="_blank" rel="noreferrer">Open</a>
-          </div>
-          <p className="small muted" style={{ marginTop: 8 }}>
-            Share this URL with the customer. When paid, your Stripe webhook will create a paid Shopify order automatically.
-          </p>
-        </section>
-      )}
     </>
   );
 }
