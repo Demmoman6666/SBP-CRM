@@ -61,6 +61,9 @@ export default function CallsListPage() {
   const [outcome, setOutcome] = useState<string>("");
   const [rep, setRep] = useState<string>("");
 
+  // NEW: client-side search by customer name
+  const [q, setQ] = useState<string>("");
+
   // sales reps for dropdown
   const [reps, setReps] = useState<SalesRepLite[]>([]);
   useEffect(() => { (async () => {
@@ -101,15 +104,26 @@ export default function CallsListPage() {
     return () => clearInterval(t);
   }, [auto, qs]); // refresh with new filters too
 
-  // quick stats
+  // NEW: apply client-side customer search
+  const filtered = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    if (!term) return calls;
+    return calls.filter((c) => {
+      const a = `${c.customer?.salonName || ""} ${c.customer?.customerName || ""}`.toLowerCase();
+      const b = (c.customerName || "").toLowerCase(); // manual typed name for non-existing customers
+      return a.includes(term) || b.includes(term);
+    });
+  }, [calls, q]);
+
+  // quick stats (based on filtered list so it matches what you see)
   const counts = useMemo(() => {
     const byType = new Map<string, number>();
-    for (const c of calls) {
+    for (const c of filtered) {
       const k = c.callType || "—";
       byType.set(k, (byType.get(k) || 0) + 1);
     }
     return byType;
-  }, [calls]);
+  }, [filtered]);
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -133,7 +147,7 @@ export default function CallsListPage() {
 
       {/* Filters */}
       <section className="card">
-        <div className="grid" style={{ gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
+        <div className="grid" style={{ gridTemplateColumns: "repeat(6, 1fr)", gap: 10 }}>
           <div>
             <label>Date from</label>
             <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -163,6 +177,17 @@ export default function CallsListPage() {
               {reps.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
             </select>
           </div>
+
+          {/* NEW: Customer search */}
+          <div>
+            <label>Search customer</label>
+            <input
+              type="text"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Type salon or customer name…"
+            />
+          </div>
         </div>
       </section>
 
@@ -186,15 +211,15 @@ export default function CallsListPage() {
               <th>Customer</th>
               <th style={{ width: 150 }}>Type</th>
               <th style={{ width: 190 }}>Outcome</th>
-              {/* NEW: Duration column */}
+              {/* Duration column */}
               <th style={{ width: 140 }}>Duration (mins)</th>
               <th>Summary</th>
-              {/* Symmetric Actions header */}
+              {/* Actions header */}
               <th style={{ width: 110, textAlign: "right" }}>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {calls.map((c) => {
+            {filtered.map((c) => {
               const dur = minutesFor(c);
               return (
                 <tr key={c.id}>
@@ -207,10 +232,8 @@ export default function CallsListPage() {
                   </td>
                   <td className="small">{c.callType || "—"}</td>
                   <td className="small">{c.outcome || "—"}</td>
-                  {/* NEW: Duration value */}
                   <td className="small">{dur ?? "—"}</td>
                   <td className="small">{c.summary || "—"}</td>
-                  {/* Symmetric Actions cell */}
                   <td style={{ width: 110, textAlign: "right" }}>
                     <Link
                       href={`/calls/${c.id}`}
@@ -223,8 +246,7 @@ export default function CallsListPage() {
                 </tr>
               );
             })}
-            {calls.length === 0 && (
-              // colSpan updated for the new Duration + Actions columns (now 8 columns total)
+            {filtered.length === 0 && (
               <tr><td colSpan={8}><div className="small muted">No results.</div></td></tr>
             )}
           </tbody>
