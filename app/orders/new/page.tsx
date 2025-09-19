@@ -1,11 +1,38 @@
-// app/orders/new/page.tsx  (SERVER component)
+// app/orders/new/page.tsx
 import { Suspense } from "react";
+import { prisma } from "@/lib/prisma";
 import ClientNewOrder from "./ClientNewOrder";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-export default function Page() {
+type PageProps = {
+  searchParams?: { customerId?: string };
+};
+
+export default async function Page({ searchParams }: PageProps) {
+  const customerId = searchParams?.customerId || "";
+
+  // Prefetch minimal customer details server-side (fast + no client fetch needed)
+  const initialCustomer = customerId
+    ? await prisma.customer.findUnique({
+        where: { id: customerId },
+        select: {
+          id: true,
+          salonName: true,
+          customerName: true,
+          customerEmailAddress: true,
+          customerTelephone: true,
+          addressLine1: true,
+          addressLine2: true,
+          town: true,
+          county: true,
+          postCode: true,
+          country: true,
+        },
+      })
+    : null;
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card row" style={{ justifyContent: "space-between", alignItems: "center" }}>
@@ -13,7 +40,7 @@ export default function Page() {
       </section>
 
       <Suspense fallback={<div className="card">Loading order builder…</div>}>
-        <ClientNewOrder />
+        <ClientNewOrder initialCustomer={initialCustomer} />
       </Suspense>
     </div>
   );
