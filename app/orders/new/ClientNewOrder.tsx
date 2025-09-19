@@ -1,7 +1,7 @@
 // app/orders/new/ClientNewOrder.tsx
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ShopifyProductPicker from "@/components/ShopifyProductPicker";
 
 type Customer = {
@@ -39,7 +39,7 @@ const fmtGBP = (n: number) =>
 const to2 = (n: number) => Math.round(n * 100) / 100;
 
 export default function ClientNewOrder({ initialCustomer }: Props) {
-  const [customer] = useState<Customer | null>(initialCustomer ?? null);
+  const [customer, setCustomer] = useState<Customer | null>(initialCustomer ?? null);
   const [draftId, setDraftId] = useState<number | null>(null);
   const [cart, setCart] = useState<Record<number, { line: CartLine; qty: number }>>({});
   const [creating, setCreating] = useState<false | "draft" | "checkout" | "plink">(false);
@@ -135,9 +135,12 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
   async function payByCard() {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
-    await ensureDraft({ recreate: false });
-    setCreating("checkout");
+
     try {
+      const id = await ensureDraft({ recreate: false });
+      if (!id) throw new Error("Could not create draft order.");
+
+      setCreating("checkout");
       const r = await fetch("/api/payments/stripe/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -163,11 +166,12 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
 
-    // ✅ ensure we have a single draft and REUSE IT
-    const id = await ensureDraft({ recreate: false });
-
-    setCreating("plink");
     try {
+      // ensure we have a single draft and REUSE IT
+      const id = await ensureDraft({ recreate: false });
+      if (!id) throw new Error("Could not create draft order.");
+
+      setCreating("plink");
       const r = await fetch("/api/payments/stripe/payment-link", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -186,9 +190,9 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
       // try to copy link automatically; ignore errors
       try {
         await navigator.clipboard.writeText(j.url as string);
-      } catch {}
-
-      // no redirect; we keep the user on this page and show the panel
+      } catch {
+        /* no-op */
+      }
     } catch (err: any) {
       console.error(err);
       alert(err?.message || "Payment Link failed");
