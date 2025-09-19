@@ -15,10 +15,7 @@ function money(n?: any, currency: string = "GBP") {
   const num = typeof n === "string" ? parseFloat(n) : Number(n);
   if (!Number.isFinite(num)) return String(n);
   try {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency,
-    }).format(num);
+    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(num);
   } catch {
     return num.toFixed(2);
   }
@@ -30,9 +27,10 @@ type PageProps = {
 };
 
 export default async function CustomerPage({ params, searchParams }: PageProps) {
-  const tab = (Array.isArray(searchParams?.tab)
-    ? searchParams?.tab[0]
-    : searchParams?.tab) as "orders" | "drafts" | undefined;
+  const tab = (Array.isArray(searchParams?.tab) ? searchParams?.tab[0] : searchParams?.tab) as
+    | "orders"
+    | "drafts"
+    | undefined;
 
   const view: "orders" | "drafts" = tab === "drafts" ? "drafts" : "orders";
 
@@ -55,26 +53,28 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
   if (!customer) return notFound();
 
-  // Orders (from CRM DB)
+  // Orders (from CRM DB) – newest first
   const orders = await prisma.order.findMany({
     where: { customerId: customer.id },
     orderBy: [{ createdAt: "desc" }],
     take: 50,
   });
 
-  // Drafts (live from Shopify, filtered by this customer)
+  // Drafts (live from Shopify for this customer) – newest first
   let drafts: any[] = [];
   if (customer.shopifyCustomerId) {
     try {
-      const res = await shopifyRest(`/draft_orders.json?status=open&limit=50`, {
-        method: "GET",
-      });
+      const res = await shopifyRest(`/draft_orders.json?status=open&limit=50`, { method: "GET" });
       if (res.ok) {
         const json = await res.json();
         const scid = Number(customer.shopifyCustomerId);
-        drafts = (json?.draft_orders || []).filter(
-          (d: any) => Number(d?.customer?.id) === scid
-        );
+        drafts = (json?.draft_orders || [])
+          .filter((d: any) => Number(d?.customer?.id) === scid)
+          .sort((a: any, b: any) => {
+            const ad = a?.created_at ? Date.parse(a.created_at) : 0;
+            const bd = b?.created_at ? Date.parse(b.created_at) : 0;
+            return bd - ad; // newest first
+          });
       }
     } catch {
       drafts = [];
@@ -82,13 +82,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
   }
 
   const currency = "GBP";
-  const addr = [
-    customer.addressLine1,
-    customer.addressLine2,
-    customer.town,
-    customer.county,
-    customer.postCode,
-  ]
+  const addr = [customer.addressLine1, customer.addressLine2, customer.town, customer.county, customer.postCode]
     .filter(Boolean)
     .join(", ");
 
@@ -101,7 +95,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
     if (!stripeSecret) throw new Error("Missing STRIPE_SECRET_KEY");
 
-    // 1) Load the draft (for line items and titles)
+    // 1) Load the draft
     const resp = await shopifyRest(`/draft_orders/${draftId}.json`, { method: "GET" });
     if (!resp.ok) {
       const txt = await resp.text().catch(() => "");
@@ -115,39 +109,29 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       title?: string;
       variant_title?: string | null;
     }>;
-
-    if (!Array.isArray(draftLines) || draftLines.length === 0) {
-      throw new Error("Draft has no line items");
-    }
+    if (!Array.isArray(draftLines) || draftLines.length === 0) throw new Error("Draft has no line items");
 
     // 2) Build Prices (VAT-inclusive) and line_items for Payment Link
     const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
     const line_items: Stripe.PaymentLinkCreateParams.LineItem[] = [];
 
-    // create ephemeral Prices so TS stays happy (Payment Links prefers `price` over inline `price_data` in this SDK version)
     for (const li of draftLines) {
       const ex = Number(li.price ?? 0);
       const inc = ex * (1 + VAT_RATE);
       const unit_amount = Math.round(inc * 100);
-
       const name = `${li.title ?? "Item"}${li.variant_title ? ` — ${li.variant_title}` : ""}`;
 
       const price = await stripe.prices.create({
         currency: "gbp",
         unit_amount,
-        tax_behavior: "inclusive", // total already includes VAT
+        tax_behavior: "inclusive",
         product_data: {
           name,
-          metadata: {
-            variantId: li.variant_id ? String(li.variant_id) : "",
-          },
+          metadata: { variantId: li.variant_id ? String(li.variant_id) : "" },
         },
       });
 
-      line_items.push({
-        price: price.id,
-        quantity: Number(li.quantity || 1),
-      });
+      line_items.push({ price: price.id, quantity: Number(li.quantity || 1) });
     }
 
     const sharedMeta = {
@@ -157,25 +141,23 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       source: "SBP-CRM",
     };
 
-    // 3) Create the Payment Link (redirect back to the customer after payment)
+    // 3) Create the Payment Link (redirect back to the customer page after payment)
     const origin =
-      process.env.APP_URL?.replace(/\/$/, "") || "https://"+(process.env.VERCEL_URL || "").replace(/\/$/,"");
+      process.env.APP_URL?.replace(/\/$/, "") ||
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL.replace(/\/$/, "")}` : "http://localhost:3000");
 
     const link = await stripe.paymentLinks.create({
       line_items,
       after_completion: {
         type: "redirect",
-        redirect: {
-          url: `${origin}/customers/${customer.id}?paid=1`,
-        },
+        redirect: { url: `${origin}/customers/${customer.id}?paid=1` },
       },
-      // Make sure webhook can find the draft/order to complete:
       metadata: sharedMeta,
       payment_intent_data: { metadata: sharedMeta },
-      // We already included VAT in unit_amount values:
-      automatic_tax: { enabled: false },
+      automatic_tax: { enabled: false }, // unit amounts already include VAT
     });
 
+    // Open the hosted checkout for this Payment Link.
     redirect(link.url!);
   }
   // -------------------------------------------------------------------------------
@@ -187,13 +169,8 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     <div className="grid" style={{ gap: 16 }}>
       {/* Header / identity */}
       <section className="card">
-        <div
-          className="row"
-          style={{ justifyContent: "space-between", alignItems: "center" }}
-        >
-          <h1 style={{ margin: 0 }}>
-            {customer.salonName || customer.customerName || "Customer"}
-          </h1>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h1 style={{ margin: 0 }}>{customer.salonName || customer.customerName || "Customer"}</h1>
           <div className="row" style={{ gap: 8 }}>
             <Link className="btn" href={`/orders/new?customerId=${customer.id}`}>
               Create Order
@@ -224,10 +201,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
       {/* Orders / Drafts switcher */}
       <section className="card">
-        <div
-          className="row"
-          style={{ justifyContent: "space-between", alignItems: "center" }}
-        >
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Orders / Drafts</h3>
           <div className="row" style={{ gap: 8 }}>
             <Link
@@ -247,15 +221,13 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
         {view === "orders" ? (
           orders.length === 0 ? (
-            <p className="small muted" style={{ marginTop: 8 }}>
-              No orders yet.
-            </p>
+            <p className="small muted" style={{ marginTop: 8 }}>No orders yet.</p>
           ) : (
             <div style={{ marginTop: 10, overflowX: "auto" }}>
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "120px 140px 120px 120px 1fr auto",
+                  gridTemplateColumns: "170px 140px 120px 120px 1fr auto",
                   gap: 6,
                   alignItems: "center",
                 }}
@@ -269,15 +241,11 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
                 {orders.map((o) => (
                   <div key={o.id} style={{ display: "contents" }}>
-                    <div className="small">
-                      {new Date(o.createdAt).toLocaleString()}
-                    </div>
+                    <div className="small">{new Date(o.createdAt).toLocaleString()}</div>
                     <div>{o.shopifyName || `#${o.shopifyOrderNumber ?? "-"}`}</div>
                     <div>{money(o.subtotal, currency)}</div>
                     <div>{money(o.taxes, currency)}</div>
-                    <div style={{ fontWeight: 600 }}>
-                      {money(o.total, currency)}
-                    </div>
+                    <div style={{ fontWeight: 600 }}>{money(o.total, currency)}</div>
                     <div>
                       <Link className="btn" href={`/orders/${o.id}`}>
                         View
@@ -289,15 +257,13 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
             </div>
           )
         ) : drafts.length === 0 ? (
-          <p className="small muted" style={{ marginTop: 8 }}>
-            No draft orders for this customer.
-          </p>
+          <p className="small muted" style={{ marginTop: 8 }}>No draft orders for this customer.</p>
         ) : (
           <div style={{ marginTop: 10, overflowX: "auto" }}>
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "140px 160px 120px 120px 120px auto",
+                gridTemplateColumns: "170px 160px 120px 120px 120px auto",
                 gap: 6,
                 alignItems: "center",
               }}
@@ -310,37 +276,24 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               <div className="small muted">Action</div>
 
               {drafts.map((d: any) => {
-                const adminUrl =
-                  `https://${(process.env.SHOPIFY_SHOP_DOMAIN || "")
-                    .replace(/^https?:\/\//, "")
-                    .replace(/\/$/, "")}/admin/draft_orders/${d.id}`;
-
-                const subtotal =
-                  d.subtotal_price ?? d.subtotal ?? d.total_line_items_price;
+                const adminUrl = `https://${(process.env.SHOPIFY_SHOP_DOMAIN || "")
+                  .replace(/^https?:\/\//, "")
+                  .replace(/\/$/, "")}/admin/draft_orders/${d.id}`;
+                const subtotal = d.subtotal_price ?? d.subtotal ?? d.total_line_items_price;
                 const taxes = d.total_tax ?? 0;
                 const total = d.total_price ?? 0;
 
                 return (
                   <div key={d.id} style={{ display: "contents" }}>
                     <div className="small">
-                      {d.created_at
-                        ? new Date(d.created_at).toLocaleString()
-                        : "-"}
+                      {d.created_at ? new Date(d.created_at).toLocaleString() : "-"}
                     </div>
                     <div>#{d.id}</div>
                     <div>{money(subtotal, currency)}</div>
                     <div>{money(taxes, currency)}</div>
-                    <div style={{ fontWeight: 600 }}>
-                      {money(total, currency)}
-                    </div>
+                    <div style={{ fontWeight: 600 }}>{money(total, currency)}</div>
                     <div className="row" style={{ gap: 6 }}>
-                      <a
-                        className="btn"
-                        href={adminUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        title="Open in Shopify"
-                      >
+                      <a className="btn" href={adminUrl} target="_blank" rel="noreferrer" title="Open in Shopify">
                         View in Shopify
                       </a>
 
