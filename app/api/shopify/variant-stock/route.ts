@@ -2,7 +2,6 @@
 import { NextResponse } from "next/server";
 import { shopifyRest } from "@/lib/shopify";
 
-// Robustly turn any Shopify id (GID or numeric) into a number
 function toNumericId(v: any): number | null {
   if (v == null) return null;
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -21,70 +20,66 @@ export async function POST(req: Request) {
       return NextResponse.json({ stock: {} }, { status: 200 });
     }
 
-    // 1) Load variants for inventory_quantity and inventory_item_id
-    const qs = encodeURIComponent(variantIds.join(","));
-    const res = await shopifyRest(
-      `/variants.json?ids=${qs}&fields=id,inventory_quantity,inventory_item_id`,
-      { method: "GET" }
-    );
+    // 1) Map variantId -> inventory_item_id
+    const variantToItem: Record<number, number> = {};
+    const size = 50;
+    for (let i = 0; i < variantIds.length; i += size) {
+      const slice = variantIds.slice(i, i + size);
+      const qs = encodeURIComponent(slice.join(","));
+      const res = await shopifyRest(
+        `/variants.json?ids=${qs}&fields=id,inventory_item_id`,
+        { method: "GET" }
+      );
+      if (!res.ok) continue;
+      const json = await res.json().catch(() => ({}));
+      const variants: any[] = Array.isArray(json?.variants) ? json.variants : [];
+      for (const v of variants) {
+        const vid = Number(v?.id);
+        const itemId = Number(v?.inventory_item_id);
+        if (Number.isFinite(vid) && Number.isFinite(itemId)) {
+          variantToItem[vid] = itemId;
+        }
+      }
+    }
 
-    if (!res.ok) {
-      // Be tolerant: return empty stock map instead of erroring the UI
+    const itemIds = Object.values(variantToItem);
+    if (itemIds.length === 0) {
       return NextResponse.json({ stock: {} }, { status: 200 });
     }
 
-    const json = await res.json().catch(() => ({}));
-    const variants: any[] = Array.isArray(json?.variants) ? json.variants : [];
-
-    const stockByVariantId: Record<string, number> = {};
-    const itemIdsNeedingLevels: number[] = [];
-
-    for (const v of variants) {
-      const vid = Number(v?.id);
-      const invQty = Number(v?.inventory_quantity);
-      if (Number.isFinite(invQty)) {
-        stockByVariantId[String(vid)] = invQty;
-      } else {
-        const itemId = Number(v?.inventory_item_id);
-        if (Number.isFinite(itemId)) itemIdsNeedingLevels.push(itemId);
-      }
-    }
-
-    // 2) For multi-location stores, sum inventory levels per inventory_item_id
-    if (itemIdsNeedingLevels.length) {
-      const idsParam = encodeURIComponent(itemIdsNeedingLevels.join(","));
-      const r2 = await shopifyRest(
-        `/inventory_levels.json?inventory_item_ids=${idsParam}`,
+    // 2) Get inventory levels for those inventory_item_ids (sum across locations)
+    const itemTotals: Record<number, number> = {};
+    for (let i = 0; i < itemIds.length; i += size) {
+      const slice = itemIds.slice(i, i + size);
+      const qs = encodeURIComponent(slice.join(","));
+      const res = await shopifyRest(
+        `/inventory_levels.json?inventory_item_ids=${qs}`,
         { method: "GET" }
       );
-
-      if (r2.ok) {
-        const j2 = await r2.json().catch(() => ({}));
-        const levels: any[] = Array.isArray(j2?.inventory_levels) ? j2.inventory_levels : [];
-        const sumByItem: Record<number, number> = {};
-
-        for (const lvl of levels) {
-          const itemId = Number(lvl?.inventory_item_id);
-          const available = Number(lvl?.available);
-          if (!Number.isFinite(itemId) || !Number.isFinite(available)) continue;
-          sumByItem[itemId] = (sumByItem[itemId] ?? 0) + available;
-        }
-
-        // Map summed levels back to variant ids
-        for (const v of variants) {
-          const vid = Number(v?.id);
-          const itemId = Number(v?.inventory_item_id);
-          if (Number.isFinite(vid) && Number.isFinite(itemId) && sumByItem[itemId] != null) {
-            stockByVariantId[String(vid)] = sumByItem[itemId];
-          }
-        }
+      if (!res.ok) continue;
+      const json = await res.json().catch(() => ({}));
+      const levels: any[] = Array.isArray(json?.inventory_levels) ? json.inventory_levels : [];
+      for (const lvl of levels) {
+        const iid = Number(lvl?.inventory_item_id);
+        const available = Number(lvl?.available);
+        if (!Number.isFinite(iid)) continue;
+        if (!Number.isFinite(available)) continue;
+        itemTotals[iid] = (itemTotals[iid] ?? 0) + available;
       }
     }
 
-    return NextResponse.json({ stock: stockByVariantId }, { status: 200 });
+    // 3) Map back to variant ids
+    const out: Record<string, number> = {};
+    for (const [vidStr, iid] of Object.entries(variantToItem)) {
+      const vid = Number(vidStr);
+      const qty = itemTotals[iid] ?? 0;
+      out[String(vid)] = qty;
+    }
+
+    return NextResponse.json({ stock: out }, { status: 200 });
   } catch (err: any) {
     return NextResponse.json(
-      { stock: {}, error: err?.message || "Failed to fetch stock" },
+      { error: err?.message || "Failed to fetch variant stock", stock: {} },
       { status: 500 }
     );
   }
