@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
-import { shopifyRest, upsertOrderFromShopify } from "@/lib/shopify";
+import { shopifyRest, shopifyGraphql, upsertOrderFromShopify } from "@/lib/shopify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,15 +10,14 @@ export const dynamic = "force-dynamic";
 // 20% by default — override with VAT_RATE in your env if needed
 const VAT_RATE = Number(process.env.VAT_RATE ?? "0.20");
 
-/** helpers */
 function toMoney(n: number) {
-  return Number(n.toFixed(2)); // Shopify accepts number or string; keep 2dp
+  return Number(n.toFixed(2));
 }
 function upper(s?: string | null) {
   return (s || "").toUpperCase();
 }
 
-/** After first successful payment, disable the Payment Link to prevent re-use (double-pay) */
+/** After first successful payment, disable the Payment Link to prevent re-use */
 async function disablePaymentLinkIfPresent(session: Stripe.Checkout.Session) {
   const sk = process.env.STRIPE_SECRET_KEY!;
   const stripe = new Stripe(sk, { apiVersion: "2023-10-16" });
@@ -29,7 +28,6 @@ async function disablePaymentLinkIfPresent(session: Stripe.Checkout.Session) {
     null;
 
   if (!linkId) return;
-
   try {
     await stripe.paymentLinks.update(linkId, { active: false });
   } catch (e) {
@@ -37,19 +35,15 @@ async function disablePaymentLinkIfPresent(session: Stripe.Checkout.Session) {
   }
 }
 
-/**
- * Fallback path (your existing “Pay by card” flow):
- * Creates a *new* paid Shopify order directly from the Checkout Session (no draft involved).
- * Sends ex-VAT unit prices + explicit tax_lines so VAT displays on the order.
- */
+/** Fallback path: create a NEW paid Shopify order straight from the session (no draft) */
 async function createPaidShopifyOrderFromSession(session: Stripe.Checkout.Session) {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2023-10-16" });
 
   const crmCustomerId = String(session.metadata?.crmCustomerId || "");
   const shopifyCustomerId = String(session.metadata?.shopifyCustomerId || "");
-  if (!crmCustomerId || !shopifyCustomerId) throw new Error("Missing customer ids in session metadata");
+  if (!crmCustomerId || !shopifyCustomerId)
+    throw new Error("Missing customer ids in session metadata");
 
-  // Expand to read product metadata (variantId)
   const full = await stripe.checkout.sessions.retrieve(session.id, {
     expand: ["line_items.data.price.product"],
   });
@@ -135,17 +129,16 @@ async function createPaidShopifyOrderFromSession(session: Stripe.Checkout.Sessio
 /**
  * Preferred path for Payment Links / draft-backed sessions:
  *  - Resolve draft id from metadata (session / payment_link / product)
- *  - **PUT** draft_orders/{id}/complete.json?payment_pending=true  ✅
- *  - Post a successful sale transaction to mark the order paid
+ *  - PUT /draft_orders/{id}/complete.json?payment_pending=true
+ *  - GraphQL orderMarkAsPaid to set financialStatus=PAID (no REST transaction needed)
  *  - Annotate and upsert into CRM
- *  - Deactivate the Payment Link
+ *  - Disable Stripe Payment Link
  */
 async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2023-10-16" });
 
   let draftId: string | null = (session.metadata?.crmDraftOrderId as string) || null;
 
-  // Try Payment Link metadata
   if (!draftId && session.payment_link) {
     try {
       const link = await stripe.paymentLinks.retrieve(String(session.payment_link));
@@ -155,7 +148,6 @@ async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
     }
   }
 
-  // Fallback: expand line items, look for product.metadata.crmDraftOrderId
   if (!draftId) {
     try {
       const full = await stripe.checkout.sessions.retrieve(session.id, {
@@ -176,67 +168,63 @@ async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
 
   if (!draftId) return null; // not a draft-backed payment
 
-  const amountTotal = (session.amount_total ?? 0) / 100; // inc VAT (gross)
+  const amountTotal = (session.amount_total ?? 0) / 100; // inc VAT
   const currency = upper(session.currency) || "GBP";
   const paymentIntentId =
     typeof session.payment_intent === "string"
       ? session.payment_intent
       : (session.payment_intent as Stripe.PaymentIntent | null)?.id || null;
 
-  // **Fix**: Complete the draft with PUT (POST returns 406)
+  // 1) Complete the draft (creates an Order in "pending")
   let shopifyOrderId: number | null = null;
-
   const completeRes = await shopifyRest(
     `/draft_orders/${draftId}/complete.json?payment_pending=true`,
-    { method: "PUT" } // ← important
+    { method: "PUT" }
   );
 
   if (!completeRes.ok) {
     const text = await completeRes.text().catch(() => "");
-    // If Shopify already completed it (e.g., retry), fetch the draft to see if an order exists
+    // If this was a retry and it's already completed, try to read the order_id from the draft
     try {
       const draftRes = await shopifyRest(`/draft_orders/${draftId}.json`, { method: "GET" });
       if (draftRes.ok) {
         const djson = await draftRes.json().catch(() => null);
         const draft = djson?.draft_order;
-        // Some API versions include order_id after completion; try to use it
-        if (draft?.order_id) {
-          shopifyOrderId = Number(draft.order_id);
-        }
+        if (draft?.order_id) shopifyOrderId = Number(draft.order_id);
       }
-    } catch {
-      /* ignore */
-    }
-    if (!shopifyOrderId) {
-      throw new Error(`Draft complete failed: ${completeRes.status} ${text}`);
-    }
+    } catch { /* ignore */ }
+    if (!shopifyOrderId) throw new Error(`Draft complete failed: ${completeRes.status} ${text}`);
   } else {
     const completeJson = await completeRes.json().catch(() => null);
     shopifyOrderId = completeJson?.draft_order?.order_id ?? null;
     if (!shopifyOrderId) throw new Error("Draft completed, but no order_id returned");
   }
 
-  // Post a successful transaction to mark the order PAID
-  const txnRes = await shopifyRest(`/orders/${shopifyOrderId}/transactions.json`, {
-    method: "POST",
-    body: JSON.stringify({
-      transaction: {
-        kind: "sale",
-        status: "success",
-        amount: toMoney(amountTotal),
-        currency,
-        gateway: "stripe",
-        authorization: paymentIntentId || undefined,
-        message: `Stripe Checkout session ${session.id}`,
-      },
-    }),
-  });
-  if (!txnRes.ok) {
-    const t = await txnRes.text().catch(() => "");
-    throw new Error(`Shopify transaction create failed: ${txnRes.status} ${t}`);
+  // 2) Mark as PAID via GraphQL (this avoids the REST "sale is not valid" error)
+  const gid = `gid://shopify/Order/${shopifyOrderId}`;
+  const markPaid = await shopifyGraphql<{
+    orderMarkAsPaid: {
+      order: { id: string; financialStatus: string } | null;
+      userErrors: Array<{ message: string }>;
+    };
+  }>(
+    `
+    mutation MarkPaid($id: ID!, $ref: String, $gateway: String) {
+      orderMarkAsPaid(id: $id, paymentReference: $ref, paymentGateway: $gateway) {
+        order { id financialStatus }
+        userErrors { message }
+      }
+    }
+  `,
+    { id: gid, ref: paymentIntentId || session.id, gateway: "Stripe" }
+  );
+
+  const errors = markPaid.orderMarkAsPaid?.userErrors || [];
+  if (errors.length) {
+    throw new Error("orderMarkAsPaid failed: " + errors.map(e => e.message).join("; "));
   }
 
-  // Annotate the order (best effort)
+  // 3) Annotate (best effort)
   await shopifyRest(`/orders/${shopifyOrderId}.json`, {
     method: "PUT",
     body: JSON.stringify({
@@ -252,7 +240,7 @@ async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
     }),
   }).catch(() => {});
 
-  // Upsert into CRM
+  // 4) Mirror into CRM
   const fresh = await shopifyRest(`/orders/${shopifyOrderId}.json`, { method: "GET" });
   if (fresh.ok) {
     const j = await fresh.json().catch(() => null);
@@ -264,7 +252,7 @@ async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
     }
   }
 
-  // Disable the Payment Link so it can't be re-used
+  // 5) Disable the Payment Link so it can't be re-used
   await disablePaymentLinkIfPresent(session);
 
   return shopifyOrderId;
@@ -291,7 +279,6 @@ export async function POST(req: Request) {
   }
 
   try {
-    // Handle both immediate and async confirmation flows
     if (
       event.type === "checkout.session.completed" ||
       event.type === "checkout.session.async_payment_succeeded"
@@ -302,7 +289,7 @@ export async function POST(req: Request) {
         if (!completed) {
           await createPaidShopifyOrderFromSession(s); // fallback: non-draft “Pay by card”
         }
-        await disablePaymentLinkIfPresent(s); // double-safety
+        await disablePaymentLinkIfPresent(s);
       }
     }
 
@@ -313,7 +300,6 @@ export async function POST(req: Request) {
   }
 }
 
-// Optional hard 405 for other verbs
 export async function GET() {
   return NextResponse.json({ error: "Method Not Allowed" }, { status: 405 });
 }
