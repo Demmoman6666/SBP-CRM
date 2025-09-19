@@ -1,7 +1,7 @@
 // app/orders/new/ClientNewOrder.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import ShopifyProductPicker from "@/components/ShopifyProductPicker";
 
 type Customer = {
