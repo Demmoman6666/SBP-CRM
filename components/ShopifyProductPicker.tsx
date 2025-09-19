@@ -22,20 +22,42 @@ type Props = {
 
 /* ---------- helpers ---------- */
 
-// NEW: robustly turn Shopify ids (including GIDs) into a number
+// robustly turn Shopify ids (including GIDs) into a number
 function toNumericId(v: any): number | null {
   if (v == null) return null;
   if (typeof v === "number" && Number.isFinite(v)) return v;
   const s = String(v);
-  // common forms: "1234567890", "gid://shopify/ProductVariant/1234567890"
   const m = s.match(/(\d+)(?!.*\d)/); // last run of digits
   return m ? Number(m[1]) : null;
+}
+
+// NEW: parse prices from many shapes ("£3.71", "3,71", MoneyV2, etc.)
+function parsePrice(val: any): number | null {
+  if (val == null || val === "") return null;
+  if (typeof val === "number") return Number.isFinite(val) ? val : null;
+  if (typeof val === "object") {
+    // MoneyV2 or similar
+    if (typeof val.amount === "string" || typeof val.amount === "number") {
+      return parsePrice(val.amount);
+    }
+  }
+  const s = String(val).trim();
+  // strip currency symbols/letters, keep digits, comma, dot, minus
+  let cleaned = s.replace(/[^\d.,-]/g, "");
+  // if both comma and dot exist, treat dots as decimal and drop commas (thousands)
+  if (cleaned.includes(",") && cleaned.includes(".")) {
+    cleaned = cleaned.replace(/,/g, "");
+  } else if (cleaned.includes(",") && !cleaned.includes(".")) {
+    // only comma -> decimal
+    cleaned = cleaned.replace(",", ".");
+  }
+  const n = parseFloat(cleaned);
+  return Number.isFinite(n) ? n : null;
 }
 
 function normaliseRow(row: any): Item | null {
   if (!row) return null;
 
-  // Try multiple common shapes from Shopify-search endpoints and normalize.
   const rawId =
     row.variantId ??
     row.variant_id ??
@@ -69,18 +91,16 @@ function normaliseRow(row: any): Item | null {
   const priceExVatRaw =
     row.priceExVat ??
     row.price_ex_vat ??
+    row.unit_price ??
     row.price ??
     row.variant?.price ??
-    row.unit_price ??
-    row.price?.amount ??           // MoneyV2
-    row.node?.price ??             // some custom APIs
-    row.node?.priceV2?.amount;     // MoneyV2
-  const priceExVat =
-    priceExVatRaw == null || priceExVatRaw === ""
-      ? null
-      : Number.isFinite(Number(priceExVatRaw))
-      ? Number(priceExVatRaw)
-      : null;
+    row.price?.amount ??                 // MoneyV2
+    row.node?.price ??
+    row.node?.priceV2?.amount ??         // MoneyV2
+    row.node?.unitPrice?.amount ??       // MoneyV2
+    row.presentment_prices?.[0]?.price?.amount; // REST presentment
+
+  const priceExVat = parsePrice(priceExVatRaw);
 
   const availableRaw =
     row.available ??
@@ -152,10 +172,11 @@ async function fetchProducts(q: string): Promise<Item[]> {
   return [];
 }
 
+// CHANGED: show "—" when price is missing (don’t coerce to 0)
 function fmtGBP(n?: number | null) {
-  if (!Number.isFinite(Number(n))) return "—";
+  if (n == null || !Number.isFinite(Number(n))) return "—";
   return new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
-    Number(n || 0)
+    Number(n)
   );
 }
 
@@ -276,7 +297,9 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
                   {v.variantTitle ? ` — ${v.variantTitle}` : ""}
                 </div>
                 <div className="small muted">
-                  {fmtGBP(v.priceExVat)}{v.available != null ? ` • ${v.available} available` : ""}{v.sku ? ` • SKU ${v.sku}` : ""}
+                  {fmtGBP(v.priceExVat)}
+                  {v.available != null ? ` • ${v.available} available` : ""}
+                  {v.sku ? ` • SKU ${v.sku}` : ""}
                 </div>
               </div>
             </label>
