@@ -43,11 +43,7 @@ async function searchCustomers(q: string) {
   return Array.isArray(j) ? j : [];
 }
 
-export default function ClientNewOrder({
-  initialCustomer,
-}: {
-  initialCustomer: Customer | null;
-}) {
+export default function ClientNewOrder({ initialCustomer }: { initialCustomer: Customer | null }) {
   const [customer, setCustomer] = useState<Customer | null>(initialCustomer);
 
   /** --------- inline “Select customer” search (shown only when none picked) --------- */
@@ -141,39 +137,57 @@ export default function ClientNewOrder({
       alert("Add at least one product first.");
       return null;
     }
+
     try {
       setCreating(true);
+
+      // ✅ FIX: send `line_items` (not `lines`) to match your API / Shopify
+      const payload = {
+        customerId: customer.id,
+        line_items: cart.map((l) => ({
+          variant_id: l.variantId,
+          quantity: l.qty,
+          price: Number(l.priceEx), // ex VAT, numeric is fine
+          title: l.productTitle,
+        })),
+        // Optional hints the server may use:
+        taxes_included: false,
+        vat_rate: VAT_RATE,
+      };
+
       const r = await fetch("/api/shopify/draft-orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customerId: customer.id,
-          lines: cart.map((l) => ({
-            variant_id: l.variantId,
-            quantity: l.qty,
-            price: l.priceEx, // ex VAT
-            title: l.productTitle,
-          })),
-          total_ex_vat: totals.ex,
-          vat_rate: VAT_RATE,
-        }),
+        body: JSON.stringify(payload),
       });
       setCreating(false);
+
       if (!r.ok) {
         const t = await r.text();
+        // If server still objects, show the exact body for debugging
+        console.error("Draft create failed:", r.status, t, payload);
         alert(`Draft creation failed: ${r.status}\n${t}`);
         return null;
       }
+
       const j = await r.json().catch(() => null);
-      const id = j?.draft?.id || j?.draft_order?.id || null;
+      const id =
+        j?.draft?.id ||
+        j?.draft_order?.id ||
+        j?.id ||
+        null;
+
       if (!id) {
+        console.error("Draft create: no ID in response", j);
         alert("Draft created but no ID returned.");
         return null;
       }
+
       setDraftId(String(id));
       return String(id);
     } catch (e: any) {
       setCreating(false);
+      console.error(e);
       alert(e?.message || "Draft creation error");
       return null;
     }
@@ -192,10 +206,7 @@ export default function ClientNewOrder({
       const r = await fetch("/api/payments/stripe/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          draftId: id,
-          customerId: customer.id,
-        }),
+        body: JSON.stringify({ draftId: id, customerId: customer.id }),
       });
       if (!r.ok) {
         const t = await r.text();
@@ -222,10 +233,7 @@ export default function ClientNewOrder({
       const r = await fetch("/api/payments/stripe/payment-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          draftId: id,
-          customerId: customer.id,
-        }),
+        body: JSON.stringify({ draftId: id, customerId: customer.id }),
       });
       if (!r.ok) {
         const t = await r.text();
@@ -238,7 +246,7 @@ export default function ClientNewOrder({
         try {
           await navigator.clipboard.writeText(url);
         } catch {}
-        window.open(url, "_blank"); // open the hosted page; you can paste the URL into SMS/email
+        window.open(url, "_blank");
       } else {
         alert("No payment link URL returned from server.");
       }
@@ -249,7 +257,7 @@ export default function ClientNewOrder({
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      {/* CUSTOMER PANEL — replaces the old Back/ID block */}
+      {/* CUSTOMER PANEL */}
       {customer ? (
         <section className="card">
           <b>Customer</b>
@@ -411,11 +419,11 @@ export default function ClientNewOrder({
                 {creating ? "Creating draft…" : draftId ? "Re-create draft" : "Create draft order"}
               </button>
 
-              <button className="primary" type="button" onClick={payByCard}>
+              <button className="primary" type="button" onClick={payByCard} disabled={creating}>
                 Pay by card
               </button>
 
-              <button className="btn" type="button" onClick={createPaymentLink}>
+              <button className="btn" type="button" onClick={createPaymentLink} disabled={creating}>
                 Payment link
               </button>
             </div>
