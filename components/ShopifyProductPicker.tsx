@@ -189,48 +189,6 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
   const [selected, setSelected] = useState<Record<number, Item>>({});
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  /* NEW: cache + price enrichment using Shopify Admin GraphQL via API route */
-  const priceCache = useRef<Record<number, number | null>>({});
-
-  async function enrichPrices(base: Item[]): Promise<Item[]> {
-    const missing = base.filter((i) => i.priceExVat == null && i.variantId);
-    const toFetch = Array.from(
-      new Set(
-        missing
-          .map((i) => i.variantId)
-          .filter((id) => !(id in priceCache.current))
-      )
-    );
-    if (toFetch.length) {
-      try {
-        // fetch authoritative prices
-        const r = await fetch("/api/shopify/variant-prices", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ variantIds: toFetch }),
-        });
-        if (r.ok) {
-          const j = await r.json();
-          const map: Record<
-            string,
-            { priceExVat: number; productTitle: string; variantTitle: string; sku?: string | null }
-          > = j?.prices || {};
-          Object.entries(map).forEach(([idStr, rec]) => {
-            const id = Number(idStr);
-            priceCache.current[id] = Number.isFinite(rec?.priceExVat) ? Number(rec.priceExVat) : null;
-          });
-        }
-      } catch {
-        // ignore – UI will still render with dashes
-      }
-    }
-    return base.map((it) =>
-      it.priceExVat == null && it.variantId in priceCache.current
-        ? { ...it, priceExVat: priceCache.current[it.variantId]! }
-        : it
-    );
-  }
-
   // Debounced search
   useEffect(() => {
     const t = setTimeout(async () => {
@@ -241,14 +199,64 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
       setBusy(true);
       try {
         const res = await fetchProducts(query);
-        const withPrices = await enrichPrices(res); // NEW: fill missing prices from Shopify
-        setItems(withPrices);
+        setItems(res);
       } finally {
         setBusy(false);
       }
     }, 250);
     return () => clearTimeout(t);
   }, [query]);
+
+  // 🔥 NEW: hydrate missing prices from the server (Shopify) and overlay them
+  useEffect(() => {
+    const missingIds = Array.from(
+      new Set(
+        items
+          .filter((i) => i.priceExVat == null || i.priceExVat === 0)
+          .map((i) => i.variantId)
+          .filter((n) => Number.isFinite(n))
+      )
+    );
+    if (missingIds.length === 0) return;
+
+    (async () => {
+      try {
+        const r = await fetch("/api/shopify/variant-prices", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({ variantIds: missingIds }),
+        });
+        const j = await r.json().catch(() => ({}));
+        const prices: Record<
+          string,
+          { priceExVat: number; variantTitle?: string; sku?: string | null }
+        > = j?.prices || {};
+
+        if (!prices || Object.keys(prices).length === 0) return;
+
+        setItems((prev) =>
+          prev.map((it) => {
+            const hit = prices[String(it.variantId)];
+            if (!hit) return it;
+            return {
+              ...it,
+              priceExVat:
+                it.priceExVat != null && Number.isFinite(Number(it.priceExVat)) && it.priceExVat! > 0
+                  ? it.priceExVat
+                  : hit.priceExVat,
+              sku: it.sku ?? hit.sku ?? null,
+              variantTitle: it.variantTitle ?? hit.variantTitle ?? it.variantTitle,
+            };
+          })
+        );
+      } catch {
+        // ignore; UI will keep showing "—"
+      }
+    })();
+  }, [items]);
 
   const selectedList = useMemo(() => Object.values(selected), [selected]);
 
