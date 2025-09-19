@@ -189,6 +189,48 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
   const [selected, setSelected] = useState<Record<number, Item>>({});
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  /* NEW: cache + price enrichment using Shopify Admin GraphQL via API route */
+  const priceCache = useRef<Record<number, number | null>>({});
+
+  async function enrichPrices(base: Item[]): Promise<Item[]> {
+    const missing = base.filter((i) => i.priceExVat == null && i.variantId);
+    const toFetch = Array.from(
+      new Set(
+        missing
+          .map((i) => i.variantId)
+          .filter((id) => !(id in priceCache.current))
+      )
+    );
+    if (toFetch.length) {
+      try {
+        // fetch authoritative prices
+        const r = await fetch("/api/shopify/variant-prices", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ variantIds: toFetch }),
+        });
+        if (r.ok) {
+          const j = await r.json();
+          const map: Record<
+            string,
+            { priceExVat: number; productTitle: string; variantTitle: string; sku?: string | null }
+          > = j?.prices || {};
+          Object.entries(map).forEach(([idStr, rec]) => {
+            const id = Number(idStr);
+            priceCache.current[id] = Number.isFinite(rec?.priceExVat) ? Number(rec.priceExVat) : null;
+          });
+        }
+      } catch {
+        // ignore – UI will still render with dashes
+      }
+    }
+    return base.map((it) =>
+      it.priceExVat == null && it.variantId in priceCache.current
+        ? { ...it, priceExVat: priceCache.current[it.variantId]! }
+        : it
+    );
+  }
+
   // Debounced search
   useEffect(() => {
     const t = setTimeout(async () => {
@@ -199,7 +241,8 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
       setBusy(true);
       try {
         const res = await fetchProducts(query);
-        setItems(res);
+        const withPrices = await enrichPrices(res); // NEW: fill missing prices from Shopify
+        setItems(withPrices);
       } finally {
         setBusy(false);
       }
