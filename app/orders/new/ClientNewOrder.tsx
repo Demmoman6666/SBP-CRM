@@ -25,6 +25,8 @@ type CartLine = {
   variantTitle?: string | null;
   sku?: string | null;
   unitExVat: number; // £ ex VAT
+  /** ✅ NEW: live stock cap (null = unknown/no cap) */
+  maxAvailable?: number | null;
 };
 
 type Props = { initialCustomer?: Customer | null };
@@ -51,8 +53,15 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
   function addToCart(newLine: CartLine) {
     setCart((prev) => {
       const cur = prev[newLine.variantId];
-      const qty = cur ? cur.qty + 1 : 1;
-      return { ...prev, [newLine.variantId]: { line: newLine, qty } };
+      const cap = newLine.maxAvailable;
+      // if we know it's out of stock, don't add
+      if (cap != null && cap < 1) {
+        alert("That item is out of stock.");
+        return prev;
+      }
+      const nextQtyWanted = (cur ? cur.qty + 1 : 1);
+      const nextQty = cap != null ? Math.min(nextQtyWanted, Math.max(1, cap)) : nextQtyWanted;
+      return { ...prev, [newLine.variantId]: { line: newLine, qty: nextQty } };
     });
   }
 
@@ -67,7 +76,9 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     setCart((prev) => {
       const item = prev[variantId];
       if (!item) return prev;
-      const q = Math.max(1, Math.floor(qty || 1));
+      const raw = Math.max(1, Math.floor(qty || 1));
+      const cap = item.line.maxAvailable;
+      const q = cap != null ? Math.min(raw, Math.max(1, cap)) : raw;
       return { ...prev, [variantId]: { ...item, qty: q } };
     });
   }
@@ -88,6 +99,47 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     const tax = ex * VAT_RATE;
     const inc = ex + tax;
     return { ex: to2(ex), tax: to2(tax), inc: to2(inc) };
+  }, [cart]);
+
+  // ✅ NEW: hydrate missing stock for items already in cart (if picker didn't provide it)
+  useEffect(() => {
+    const missing = Object.values(cart)
+      .filter(({ line }) => (line.maxAvailable == null || !Number.isFinite(Number(line.maxAvailable))))
+      .map(({ line }) => line.variantId);
+
+    if (missing.length === 0) return;
+
+    (async () => {
+      try {
+        const r = await fetch("/api/shopify/variant-stock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ ids: missing }),
+        });
+        const j = await r.json().catch(() => ({}));
+        const map = (j?.stock || {}) as Record<string, number>;
+        if (!map || typeof map !== "object") return;
+
+        setCart((prev) => {
+          const next = { ...prev };
+          for (const vidStr of Object.keys(map)) {
+            const vid = Number(vidStr);
+            const entry = next[vid];
+            if (!entry) continue;
+            const cap = Number(map[vidStr]);
+            if (Number.isFinite(cap)) {
+              // update line cap
+              entry.line = { ...entry.line, maxAvailable: cap };
+              // clamp qty to cap
+              entry.qty = Math.min(entry.qty, Math.max(1, cap));
+            }
+          }
+          return next;
+        });
+      } catch {
+        /* ignore */
+      }
+    })();
   }, [cart]);
 
   // --- draft creation (normalizes payload on server) ---
@@ -280,7 +332,11 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
                 {line.productTitle}
                 {line.variantTitle ? ` ${line.variantTitle}` : ""}
               </div>
-              <div className="small muted">{line.sku ? `SKU: ${line.sku}` : ""}</div>
+              <div className="small muted">
+                {line.sku ? `SKU: ${line.sku}` : ""}
+                {/* ✅ NEW: show a tiny stock hint when known */}
+                {line.maxAvailable != null ? ` • In stock: ${line.maxAvailable}` : ""}
+              </div>
 
               <div className="small muted" style={{ marginTop: 6 }}>
                 Ex VAT: {fmtGBP(ex)} &nbsp; • &nbsp; VAT ({Math.round(VAT_RATE * 100)}%):{" "}
@@ -293,7 +349,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
                     border: "1px solid #111",
                     borderRadius: 14,
                     height: 36,
-                    width: 70,
+                    width: 90,
                     display: "inline-flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -305,11 +361,12 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
                     aria-label="Quantity"
                     type="number"
                     min={1}
+                    max={line.maxAvailable != null ? Math.max(1, line.maxAvailable) : undefined}
                     value={qty}
                     onChange={(e) => setQty(line.variantId, Number(e.target.value || 1))}
                     style={{
                       appearance: "textfield",
-                      width: 48,
+                      width: 68,
                       textAlign: "center",
                       border: "none",
                       outline: "none",
@@ -466,6 +523,8 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
                   variantTitle: v.variantTitle ?? null,
                   sku: v.sku ?? null,
                   unitExVat: Number.isFinite(v.priceExVat) ? Number(v.priceExVat) : 0,
+                  /** ✅ pass live stock so we can cap qty */
+                  maxAvailable: Number.isFinite(Number(v.available)) ? Number(v.available) : null,
                 })
               );
             }}
