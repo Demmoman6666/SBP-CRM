@@ -1,76 +1,61 @@
-// app/api/shopify/variant-prices/route.ts
 import { NextResponse } from "next/server";
 import { shopifyRest } from "@/lib/shopify";
 
-const VAT_RATE =
-  Number(process.env.NEXT_PUBLIC_VAT_RATE ?? process.env.VAT_RATE ?? "0.20");
+const VAT_RATE = Number(process.env.VAT_RATE ?? process.env.NEXT_PUBLIC_VAT_RATE ?? "0.20");
 
-// Parse numbers from strings like "£3.71", "3,71", MoneyV2, etc.
-function parsePrice(val: any): number | null {
-  if (val == null || val === "") return null;
-  if (typeof val === "number") return Number.isFinite(val) ? val : null;
-  if (typeof val === "object" && (typeof val.amount === "string" || typeof val.amount === "number")) {
-    return parsePrice(val.amount);
-  }
-  const s = String(val).trim();
-  let cleaned = s.replace(/[^\d.,-]/g, "");
-  if (cleaned.includes(",") && cleaned.includes(".")) cleaned = cleaned.replace(/,/g, "");
-  else if (cleaned.includes(",") && !cleaned.includes(".")) cleaned = cleaned.replace(",", ".");
-  const n = parseFloat(cleaned);
-  return Number.isFinite(n) ? n : null;
+// Robustly turn any Shopify id (GID or numeric) into a number
+function toNumericId(v: any): number | null {
+  if (v == null) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const s = String(v);
+  const m = s.match(/(\d+)(?!.*\d)/); // last run of digits
+  return m ? Number(m[1]) : null;
 }
 
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const ids: number[] = Array.isArray(body?.variantIds) ? body.variantIds : [];
+    const rawIds: any[] = Array.isArray(body?.ids) ? body.ids : [];
+    const ids = rawIds.map(toNumericId).filter((n): n is number => Number.isFinite(n));
 
-    const nums = Array.from(
-      new Set(ids.map((x) => Number(x)).filter((n) => Number.isFinite(n)))
-    );
-    if (nums.length === 0) {
+    if (ids.length === 0) {
       return NextResponse.json({ prices: {} }, { status: 200 });
     }
 
-    // Shopify REST: fetch variants in small batches
-    const batches: number[][] = [];
-    const size = 50;
-    for (let i = 0; i < nums.length; i += size) batches.push(nums.slice(i, i + size));
-
+    // Fetch variants in small batches
     const out: Record<
       string,
-      { priceExVat: number; productTitle?: string; variantTitle?: string; sku?: string | null }
+      { priceExVat: number; variantTitle?: string | null; sku?: string | null }
     > = {};
-
-    for (const batch of batches) {
-      const qs = encodeURIComponent(batch.join(","));
+    const size = 50;
+    for (let i = 0; i < ids.length; i += size) {
+      const slice = ids.slice(i, i + size);
+      const qs = encodeURIComponent(slice.join(","));
       const res = await shopifyRest(
-        `/variants.json?ids=${qs}&fields=id,price,sku,title,product_id`,
+        `/variants.json?ids=${qs}&fields=id,price,sku,title`,
         { method: "GET" }
       );
       if (!res.ok) continue;
-      const json = await res.json().catch(() => ({} as any));
+
+      const json = await res.json().catch(() => ({}));
       const variants: any[] = Array.isArray(json?.variants) ? json.variants : [];
 
       for (const v of variants) {
-        const id = Number(v?.id);
-        if (!Number.isFinite(id)) continue;
+        const inc = Number(v?.price);
+        if (!Number.isFinite(inc)) continue;
 
-        const inc = parsePrice(v?.price); // Shopify prices are typically VAT-inclusive in the UK
-        if (inc == null) continue;
-
-        // Convert to ex VAT (what your cart expects)
-        const ex = VAT_RATE > 0 ? inc / (1 + VAT_RATE) : inc;
-
-        out[String(id)] = {
+        // Convert to ex VAT (Shopify store prices are typically VAT-inclusive in the UK)
+        const ex = inc / (1 + VAT_RATE);
+        const key = String(v?.id);
+        out[key] = {
           priceExVat: Math.round(ex * 100) / 100,
-          variantTitle: v?.title ?? undefined,
+          variantTitle: v?.title ?? null,
           sku: v?.sku ?? null,
         };
       }
     }
 
-    return NextResponse.json({ prices: out });
+    return NextResponse.json({ prices: out }, { status: 200 });
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message || "Failed to fetch variant prices", prices: {} },
