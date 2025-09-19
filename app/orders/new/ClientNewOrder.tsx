@@ -174,7 +174,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         body: JSON.stringify({
           customerId: customer.id,
           lines: simpleLines,
-          draftOrderId: id, // ⬅️ pass the draft id so the API doesn't create a second draft
+          draftOrderId: id, // pass the draft id so the API doesn't create a second draft
           note: `Payment link for ${customer.salonName || customer.customerName || customer.id}`,
         }),
       });
@@ -454,14 +454,16 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         <div style={{ marginTop: 12 }}>
           <ShopifyProductPicker
             placeholder="Search by product title, SKU, vendor…"
-            onPick={(v) => {
-              addToCart({
-                variantId: Number(v.variantId),
-                productTitle: v.productTitle,
-                variantTitle: v.variantTitle ?? null,
-                sku: v.sku ?? null,
-                unitExVat: Number.isFinite(v.priceExVat) ? v.priceExVat : 0,
-              });
+            onConfirm={(items: any[]) => {
+              items.forEach((v) =>
+                addToCart({
+                  variantId: Number(v.variantId),
+                  productTitle: v.productTitle,
+                  variantTitle: v.variantTitle ?? null,
+                  sku: v.sku ?? null,
+                  unitExVat: Number.isFinite(v.priceExVat) ? Number(v.priceExVat) : 0,
+                })
+              );
             }}
           />
         </div>
