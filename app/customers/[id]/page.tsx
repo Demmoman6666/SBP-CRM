@@ -81,7 +81,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
   });
 
   // Enrich orders with Shopify payment/fulfillment status (best-effort)
-  // We look for a numeric Shopify order id on each order record.
   const idCandidates = orders
     .map((o: any) => Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id))
     .filter((n) => Number.isFinite(n)) as number[];
@@ -92,7 +91,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
   >();
   if (idCandidates.length) {
     try {
-      // Fetch in one go (Shopify REST supports comma-separated ids)
       const idsParam = encodeURIComponent(idCandidates.join(","));
       const res = await shopifyRest(
         `/orders.json?ids=${idsParam}&status=any&fields=id,financial_status,fulfillment_status`,
@@ -131,6 +129,50 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       }
     } catch {
       drafts = [];
+    }
+  }
+
+  // ---------- Calls (best-effort; works with "Call" or "CallLog") ----------
+  let calls: any[] = [];
+  try {
+    calls = await prisma.$queryRaw<any[]>`
+      SELECT * FROM "Call"
+      WHERE "customerId" = ${customer.id}
+      ORDER BY COALESCE("createdAt","created_at") DESC
+      LIMIT 20
+    `;
+  } catch {
+    try {
+      calls = await prisma.$queryRaw<any[]>`
+        SELECT * FROM "CallLog"
+        WHERE "customerId" = ${customer.id}
+        ORDER BY COALESCE("createdAt","created_at") DESC
+        LIMIT 20
+      `;
+    } catch {
+      calls = [];
+    }
+  }
+
+  // ---------- Notes (best-effort; works with "Note" or "CustomerNote") ----------
+  let notes: any[] = [];
+  try {
+    notes = await prisma.$queryRaw<any[]>`
+      SELECT * FROM "Note"
+      WHERE "customerId" = ${customer.id}
+      ORDER BY COALESCE("createdAt","created_at") DESC
+      LIMIT 20
+    `;
+  } catch {
+    try {
+      notes = await prisma.$queryRaw<any[]>`
+        SELECT * FROM "CustomerNote"
+        WHERE "customerId" = ${customer.id}
+        ORDER BY COALESCE("createdAt","created_at") DESC
+        LIMIT 20
+      `;
+    } catch {
+      notes = [];
     }
   }
 
@@ -383,6 +425,117 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                           Payment link
                         </button>
                       </form>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Calls */}
+      <section className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0 }}>Call log</h3>
+          <div className="row" style={{ gap: 8 }}>
+            <Link className="btn" href={`/calls?customerId=${customer.id}`}>All calls</Link>
+            <Link className="primary" href={`/calls/new?customerId=${customer.id}`}>New call</Link>
+          </div>
+        </div>
+
+        {calls.length === 0 ? (
+          <p className="small muted" style={{ marginTop: 8 }}>No calls yet.</p>
+        ) : (
+          <div style={{ marginTop: 10, overflowX: "auto" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "170px 160px 1fr auto",
+                gap: 6,
+                alignItems: "center",
+              }}
+            >
+              <div className="small muted">When</div>
+              <div className="small muted">Outcome</div>
+              <div className="small muted">Notes</div>
+              <div className="small muted">Action</div>
+
+              {calls.map((c: any) => {
+                const when = c.createdAt || c.created_at || c.date || c.timestamp;
+                const outcome = c.outcome || c.status || c.result || "—";
+                const note =
+                  c.note || c.notes || c.summary || c.description || c.outcomeNotes || "";
+                const id = c.id;
+
+                const whenText =
+                  when ? new Date(when as string | number | Date).toLocaleString() : "-";
+                const noteText = String(note || "");
+                const snippet = noteText.length > 120 ? noteText.slice(0, 120) + "…" : noteText;
+
+                return (
+                  <div key={String(id ?? whenText)} style={{ display: "contents" }}>
+                    <div className="small">{whenText}</div>
+                    <div><span className="badge">{String(outcome || "—")}</span></div>
+                    <div className="small muted" title={noteText}>{snippet}</div>
+                    <div>
+                      <Link className="btn" href={id ? `/calls/${id}` : `/calls?customerId=${customer.id}`}>
+                        View
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Notes */}
+      <section className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0 }}>Notes</h3>
+          <div className="row" style={{ gap: 8 }}>
+            <Link className="btn" href={`/notes?customerId=${customer.id}`}>All notes</Link>
+            <Link className="primary" href={`/notes/new?customerId=${customer.id}`}>Add note</Link>
+          </div>
+        </div>
+
+        {notes.length === 0 ? (
+          <p className="small muted" style={{ marginTop: 8 }}>No notes yet.</p>
+        ) : (
+          <div style={{ marginTop: 10, overflowX: "auto" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "170px 1fr auto",
+                gap: 6,
+                alignItems: "center",
+              }}
+            >
+              <div className="small muted">When</div>
+              <div className="small muted">Note</div>
+              <div className="small muted">Action</div>
+
+              {notes.map((n: any) => {
+                const when = n.createdAt || n.created_at || n.date || n.timestamp;
+                const text =
+                  n.text || n.note || n.notes || n.body || n.content || n.message || "";
+                const id = n.id;
+
+                const whenText =
+                  when ? new Date(when as string | number | Date).toLocaleString() : "-";
+                const body = String(text || "");
+                const snippet = body.length > 140 ? body.slice(0, 140) + "…" : body;
+
+                return (
+                  <div key={String(id ?? whenText)} style={{ display: "contents" }}>
+                    <div className="small">{whenText}</div>
+                    <div className="small" title={body}>{snippet}</div>
+                    <div>
+                      <Link className="btn" href={id ? `/notes/${id}` : `/notes?customerId=${customer.id}`}>
+                        View
+                      </Link>
                     </div>
                   </div>
                 );
