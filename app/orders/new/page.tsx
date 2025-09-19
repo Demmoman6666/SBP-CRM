@@ -13,7 +13,6 @@ type PageProps = {
 export default async function Page({ searchParams }: PageProps) {
   const customerId = searchParams?.customerId || "";
 
-  // Prefetch minimal customer details server-side (fast + no client fetch needed)
   const initialCustomer = customerId
     ? await prisma.customer.findUnique({
         where: { id: customerId },
