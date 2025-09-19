@@ -1,4 +1,3 @@
-// app/orders/[id]/page.tsx
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 
@@ -16,8 +15,13 @@ function money(n?: any, currency?: string) {
   }
 }
 
-export default async function OrderDetailPage({ params }: { params: { id: string } }) {
-  // ⬇️ Load order + customer + line items
+export default async function OrderDetailPage({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams?: Record<string, string | string[] | undefined>;
+}) {
   const order = await prisma.order.findUnique({
     where: { id: params.id },
     include: {
@@ -39,17 +43,39 @@ export default async function OrderDetailPage({ params }: { params: { id: string
   const when = order.processedAt ?? order.createdAt;
   const currency = order.currency || "GBP";
 
+  // Success toast when redirected back from refund flow
+  const refundedFlag =
+    (typeof searchParams?.refunded === "string" && (searchParams!.refunded === "1" || searchParams!.refunded === "true"));
+  const amountParam = typeof searchParams?.amount === "string" ? Number(searchParams!.amount) : NaN; // pence
+  const refundedAmount = Number.isFinite(amountParam) ? amountParam / 100 : null;
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <div className="card">
+        {/* Success toast */}
+        {refundedFlag && (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              background: "#ecfdf5",
+              border: "1px solid rgba(16,185,129,.35)",
+              color: "#065f46",
+              padding: "10px 12px",
+              borderRadius: 8,
+              marginBottom: 12,
+            }}
+          >
+            <b>Refund created.</b>{" "}
+            {refundedAmount != null ? ` ${money(refundedAmount, currency)} returned to the customer.` : ""}
+          </div>
+        )}
+
         <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
           <h1 style={{ margin: 0 }}>{order.shopifyName || `Order ${order.shopifyOrderNumber ?? ""}`}</h1>
-
-          {/* Actions: Refund + Back to customer */}
           <div className="row" style={{ gap: 8 }}>
-            <Link className="btn" href={`/orders/${order.id}/refund`}>
-              Refund
-            </Link>
+            {/* Refund button */}
+            <Link className="btn" href={`/orders/${order.id}/refund`}>Refund</Link>
             <Link
               className="primary"
               href={order.customer ? `/customers/${order.customer.id}` : "/customers"}
