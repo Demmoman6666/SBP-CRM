@@ -6,26 +6,25 @@ import ShopifyProductPicker from "@/components/ShopifyProductPicker";
 
 type Customer = {
   id: string;
-  salonName: string | null;
-  customerName: string | null;
-  addressLine1: string | null;
-  addressLine2: string | null;
-  town: string | null;
-  county: string | null;
-  postCode: string | null;
-  country: string | null; // e.g. "GB"
-  customerTelephone: string | null;
-  customerEmailAddress: string | null;
+  salonName?: string | null;
+  customerName?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  town?: string | null;
+  county?: string | null;
+  postCode?: string | null;
+  country?: string | null;
+  customerTelephone?: string | null;
+  customerEmailAddress?: string | null;
+  shopifyCustomerId?: string | null; // used by draft creation on the server
 };
 
 type CartLine = {
   variantId: number;
   productTitle: string;
-  title: string;
+  variantTitle?: string | null;
   sku?: string | null;
-  priceEx: number; // unit ex VAT
-  qty: number;
-  image?: string | null;
+  unitExVat: number; // £ ex VAT (from Shopify Admin API)
 };
 
 type Props = {
@@ -34,108 +33,112 @@ type Props = {
 
 const VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE ?? "0.20");
 
-const money = (n: number) =>
-  new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "GBP",
-  }).format(Number.isFinite(n) ? n : 0);
+// money helpers
+const £ = (n: number) =>
+  new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
+    Number.isFinite(n) ? n : 0
+  );
+const to2 = (n: number) => Math.round(n * 100) / 100;
 
 export default function ClientNewOrder({ initialCustomer }: Props) {
   // customer
-  const [customer, setCustomer] = useState<Customer | null>(
-    initialCustomer ?? null
-  );
+  const [customer, setCustomer] = useState<Customer | null>(initialCustomer ?? null);
 
-  // show/hide picker
-  const [showPicker, setShowPicker] = useState(true);
-
-  // cart
-  const [cart, setCart] = useState<CartLine[]>([]);
-  const [creating, setCreating] = useState<false | "draft" | "checkout" | "plink">(false);
+  // draft state we get back from the server (used for idempotency and visibility)
   const [draftId, setDraftId] = useState<number | null>(null);
 
-  // helpers
-  function addToCart(line: Omit<CartLine, "qty"> & { qty?: number }) {
+  // cart data keyed by variantId
+  const [cart, setCart] = useState<Record<number, { line: CartLine; qty: number }>>({});
+
+  // UI state for async actions
+  const [creating, setCreating] = useState<false | "draft" | "checkout" | "plink">(false);
+
+  // Add product from picker
+  function addToCart(newLine: CartLine) {
     setCart((prev) => {
-      const idx = prev.findIndex((x) => x.variantId === line.variantId);
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = { ...next[idx], qty: next[idx].qty + (line.qty ?? 1) };
-        return next;
-      }
-      return [...prev, { ...line, qty: line.qty ?? 1 }];
+      const cur = prev[newLine.variantId];
+      const qty = cur ? cur.qty + 1 : 1;
+      return { ...prev, [newLine.variantId]: { line: newLine, qty } };
+    });
+  }
+
+  function removeFromCart(variantId: number) {
+    setCart((p) => {
+      const { [variantId]: _, ...rest } = p;
+      return rest;
     });
   }
 
   function setQty(variantId: number, qty: number) {
-    setCart((prev) =>
-      prev.map((l) => (l.variantId === variantId ? { ...l, qty } : l))
-    );
+    setCart((prev) => {
+      const item = prev[variantId];
+      if (!item) return prev;
+      const q = Math.max(1, Math.floor(qty || 1));
+      return { ...prev, [variantId]: { ...item, qty: q } };
+    });
   }
 
-  function removeLine(variantId: number) {
-    setCart((prev) => prev.filter((l) => l.variantId !== variantId));
-  }
+  // cart → simple lines (variantId, quantity)
+  const simpleLines = useMemo(
+    () =>
+      Object.values(cart).map(({ line, qty }) => ({
+        variantId: String(line.variantId),
+        quantity: qty,
+      })),
+    [cart]
+  );
 
   // totals
   const totals = useMemo(() => {
-    const ex = cart.reduce((s, l) => s + l.priceEx * l.qty, 0);
-    const vat = ex * VAT_RATE;
-    const inc = ex + vat;
-    return { ex, vat, inc };
+    let ex = 0;
+    for (const { line, qty } of Object.values(cart)) {
+      ex += line.unitExVat * qty;
+    }
+    const tax = ex * VAT_RATE;
+    const inc = ex + tax;
+    return { ex: to2(ex), tax: to2(tax), inc: to2(inc) };
   }, [cart]);
 
-  // Ensure a Shopify draft exists (or re-create). Posts line items so server always sees them.
-  async function ensureDraft(): Promise<number> {
-    if (!cart.length) throw new Error("Cart is empty");
+  // ----- Draft creation (server does the real Shopify call) -----
+  async function ensureDraft({ recreate = false }: { recreate?: boolean } = {}) {
+    if (!customer?.id) throw new Error("Select a customer first.");
+    if (simpleLines.length === 0) throw new Error("Add at least one line item to the cart.");
 
     setCreating("draft");
     try {
-      const line_items = cart.map((l) => ({
-        variant_id: l.variantId,
-        quantity: l.qty,
-      }));
-
-      // tolerate both shapes: original `line_items` and a namespaced backup
-      const body: any = {
-        customerId: customer?.id ?? null,
-        email: customer?.customerEmailAddress ?? null,
-        shipping_address: customer
-          ? {
-            address1: customer.addressLine1 ?? "",
-            address2: customer.addressLine2 ?? "",
-            city: customer.town ?? "",
-            province: customer.county ?? "",
-            zip: customer.postCode ?? "",
-            country_code: customer.country ?? "GB",
-            name: customer.salonName || customer.customerName || "",
-            phone: customer.customerTelephone ?? "",
-          }
-          : undefined,
-        line_items,
-        draft_order_line_items: line_items,
-      };
-
-      const resp = await fetch("/api/shopify/draft-orders", {
+      const res = await fetch("/api/shopify/draft-orders", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          recreate,
+          customerId: customer.id,
+          // send both shapes so the server can normalize for Shopify
+          lines: simpleLines, // [{ variantId, quantity }]
+          draft_order_line_items: simpleLines.map((l) => ({
+            variant_id: Number(l.variantId),
+            quantity: Number(l.quantity),
+          })),
+          line_items: simpleLines.map((l) => ({
+            variant_id: Number(l.variantId),
+            quantity: Number(l.quantity),
+          })),
+        }),
       });
 
-      if (!resp.ok) {
-        const t = await resp.text().catch(() => "");
-        throw new Error(`Draft creation failed: ${resp.status} ${t}`);
-      }
+      const text = await res.text();
+      if (!res.ok) throw new Error(text || `Draft error ${res.status}`);
 
-      const json = await resp.json().catch(() => ({} as any));
-      // Accept either {id} or {draft_order:{id}} or the full draft payload
-      const id: number | undefined =
+      // Server returns either { id, draft_order } or { draft: {...} }
+      const json = JSON.parse(text || "{}");
+      const id: number | null =
         json?.id ??
         json?.draft_order?.id ??
-        json?.draft_order?.order_id ??
-        json?.draft?.id;
+        json?.draft?.id ??
+        json?.draft?.draft_order?.id ??
+        null;
 
       if (!id) {
+        console.warn("Draft API response:", json);
         throw new Error("Draft created but no id returned");
       }
       setDraftId(id);
@@ -145,247 +148,306 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  // Pay by card
+  // ----- Pay by card (Stripe Checkout) -----
   async function payByCard() {
+    if (!customer?.id) {
+      alert("Pick a customer first.");
+      return;
+    }
+    if (simpleLines.length === 0) {
+      alert("Add at least one line item to the cart.");
+      return;
+    }
+    // Make sure draft exists/refreshes in Shopify (staff visibility)
+    await ensureDraft({ recreate: false });
+
+    setCreating("checkout");
     try {
-      const id = draftId ?? (await ensureDraft());
-      setCreating("checkout");
-      // Try POST first (preferred); fall back to GET redirect if server expects it
-      const r = await fetch("/api/stripe/checkout-for-draft", {
+      const r = await fetch("/api/payments/stripe/checkout", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draftId: id }),
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          customerId: customer.id,
+          lines: simpleLines,
+          note: `CRM Order for ${customer.salonName || customer.customerName || customer.id}`,
+        }),
       });
-      if (r.ok) {
-        const j = await r.json();
-        if (j?.url) {
-          window.location.href = j.url as string;
-          return;
-        }
-      }
-      // fallback redirect
-      window.location.href = `/api/stripe/checkout-for-draft?draftId=${id}`;
-    } catch (e: any) {
-      alert(e?.message || "Checkout failed");
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.url) throw new Error(j?.error || `Stripe Checkout failed: ${r.status}`);
+      // Redirect the browser to Stripe Checkout
+      window.location.href = j.url as string;
+    } catch (err: any) {
+      console.error("Pay by card error:", err);
+      alert(err?.message || "Stripe Checkout failed");
     } finally {
       setCreating(false);
     }
   }
 
-  // Payment link
+  // ----- Payment link (Stripe Payment Links) -----
   async function createPaymentLink() {
-    try {
-      const id = draftId ?? (await ensureDraft());
-      setCreating("plink");
-      const r = await fetch("/api/stripe/payment-link-for-draft", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draftId: id }),
-      });
-      if (!r.ok) {
-        const t = await r.text().catch(() => "");
-        throw new Error(`Payment link failed: ${r.status} ${t}`);
-      }
-      const j = await r.json();
-      const url: string | undefined = j?.url || j?.payment_link?.url;
-      if (!url) throw new Error("No URL returned from payment link API");
+    if (!customer?.id) {
+      alert("Pick a customer first.");
+      return;
+    }
+    if (simpleLines.length === 0) {
+      alert("Add at least one line item to the cart.");
+      return;
+    }
+    // Ensure draft exists so back office sees it immediately
+    await ensureDraft({ recreate: false });
 
+    setCreating("plink");
+    try {
+      const r = await fetch("/api/payments/stripe/payment-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          customerId: customer.id,
+          lines: simpleLines,
+          note: `Payment link for ${customer.salonName || customer.customerName || customer.id}`,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.url) throw new Error(j?.error || `Payment Link failed: ${r.status}`);
+
+      // Copy + open
       try {
-        await navigator.clipboard.writeText(url);
+        await navigator.clipboard.writeText(j.url as string);
       } catch {}
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (e: any) {
-      alert(e?.message || "Payment link failed");
+      window.open(j.url as string, "_blank", "noopener,noreferrer");
+    } catch (err: any) {
+      console.error("Payment link error:", err);
+      alert(err?.message || "Payment Link failed");
     } finally {
       setCreating(false);
     }
   }
 
-  // --- UI ---
+  // ----- UI bits -----
 
-  return (
-    <div className="grid" style={{ gap: 16 }}>
-      {/* Customer panel */}
+  function CustomerBlock() {
+    if (!customer) {
+      return (
+        <section className="card">
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <b>No customer selected</b>
+              <div className="small muted">Pick a customer to start an order.</div>
+            </div>
+            <a className="primary" href="/customers?pick=1&return=/orders/new">
+              Select customer
+            </a>
+          </div>
+        </section>
+      );
+    }
+
+    const address = [
+      customer.addressLine1,
+      customer.addressLine2,
+      customer.town,
+      customer.county,
+      customer.postCode,
+      customer.country,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return (
       <section className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <b>Customer</b>
-          <a className="btn" href="/customers" title="Change or pick a different customer">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "start" }}>
+          <div>
+            <div className="small muted">Customer</div>
+            <div style={{ fontWeight: 800 }}>
+              {customer.salonName || customer.customerName || "—"}
+            </div>
+            <div className="small muted" style={{ marginTop: 4 }}>
+              {customer.customerName || ""}{" "}
+              {customer.customerTelephone ? `• ${customer.customerTelephone}` : ""}{" "}
+              {customer.customerEmailAddress ? `• ${customer.customerEmailAddress}` : ""}
+            </div>
+            <pre
+              className="small muted"
+              style={{ marginTop: 10, whiteSpace: "pre-wrap", lineHeight: 1.35 }}
+            >
+              {address || "—"}
+            </pre>
+          </div>
+          <a className="btn" href="/customers?pick=1&return=/orders/new">
             Change customer
           </a>
         </div>
-
-        {customer ? (
-          <div className="small" style={{ marginTop: 10 }}>
-            <div style={{ fontWeight: 700 }}>
-              {customer.salonName || customer.customerName || "Customer"}
-            </div>
-            <div className="muted" style={{ marginTop: 2 }}>
-              {customer.customerName || "-"}
-              {customer.customerTelephone ? ` • ${customer.customerTelephone}` : ""}
-              {customer.customerEmailAddress ? ` • ${customer.customerEmailAddress}` : ""}
-            </div>
-            <div className="muted" style={{ marginTop: 10, whiteSpace: "pre-line" }}>
-              {[customer.addressLine1, customer.town, customer.county, customer.postCode]
-                .filter(Boolean)
-                .join("\n")}
-            </div>
-          </div>
-        ) : (
-          <div className="small muted" style={{ marginTop: 10 }}>
-            No customer selected yet — <a href="/customers">choose one</a>.
-          </div>
-        )}
       </section>
+    );
+  }
 
-      {/* Search & add products */}
+  function CartBlock() {
+    const rows = Object.values(cart);
+
+    return (
+      <section className="card">
+        <div className="small" style={{ fontWeight: 800, marginBottom: 8 }}>
+          Cart
+        </div>
+
+        {rows.length === 0 && <div className="small muted">No items yet.</div>}
+
+        {rows.map(({ line, qty }) => {
+          const ex = to2(line.unitExVat * qty);
+          const tax = to2(ex * VAT_RATE);
+          const inc = to2(ex + tax);
+
+          return (
+            <div key={line.variantId} style={{ padding: "10px 0", borderTop: "1px solid #eee" }}>
+              <div style={{ fontWeight: 700 }}>
+                {line.productTitle}
+                {line.variantTitle ? ` ${line.variantTitle}` : ""}
+              </div>
+              <div className="small muted">
+                {line.sku ? `SKU: ${line.sku}` : ""}
+              </div>
+
+              {/* price strip */}
+              <div className="small muted" style={{ marginTop: 6 }}>
+                Ex VAT: {£(ex)} &nbsp; • &nbsp; VAT ({Math.round(VAT_RATE * 100)}%): {£(tax)} &nbsp;
+                • &nbsp; Inc VAT: {£(inc)}
+              </div>
+
+              {/* controls row */}
+              <div className="row" style={{ marginTop: 8, gap: 10, alignItems: "center" }}>
+                {/* quantity bubble — same look everywhere */}
+                <div
+                  style={{
+                    border: "1px solid #111",
+                    borderRadius: 14,
+                    height: 36,
+                    width: 70,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 600,
+                  }}
+                  title="Quantity"
+                >
+                  <input
+                    aria-label="Quantity"
+                    type="number"
+                    min={1}
+                    value={qty}
+                    onChange={(e) => setQty(line.variantId, Number(e.target.value || 1))}
+                    style={{
+                      appearance: "textfield",
+                      width: 48,
+                      textAlign: "center",
+                      border: "none",
+                      outline: "none",
+                      background: "transparent",
+                      fontWeight: 700,
+                    }}
+                  />
+                </div>
+
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => removeFromCart(line.variantId)}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Totals */}
+        <div style={{ marginTop: 12 }}>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div className="small muted">Net:</div>
+            <div className="small">{£(totals.ex)}</div>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div className="small muted">
+              VAT ({Math.round(VAT_RATE * 100)}%):
+            </div>
+            <div className="small">{£(totals.tax)}</div>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div className="small" style={{ fontWeight: 700 }}>
+              Total:
+            </div>
+            <div className="small" style={{ fontWeight: 700 }}>
+              {£(totals.inc)}
+            </div>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div
+          className="row"
+          style={{ marginTop: 14, gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}
+        >
+          <button
+            className="btn"
+            type="button"
+            onClick={async () => {
+              try {
+                await ensureDraft({ recreate: true });
+                alert("Draft created or refreshed.");
+              } catch (err: any) {
+                alert(err?.message || "Draft error");
+              }
+            }}
+            disabled={creating !== false}
+          >
+            {creating === "draft" ? "Creating draft…" : draftId ? "Re-create draft" : "Create draft"}
+          </button>
+
+          <button
+            className="primary"
+            type="button"
+            onClick={payByCard}
+            disabled={creating !== false}
+          >
+            {creating === "checkout" ? "Starting checkout…" : "Pay by card"}
+          </button>
+
+          <button className="btn" type="button" onClick={createPaymentLink} disabled={creating !== false}>
+            {creating === "plink" ? "Creating link…" : "Payment link"}
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <div className="grid" style={{ gap: 16 }}>
+      <CustomerBlock />
+
+      {/* Search / add products */}
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Search Products</h3>
-          <button type="button" className="btn" onClick={() => setShowPicker((s) => !s)}>
-            {showPicker ? "Hide" : "Show"}
-          </button>
         </div>
 
-        {showPicker && (
-          <div style={{ marginTop: 10 }}>
-            <ShopifyProductPicker
-              placeholder="Search by product title, SKU, vendor…"
-              onPick={(v) =>
-                addToCart({
-                  variantId: v.variantId,
-                  productTitle: v.productTitle,
-                  title: v.title,
-                  sku: v.sku,
-                  priceEx: v.priceEx,
-                  image: v.image ?? null,
-                })
-              }
-            />
-          </div>
-        )}
+        <div style={{ marginTop: 12 }}>
+          <ShopifyProductPicker
+            placeholder="Search by product title, SKU, vendor…"
+            onPick={(v: any) => {
+              // Expect the picker to give us ex-VAT price & identifiers
+              addToCart({
+                variantId: Number(v.variantId),
+                productTitle: v.productTitle,
+                variantTitle: v.variantTitle ?? null,
+                sku: v.sku ?? null,
+                unitExVat: Number(v.priceExVat ?? v.price ?? 0),
+              });
+            }}
+          />
+        </div>
       </section>
 
-      {/* Cart */}
-      <section className="card">
-        <h3 style={{ margin: 0, marginBottom: 8 }}>Cart</h3>
-        {cart.length === 0 ? (
-          <div className="small muted">No items yet.</div>
-        ) : (
-          <div className="grid" style={{ gap: 12 }}>
-            {cart.map((l) => {
-              const ex = l.priceEx * l.qty;
-              const vat = ex * VAT_RATE;
-              const inc = ex + vat;
-              return (
-                <div key={l.variantId} className="card" style={{ borderColor: "var(--border)", boxShadow: "none", padding: 12 }}>
-                  <div className="row" style={{ alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                    <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-                      <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {l.productTitle}
-                      </div>
-                      <div className="small muted">SKU: {l.sku || "—"}</div>
-                    </div>
-
-                    {/* Consistent qty “bubble” */}
-                    <input
-                      type="number"
-                      min={1}
-                      value={l.qty}
-                      onChange={(e) => setQty(l.variantId, Math.max(1, Number(e.target.value || 1)))}
-                      style={{
-                        width: 64,
-                        textAlign: "center",
-                        borderRadius: 14,
-                        height: 42,
-                      }}
-                    />
-
-                    <button className="btn" type="button" onClick={() => removeLine(l.variantId)}>
-                      Remove
-                    </button>
-                  </div>
-
-                  {/* per-line pricing */}
-                  <div className="small muted" style={{ marginTop: 8 }}>
-                    Ex VAT: {money(ex)}{" "}
-                    <span style={{ marginInline: 6 }}>•</span>
-                    VAT ({Math.round(VAT_RATE * 100)}%): {money(vat)}{" "}
-                    <span style={{ marginInline: 6 }}>•</span>
-                    Inc VAT: {money(inc)}
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Totals */}
-            <div style={{ marginTop: 12 }}>
-              <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
-                <div className="small muted">Net:</div>
-                <div className="small">{money(totals.ex)}</div>
-              </div>
-              <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
-                <div className="small muted">
-                  VAT ({Math.round(VAT_RATE * 100)}%):
-                </div>
-                <div className="small">{money(totals.vat)}</div>
-              </div>
-              <div className="row" style={{ justifyContent: "flex-end", gap: 18 }}>
-                <div className="small" style={{ fontWeight: 700 }}>
-                  Total:
-                </div>
-                <div className="small" style={{ fontWeight: 700 }}>
-                  {money(totals.inc)}
-                </div>
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div
-              className="row"
-              style={{
-                marginTop: 14,
-                gap: 8,
-                flexWrap: "wrap",
-                justifyContent: "flex-end",
-              }}
-            >
-              <button
-                className="btn"
-                type="button"
-                onClick={async () => {
-                  try {
-                    await ensureDraft();
-                    alert("Draft created (or refreshed).");
-                  } catch (e: any) {
-                    alert(e?.message || "Draft error");
-                  }
-                }}
-                disabled={creating !== false}
-              >
-                {creating === "draft" ? "Creating draft…" : draftId ? "Re-create draft" : "Create draft"}
-              </button>
-
-              <button
-                className="primary"
-                type="button"
-                onClick={payByCard}
-                disabled={creating !== false}
-              >
-                {creating === "checkout" ? "Starting checkout…" : "Pay by card"}
-              </button>
-
-              <button
-                className="btn"
-                type="button"
-                onClick={createPaymentLink}
-                disabled={creating !== false}
-              >
-                {creating === "plink" ? "Creating link…" : "Payment link"}
-              </button>
-            </div>
-          </div>
-        )}
-      </section>
+      <CartBlock />
     </div>
   );
 }
