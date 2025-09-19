@@ -1,201 +1,478 @@
+// app/orders/new/ClientNewOrder.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import ShopifyProductPicker from "@/components/ShopifyProductPicker";
 
-/* ---------- tiny safe fetch helper ---------- */
-async function safeGet<T = any>(url: string): Promise<T> {
-  const r = await fetch(url, { credentials: "include", cache: "no-store" });
-  if (!r.ok) throw new Error(String(r.status));
-  return (await r.json()) as T;
-}
+type Customer = {
+  id: string;
+  salonName?: string | null;
+  customerName?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  town?: string | null;
+  county?: string | null;
+  postCode?: string | null;
+  country?: string | null;
+  customerTelephone?: string | null;
+  customerEmailAddress?: string | null;
+  shopifyCustomerId?: string | null;
+};
 
-/* ---------- types ---------- */
-export type ShopifySearchResult = {
-  variantId: number;              // required
-  productTitle: string;           // required
+type CartLine = {
+  variantId: number;
+  productTitle: string;
   variantTitle?: string | null;
   sku?: string | null;
-  priceExVat?: number | null;     // £ ex VAT
-  available?: number | null;      // inventory qty
-  image?: string | null;
+  unitExVat: number; // £ ex VAT
 };
 
-type Props = {
-  placeholder?: string;
-  /** Called when user taps Save; provides ALL selected results */
-  onConfirm: (items: ShopifySearchResult[]) => void;
-  initialSelectedVariantIds?: number[];
-  clearAfterConfirm?: boolean;
-};
+type Props = { initialCustomer?: Customer | null };
 
-/* ---------- currency helper ---------- */
-const fmtGBP = (n: number | null | undefined) =>
+const VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE ?? "0.20");
+
+// currency helper
+const fmtGBP = (n: number) =>
   new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
-    Number.isFinite(Number(n)) ? Number(n) : 0
+    Number.isFinite(n) ? n : 0
   );
+const to2 = (n: number) => Math.round(n * 100) / 100;
 
-export default function ShopifyProductPicker({
-  placeholder = "Search products…",
-  onConfirm,
-  initialSelectedVariantIds = [],
-  clearAfterConfirm = true,
-}: Props) {
-  const [q, setQ] = useState("");
-  const [results, setResults] = useState<ShopifySearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [selected, setSelected] = useState<Set<number>>(
-    () => new Set(initialSelectedVariantIds)
-  );
+export default function ClientNewOrder({ initialCustomer }: Props) {
+  const [customer, setCustomer] = useState<Customer | null>(initialCustomer ?? null);
+  const [draftId, setDraftId] = useState<number | null>(null);
+  const [cart, setCart] = useState<Record<number, { line: CartLine; qty: number }>>({});
+  const [creating, setCreating] = useState<false | "draft" | "checkout" | "plink">(false);
 
-  // debounce search
-  useEffect(() => {
-    let alive = true;
-    const t = setTimeout(async () => {
-      if (!q.trim()) {
-        setResults([]);
-        return;
-      }
-      setLoading(true);
-      try {
-        const data =
-          (await safeGet<ShopifySearchResult[]>(
-            `/api/shopify/products/search?q=${encodeURIComponent(q)}`
-          ).catch(() => [])) ?? [];
-        if (alive) setResults(Array.isArray(data) ? data : []);
-      } finally {
-        if (alive) setLoading(false);
-      }
-    }, 250);
-    return () => {
-      alive = false;
-      clearTimeout(t);
-    };
-  }, [q]);
+  // when a payment link is created, we show a panel instead of redirecting
+  const [plink, setPlink] = useState<{ url: string; draftAdminUrl?: string | null } | null>(null);
 
-  function toggle(id: number) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
+  // --- cart ops ---
+  function addToCart(newLine: CartLine) {
+    setCart((prev) => {
+      const cur = prev[newLine.variantId];
+      const qty = cur ? cur.qty + 1 : 1;
+      return { ...prev, [newLine.variantId]: { line: newLine, qty } };
     });
   }
 
-  function clearSelection() {
-    setSelected(new Set());
+  function removeFromCart(variantId: number) {
+    setCart((p) => {
+      const { [variantId]: _, ...rest } = p;
+      return rest;
+    });
   }
 
-  function confirmSelection() {
-    const picked = results.filter((r) => selected.has(r.variantId));
-    if (picked.length === 0) return;
-    onConfirm(picked);
-    if (clearAfterConfirm) clearSelection();
+  function setQty(variantId: number, qty: number) {
+    setCart((prev) => {
+      const item = prev[variantId];
+      if (!item) return prev;
+      const q = Math.max(1, Math.floor(qty || 1));
+      return { ...prev, [variantId]: { ...item, qty: q } };
+    });
+  }
+
+  // data sent to server for draft/stripe
+  const simpleLines = useMemo(
+    () =>
+      Object.values(cart).map(({ line, qty }) => ({
+        variantId: String(line.variantId),
+        quantity: qty,
+      })),
+    [cart]
+  );
+
+  const totals = useMemo(() => {
+    let ex = 0;
+    for (const { line, qty } of Object.values(cart)) ex += line.unitExVat * qty;
+    const tax = ex * VAT_RATE;
+    const inc = ex + tax;
+    return { ex: to2(ex), tax: to2(tax), inc: to2(inc) };
+  }, [cart]);
+
+  // --- draft creation (normalizes payload on server) ---
+  async function ensureDraft({ recreate = false }: { recreate?: boolean } = {}) {
+    if (!customer?.id) throw new Error("Select a customer first.");
+    if (simpleLines.length === 0) throw new Error("Add at least one line item to the cart.");
+    setCreating("draft");
+    try {
+      const res = await fetch("/api/shopify/draft-orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          recreate,
+          customerId: customer.id,
+          // send tolerant shapes so the API can pick whichever it prefers
+          lines: simpleLines,
+          draft_order_line_items: simpleLines.map((l) => ({
+            variant_id: Number(l.variantId),
+            quantity: Number(l.quantity),
+          })),
+          line_items: simpleLines.map((l) => ({
+            variant_id: Number(l.variantId),
+            quantity: Number(l.quantity),
+          })),
+        }),
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text || `Draft error ${res.status}`);
+      const json = JSON.parse(text || "{}");
+      const id: number | null =
+        json?.id ??
+        json?.draft_order?.id ??
+        json?.draft?.id ??
+        json?.draft?.draft_order?.id ??
+        null;
+      if (!id) throw new Error("Draft created but no id returned");
+      setDraftId(id);
+      return id;
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  // --- Stripe: Checkout (card) ---
+  async function payByCard() {
+    if (!customer?.id) return alert("Pick a customer first.");
+    if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
+    await ensureDraft({ recreate: false });
+    setCreating("checkout");
+    try {
+      const r = await fetch("/api/payments/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          customerId: customer.id,
+          lines: simpleLines,
+          note: `CRM Order for ${customer.salonName || customer.customerName || customer.id}`,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.url) throw new Error(j?.error || `Stripe Checkout failed: ${r.status}`);
+      window.location.href = j.url as string;
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || "Stripe Checkout failed");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  // --- Stripe: Payment Link (now shows a panel instead of redirect) ---
+  async function createPaymentLink() {
+    if (!customer?.id) return alert("Pick a customer first.");
+    if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
+
+    // ✅ ensure we have a single draft and REUSE IT
+    const id = await ensureDraft({ recreate: false });
+
+    setCreating("plink");
+    try {
+      const r = await fetch("/api/payments/stripe/payment-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          customerId: customer.id,
+          lines: simpleLines,
+          draftOrderId: id, // pass the draft id so the API doesn't create a second draft
+          note: `Payment link for ${customer.salonName || customer.customerName || customer.id}`,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.url) throw new Error(j?.error || `Payment Link failed: ${r.status}`);
+
+      setPlink({ url: j.url as string, draftAdminUrl: j.draftAdminUrl || null });
+
+      // try to copy link automatically; ignore errors
+      try {
+        await navigator.clipboard.writeText(j.url as string);
+      } catch {}
+
+      // no redirect; we keep the user on this page and show the panel
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || "Payment Link failed");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  // --- UI blocks ---
+  function CustomerBlock() {
+    if (!customer) {
+      return (
+        <section className="card">
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <b>No customer selected</b>
+              <div className="small muted">Pick a customer to start an order.</div>
+            </div>
+            <a className="primary" href="/customers?pick=1&return=/orders/new">
+              Select customer
+            </a>
+          </div>
+        </section>
+      );
+    }
+
+    const address = [
+      customer.addressLine1,
+      customer.addressLine2,
+      customer.town,
+      customer.county,
+      customer.postCode,
+      customer.country,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return (
+      <section className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "start" }}>
+          <div>
+            <div className="small muted">Customer</div>
+            <div style={{ fontWeight: 800 }}>
+              {customer.salonName || customer.customerName || "—"}
+            </div>
+            <div className="small muted" style={{ marginTop: 4 }}>
+              {customer.customerName || ""}{" "}
+              {customer.customerTelephone ? `• ${customer.customerTelephone}` : ""}{" "}
+              {customer.customerEmailAddress ? `• ${customer.customerEmailAddress}` : ""}
+            </div>
+            <pre
+              className="small muted"
+              style={{ marginTop: 10, whiteSpace: "pre-wrap", lineHeight: 1.35 }}
+            >
+              {address || "—"}
+            </pre>
+          </div>
+          <a className="btn" href="/customers?pick=1&return=/orders/new">
+            Change customer
+          </a>
+        </div>
+      </section>
+    );
+  }
+
+  function CartBlock() {
+    const rows = Object.values(cart);
+
+    return (
+      <section className="card">
+        <div className="small" style={{ fontWeight: 800, marginBottom: 8 }}>
+          Cart
+        </div>
+
+        {rows.length === 0 && <div className="small muted">No items yet.</div>}
+
+        {rows.map(({ line, qty }) => {
+          const ex = to2(line.unitExVat * qty);
+          const tax = to2(ex * VAT_RATE);
+          const inc = to2(ex + tax);
+
+          return (
+            <div key={line.variantId} style={{ padding: "10px 0", borderTop: "1px solid #eee" }}>
+              <div style={{ fontWeight: 700 }}>
+                {line.productTitle}
+                {line.variantTitle ? ` ${line.variantTitle}` : ""}
+              </div>
+              <div className="small muted">{line.sku ? `SKU: ${line.sku}` : ""}</div>
+
+              <div className="small muted" style={{ marginTop: 6 }}>
+                Ex VAT: {fmtGBP(ex)} &nbsp; • &nbsp; VAT ({Math.round(VAT_RATE * 100)}%):{" "}
+                {fmtGBP(tax)} &nbsp; • &nbsp; Inc VAT: {fmtGBP(inc)}
+              </div>
+
+              <div className="row" style={{ marginTop: 8, gap: 10, alignItems: "center" }}>
+                <div
+                  style={{
+                    border: "1px solid #111",
+                    borderRadius: 14,
+                    height: 36,
+                    width: 70,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 600,
+                  }}
+                  title="Quantity"
+                >
+                  <input
+                    aria-label="Quantity"
+                    type="number"
+                    min={1}
+                    value={qty}
+                    onChange={(e) => setQty(line.variantId, Number(e.target.value || 1))}
+                    style={{
+                      appearance: "textfield",
+                      width: 48,
+                      textAlign: "center",
+                      border: "none",
+                      outline: "none",
+                      background: "transparent",
+                      fontWeight: 700,
+                    }}
+                  />
+                </div>
+
+                <button className="btn" type="button" onClick={() => removeFromCart(line.variantId)}>
+                  Remove
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
+        <div style={{ marginTop: 12 }}>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div className="small muted">Net:</div>
+            <div className="small">{fmtGBP(totals.ex)}</div>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div className="small muted">VAT ({Math.round(VAT_RATE * 100)}%):</div>
+            <div className="small">{fmtGBP(totals.tax)}</div>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div className="small" style={{ fontWeight: 700 }}>
+              Total:
+            </div>
+            <div className="small" style={{ fontWeight: 700 }}>
+              {fmtGBP(totals.inc)}
+            </div>
+          </div>
+        </div>
+
+        <div
+          className="row"
+          style={{ marginTop: 14, gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}
+        >
+          <button
+            className="btn"
+            type="button"
+            onClick={async () => {
+              try {
+                await ensureDraft({ recreate: true });
+                alert("Draft created or refreshed.");
+              } catch (err: any) {
+                alert(err?.message || "Draft error");
+              }
+            }}
+            disabled={creating !== false}
+          >
+            {creating === "draft" ? "Creating draft…" : draftId ? "Re-create draft" : "Create draft"}
+          </button>
+
+          <button className="primary" type="button" onClick={payByCard} disabled={creating !== false}>
+            {creating === "checkout" ? "Starting checkout…" : "Pay by card"}
+          </button>
+
+          <button className="btn" type="button" onClick={createPaymentLink} disabled={creating !== false}>
+            {creating === "plink" ? "Creating link…" : "Payment link"}
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  function PaymentLinkPanel() {
+    if (!plink) return null;
+
+    const message =
+      `Thank you for your Salon Brands Pro order.\n\n` +
+      `Your total is ${fmtGBP(totals.inc)}\n\n` +
+      `Your payment link is:\n${plink.url}\n\n` +
+      `Thank you ☺️`;
+
+    async function copy(text: string) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {}
+    }
+
+    return (
+      <section className="card" role="dialog" aria-labelledby="plink-title">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h3 id="plink-title" style={{ margin: 0 }}>Payment link created</h3>
+          <button className="btn" type="button" onClick={() => setPlink(null)}>
+            Done
+          </button>
+        </div>
+
+        <div className="grid" style={{ gap: 10, marginTop: 12 }}>
+          <div>
+            <label>Link</label>
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                readOnly
+                value={plink.url}
+                onFocus={(e) => e.currentTarget.select()}
+                style={{ flex: 1 }}
+              />
+              <button className="btn" type="button" onClick={() => copy(plink.url)}>
+                Copy link
+              </button>
+              <a className="btn" href={plink.url} target="_blank" rel="noreferrer">
+                Open
+              </a>
+            </div>
+          </div>
+
+          <div>
+            <label>Message</label>
+            <textarea
+              readOnly
+              rows={5}
+              value={message}
+              onFocus={(e) => e.currentTarget.select()}
+              style={{ width: "100%" }}
+            />
+            <div className="row" style={{ justifyContent: "flex-end", marginTop: 8, gap: 8 }}>
+              <button className="btn" type="button" onClick={() => copy(message)}>
+                Copy message
+              </button>
+              {plink.draftAdminUrl && (
+                <a className="btn" href={plink.draftAdminUrl} target="_blank" rel="noreferrer">
+                  Open draft in Shopify
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+    );
   }
 
   return (
-    <div className="picker">
-      {/* header row */}
-      <div className="row header">
-        <button type="button" className="btn" onClick={clearSelection}>
-          Cancel
-        </button>
-        <div className="title">Products</div>
-        <button
-          type="button"
-          className={`btn ${selected.size ? "primary" : ""}`}
-          disabled={!selected.size}
-          onClick={confirmSelection}
-        >
-          Save
-        </button>
-      </div>
+    <div className="grid" style={{ gap: 16 }}>
+      <CustomerBlock />
 
-      {/* search box */}
-      <div className="search">
-        <input
-          placeholder={placeholder}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          aria-label="Search products"
-        />
-      </div>
+      <section className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0 }}>Search Products</h3>
+        </div>
 
-      {/* results */}
-      <div className="list">
-        {loading && <div className="muted small">Searching…</div>}
-        {!loading && q && results.length === 0 && (
-          <div className="muted small">No products match “{q}”.</div>
-        )}
+        <div style={{ marginTop: 12 }}>
+          <ShopifyProductPicker
+            placeholder="Search by product title, SKU, vendor…"
+            onConfirm={(items: any[]) => {
+              items.forEach((v) =>
+                addToCart({
+                  variantId: Number(v.variantId),
+                  productTitle: v.productTitle,
+                  variantTitle: v.variantTitle ?? null,
+                  sku: v.sku ?? null,
+                  unitExVat: Number.isFinite(v.priceExVat) ? Number(v.priceExVat) : 0,
+                })
+              );
+            }}
+          />
+        </div>
+      </section>
 
-        {results.map((r) => {
-          const checked = selected.has(r.variantId);
-          return (
-            <label key={r.variantId} className="row item">
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={() => toggle(r.variantId)}
-              />
-              {r.image ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={r.image} alt="" className="thumb" />
-              ) : (
-                <div className="thumb placeholder" />
-              )}
-              <div className="meta">
-                <div className="name" title={`${r.productTitle}${r.variantTitle ? ` — ${r.variantTitle}` : ""}`}>
-                  {r.productTitle}
-                  {r.variantTitle ? <span className="variant"> — {r.variantTitle}</span> : null}
-                </div>
-                <div className="sub muted">
-                  {fmtGBP(r.priceExVat || 0)}{" "}
-                  {Number.isFinite(r.available as any) ? (
-                    <>
-                      • <span className={r.available! > 0 ? "" : "oos"}>
-                        {r.available} available
-                      </span>
-                    </>
-                  ) : null}
-                </div>
-              </div>
-            </label>
-          );
-        })}
-      </div>
+      <CartBlock />
 
-      {/* plain <style> (no styled-jsx) to avoid SWC crashes */}
-      <style>{`
-        .picker {
-          border: 1px solid var(--border, #eee);
-          border-radius: 14px;
-          padding: 10px;
-          background: var(--card, #fff);
-        }
-        .row { display:flex; align-items:center; gap:10px; }
-        .header { justify-content:space-between; margin-bottom:8px; }
-        .title { font-weight:700; }
-        .btn {
-          border:1px solid #ddd; background:#fafafa; border-radius:10px;
-          padding:6px 10px; font-weight:600;
-        }
-        .btn.primary { background:#ffb3d6; border-color:#ffb3d6; }
-        .btn:disabled { opacity:.55; }
-        .search { margin-bottom:8px; }
-        .search input {
-          width:100%; border:2px solid #f7c6de; border-radius:14px;
-          padding:10px 14px; outline:none;
-        }
-        .list { display:grid; gap:8px; max-height:360px; overflow:auto; }
-        .item { padding:8px; border-radius:12px; border:1px solid #eee; cursor:pointer; }
-        .item input[type="checkbox"] { transform: scale(1.15); }
-        .thumb { width:36px; height:36px; border-radius:6px; object-fit:cover; background:#f4f4f4; }
-        .thumb.placeholder { display:inline-block; }
-        .meta { min-width:0; }
-        .name { font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .variant { font-weight:600; }
-        .sub { font-size:12px; }
-        .muted { color:#6b7280; }
-        .oos { color:#c53030; font-weight:600; }
-      `}</style>
+      {/* Show the link + message panel when we have one */}
+      <PaymentLinkPanel />
     </div>
   );
 }
