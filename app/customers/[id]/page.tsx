@@ -41,6 +41,135 @@ const prettyFulfillment = (s?: string | null) => {
 };
 /* -------------------------------------------------- */
 
+/** Try to read opening hours from a few common shapes. */
+function extractOpeningHours(cust: any): string | null {
+  if (!cust) return null;
+
+  // 1) Single string field
+  const s =
+    cust.openingHours ??
+    cust.opening_hours ??
+    cust.hours ??
+    cust.openingTimes ??
+    cust.opening_times ??
+    null;
+  if (typeof s === "string" && s.trim()) return s.trim();
+
+  // 2) JSON blob fields
+  const jsonRaw =
+    cust.openingHoursJson ??
+    cust.opening_hours_json ??
+    cust.openingHoursJSON ??
+    cust.hoursJson ??
+    cust.hours_json ??
+    null;
+  try {
+    const j =
+      typeof jsonRaw === "string" ? JSON.parse(jsonRaw) : jsonRaw && typeof jsonRaw === "object" ? jsonRaw : null;
+    if (j && typeof j === "object") {
+      // Accept { monday: "9–5", ... } or { Mon: {...} }
+      const order = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
+      const pretty = (k: string) => k.slice(0,1).toUpperCase()+k.slice(1,3);
+      const parts: string[] = [];
+      for (const d of order) {
+        const v = (j[d] ?? j[pretty(d)] ?? j[d.slice(0,3)] ?? j[pretty(d).slice(0,3)]) as any;
+        if (!v) continue;
+        const line = typeof v === "string" ? v : v?.hours ?? v?.open ?? v?.time ?? "";
+        if (line) parts.push(`${pretty(d)}: ${line}`);
+      }
+      if (parts.length) return parts.join(" • ");
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3) Per-day columns (very best-effort)
+  const day = (name: string) =>
+    cust[`${name}Hours`] ??
+    cust[`${name}_hours`] ??
+    cust[`${name}Open`] ??
+    cust[`${name}_open`] ??
+    null;
+
+  const days = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+    .map((d) => {
+      const v = day(d);
+      if (!v) return null;
+      const label = d.slice(0,1).toUpperCase()+d.slice(1,3);
+      return `${label}: ${String(v)}`;
+    })
+    .filter(Boolean) as string[];
+
+  return days.length ? days.join(" • ") : null;
+}
+
+/** Load calls from a handful of likely tables/columns without crashing builds. */
+async function loadCalls(customerId: string): Promise<any[]> {
+  const tries: Array<{ table: string; col: string }> = [
+    { table: `"Call"`, col: `"customerId"` },
+    { table: `"Call"`, col: `"customer_id"` },
+    { table: `"CallLog"`, col: `"customerId"` },
+    { table: `"CallLog"`, col: `"customer_id"` },
+    { table: `"CustomerCall"`, col: `"customerId"` },
+    { table: `"CustomerCall"`, col: `"customer_id"` },
+    { table: `"Calls"`, col: `"customerId"` },
+    { table: `"Calls"`, col: `"customer_id"` },
+  ];
+
+  for (const t of tries) {
+    try {
+      // Use unsafe only for dynamic identifiers; value is interpolated safely by quoting.
+      const safeId = customerId.replace(/'/g, "''");
+      const rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM ${t.table} WHERE ${t.col} = '${safeId}' LIMIT 200`
+      );
+      if (Array.isArray(rows) && rows.length) {
+        // Sort newest first by a few likely timestamp fields
+        rows.sort((a, b) => {
+          const ta = Date.parse(a.createdAt ?? a.created_at ?? a.date ?? a.timestamp ?? 0);
+          const tb = Date.parse(b.createdAt ?? b.created_at ?? b.date ?? b.timestamp ?? 0);
+          return (isNaN(tb) ? 0 : tb) - (isNaN(ta) ? 0 : ta);
+        });
+        return rows.slice(0, 20);
+      }
+    } catch {
+      // try next shape
+    }
+  }
+  return [];
+}
+
+/** Load notes from likely tables/columns. */
+async function loadNotes(customerId: string): Promise<any[]> {
+  const tries: Array<{ table: string; col: string }> = [
+    { table: `"Note"`, col: `"customerId"` },
+    { table: `"Note"`, col: `"customer_id"` },
+    { table: `"CustomerNote"`, col: `"customerId"` },
+    { table: `"CustomerNote"`, col: `"customer_id"` },
+    { table: `"Notes"`, col: `"customerId"` },
+    { table: `"Notes"`, col: `"customer_id"` },
+  ];
+  for (const t of tries) {
+    try {
+      const safeId = customerId.replace(/'/g, "''");
+      const rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM ${t.table} WHERE ${t.col} = '${safeId}' LIMIT 200`
+      );
+      if (Array.isArray(rows) && rows.length) {
+        rows.sort((a, b) => {
+          const ta = Date.parse(a.createdAt ?? a.created_at ?? a.date ?? a.timestamp ?? 0);
+          const tb = Date.parse(b.createdAt ?? b.created_at ?? b.date ?? b.timestamp ?? 0);
+          return (isNaN(tb) ? 0 : tb) - (isNaN(ta) ? 0 : ta);
+        });
+        return rows.slice(0, 20);
+      }
+    } catch {
+      // try next
+    }
+  }
+  return [];
+}
+
 type PageProps = {
   params: { id: string };
   searchParams?: Record<string, string | string[] | undefined>;
@@ -54,21 +183,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
   const view: "orders" | "drafts" = tab === "drafts" ? "drafts" : "orders";
 
+  // Fetch the whole record so we can read optional fields (opening hours) safely.
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
-    select: {
-      id: true,
-      salonName: true,
-      customerName: true,
-      customerTelephone: true,
-      customerEmailAddress: true,
-      addressLine1: true,
-      addressLine2: true,
-      town: true,
-      county: true,
-      postCode: true,
-      shopifyCustomerId: true,
-    },
   });
 
   if (!customer) return notFound();
@@ -107,18 +224,18 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
         }
       }
     } catch {
-      // ignore – statuses will render as "—"
+      // ignore
     }
   }
 
   // Drafts (live from Shopify for this customer) – newest first
   let drafts: any[] = [];
-  if (customer.shopifyCustomerId) {
+  if ((customer as any).shopifyCustomerId) {
     try {
       const res = await shopifyRest(`/draft_orders.json?status=open&limit=50`, { method: "GET" });
       if (res.ok) {
         const json = await res.json();
-        const scid = Number(customer.shopifyCustomerId);
+        const scid = Number((customer as any).shopifyCustomerId);
         drafts = (json?.draft_orders || [])
           .filter((d: any) => Number(d?.customer?.id) === scid)
           .sort((a: any, b: any) => {
@@ -132,54 +249,24 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     }
   }
 
-  // ---------- Calls (best-effort; works with "Call" or "CallLog") ----------
-  let calls: any[] = [];
-  try {
-    calls = await prisma.$queryRaw<any[]>`
-      SELECT * FROM "Call"
-      WHERE "customerId" = ${customer.id}
-      ORDER BY COALESCE("createdAt","created_at") DESC
-      LIMIT 20
-    `;
-  } catch {
-    try {
-      calls = await prisma.$queryRaw<any[]>`
-        SELECT * FROM "CallLog"
-        WHERE "customerId" = ${customer.id}
-        ORDER BY COALESCE("createdAt","created_at") DESC
-        LIMIT 20
-      `;
-    } catch {
-      calls = [];
-    }
-  }
-
-  // ---------- Notes (best-effort; works with "Note" or "CustomerNote") ----------
-  let notes: any[] = [];
-  try {
-    notes = await prisma.$queryRaw<any[]>`
-      SELECT * FROM "Note"
-      WHERE "customerId" = ${customer.id}
-      ORDER BY COALESCE("createdAt","created_at") DESC
-      LIMIT 20
-    `;
-  } catch {
-    try {
-      notes = await prisma.$queryRaw<any[]>`
-        SELECT * FROM "CustomerNote"
-        WHERE "customerId" = ${customer.id}
-        ORDER BY COALESCE("createdAt","created_at") DESC
-        LIMIT 20
-      `;
-    } catch {
-      notes = [];
-    }
-  }
+  // Calls & Notes
+  const [calls, notes] = await Promise.all([
+    loadCalls(customer.id),
+    loadNotes(customer.id),
+  ]);
 
   const currency = "GBP";
-  const addr = [customer.addressLine1, customer.addressLine2, customer.town, customer.county, customer.postCode]
+  const addr = [
+    (customer as any).addressLine1,
+    (customer as any).addressLine2,
+    (customer as any).town,
+    (customer as any).county,
+    (customer as any).postCode,
+  ]
     .filter(Boolean)
     .join(", ");
+
+  const openingHours = extractOpeningHours(customer);
 
   // ---------- Server Action: create Stripe Payment Link from a Shopify draft ----------
   async function createPaymentLinkAction(formData: FormData) {
@@ -231,7 +318,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
     const sharedMeta = {
       crmCustomerId: customer.id,
-      shopifyCustomerId: customer.shopifyCustomerId || "",
+      shopifyCustomerId: (customer as any).shopifyCustomerId || "",
       crmDraftOrderId: String(draftId),
       source: "SBP-CRM",
     };
@@ -265,8 +352,13 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       {/* Header / identity */}
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <h1 style={{ margin: 0 }}>{customer.salonName || customer.customerName || "Customer"}</h1>
+          <h1 style={{ margin: 0 }}>
+            {(customer as any).salonName || (customer as any).customerName || "Customer"}
+          </h1>
           <div className="row" style={{ gap: 8 }}>
+            <Link className="btn" href={`/customers/${customer.id}/edit`}>
+              Edit
+            </Link>
             <Link className="btn" href={`/orders/new?customerId=${customer.id}`}>
               Create Order
             </Link>
@@ -280,16 +372,23 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
           <div>
             <b>Contact</b>
             <p className="small" style={{ marginTop: 6 }}>
-              {customer.customerName || "-"}
+              {(customer as any).customerName || "-"}
               <br />
-              {customer.customerTelephone || "-"}
+              {(customer as any).customerTelephone || "-"}
               <br />
-              {customer.customerEmailAddress || "-"}
+              {(customer as any).customerEmailAddress || "-"}
             </p>
           </div>
           <div>
             <b>Location</b>
             <p className="small" style={{ marginTop: 6 }}>{addr || "-"}</p>
+
+            <div style={{ marginTop: 10 }}>
+              <b>Opening hours</b>
+              <p className="small" style={{ marginTop: 6 }}>
+                {openingHours || "—"}
+              </p>
+            </div>
           </div>
         </div>
       </section>
@@ -415,9 +514,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                         <button
                           className="primary"
                           type="submit"
-                          disabled={!customer.shopifyCustomerId}
+                          disabled={!(customer as any).shopifyCustomerId}
                           title={
-                            customer.shopifyCustomerId
+                            (customer as any).shopifyCustomerId
                               ? "Create Stripe payment link for this draft"
                               : "Customer is not linked to Shopify"
                           }
@@ -464,12 +563,10 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               {calls.map((c: any) => {
                 const when = c.createdAt || c.created_at || c.date || c.timestamp;
                 const outcome = c.outcome || c.status || c.result || "—";
-                const note =
-                  c.note || c.notes || c.summary || c.description || c.outcomeNotes || "";
+                const note = c.note || c.notes || c.summary || c.description || c.outcomeNotes || "";
                 const id = c.id;
 
-                const whenText =
-                  when ? new Date(when as string | number | Date).toLocaleString() : "-";
+                const whenText = when ? new Date(when as string | number | Date).toLocaleString() : "-";
                 const noteText = String(note || "");
                 const snippet = noteText.length > 120 ? noteText.slice(0, 120) + "…" : noteText;
 
@@ -519,12 +616,10 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
               {notes.map((n: any) => {
                 const when = n.createdAt || n.created_at || n.date || n.timestamp;
-                const text =
-                  n.text || n.note || n.notes || n.body || n.content || n.message || "";
+                const text = n.text || n.note || n.notes || n.body || n.content || n.message || "";
                 const id = n.id;
 
-                const whenText =
-                  when ? new Date(when as string | number | Date).toLocaleString() : "-";
+                const whenText = when ? new Date(when as string | number | Date).toLocaleString() : "-";
                 const body = String(text || "");
                 const snippet = body.length > 140 ? body.slice(0, 140) + "…" : body;
 
