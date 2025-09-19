@@ -81,7 +81,7 @@ export async function POST(req: Request) {
     if (!stripeSecret) {
       return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY env var" }, { status: 500 });
     }
-    // Pin API version to avoid TS build mismatch on Vercel
+    // Pin API version to avoid TS mismatch on Vercel
     const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
 
     const body = (await req.json()) as PostBody;
@@ -102,30 +102,33 @@ export async function POST(req: Request) {
     const ids = lines.map((l) => String(l.variantId));
     const catalog = await fetchVariantPricing(ids);
 
-    // Build Payment Link line items (inc VAT; price_data allowed for Payment Links)
-    const line_items: Stripe.PaymentLinkCreateParams.LineItem[] = lines.map((li) => {
-      const v = catalog[String(li.variantId)];
-      if (!v) throw new Error(`Variant not found in Shopify: ${li.variantId}`);
-      const ex = v.priceExVat;
-      const inc = ex * (1 + VAT_RATE);
-      const unit_amount = Math.round(inc * 100); // pence
+    // Create ephemeral VAT-inclusive Prices for each line, then reference them in the Payment Link
+    const line_items: Stripe.PaymentLinkCreateParams.LineItem[] = await Promise.all(
+      lines.map(async (li) => {
+        const v = catalog[String(li.variantId)];
+        if (!v) throw new Error(`Variant not found in Shopify: ${li.variantId}`);
 
-      return {
-        quantity: Number(li.quantity || 1),
-        price_data: {
+        const ex = v.priceExVat;                 // £ ex VAT
+        const inc = ex * (1 + VAT_RATE);         // £ inc VAT
+        const unit_amount = Math.round(inc * 100); // pence
+
+        // Create a one-off Price with embedded product_data (avoids separate product creation)
+        const price = await stripe.prices.create({
           currency: "gbp",
           unit_amount,
-          tax_behavior: "inclusive", // we’re passing VAT-included prices
+          tax_behavior: "inclusive", // our unit_amount already includes VAT
           product_data: {
             name: `${v.productTitle} — ${v.variantTitle}`,
-            // This metadata is retrievable from the session’s line items in the webhook
-            metadata: {
-              variantId: String(li.variantId),
-            },
+            metadata: { variantId: String(li.variantId) },
           },
-        },
-      };
-    });
+        });
+
+        return {
+          price: price.id,
+          quantity: Number(li.quantity || 1),
+        };
+      })
+    );
 
     const origin = getOrigin(req);
     const link = await stripe.paymentLinks.create({
@@ -133,7 +136,6 @@ export async function POST(req: Request) {
       after_completion: {
         type: "redirect",
         redirect: {
-          // Checkout Sessions created from the Payment Link will populate this token
           url: `${origin}/customers/${customerId}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
         },
       },
@@ -142,7 +144,7 @@ export async function POST(req: Request) {
         shopifyCustomerId: crm.shopifyCustomerId || "",
         source: "SBP-CRM",
       },
-      // We’re not enabling automatic tax because we already include VAT in unit_amount.
+      // automatic_tax: { enabled: false }, // We price inc VAT already.
     });
 
     return NextResponse.json({ url: link.url, id: link.id }, { status: 200 });
