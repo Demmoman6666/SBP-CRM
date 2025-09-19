@@ -41,7 +41,7 @@ const prettyFulfillment = (s?: string | null) => {
 };
 /* -------------------------------------------------- */
 
-/** DD/MM/YYYY date formatter (no time) */
+/** DD/MM/YYYY */
 function fmtDate(d: any): string {
   const dt = d instanceof Date ? d : new Date(d);
   if (isNaN(dt.getTime())) return "-";
@@ -49,181 +49,6 @@ function fmtDate(d: any): string {
   const mm = String(dt.getMonth() + 1).padStart(2, "0");
   const yyyy = dt.getFullYear();
   return `${dd}/${mm}/${yyyy}`;
-}
-
-/* ---------------- Opening hours + Sales rep helpers ---------------- */
-const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] as const;
-function labelForDay(d: string) {
-  const i = DAYS.findIndex((x) => x.toLowerCase() === d.slice(0,3).toLowerCase());
-  const map = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
-  return i >= 0 ? map[i] : d;
-}
-
-/** Robustly extract sales rep string from common fields. */
-function extractSalesRep(cust: any): string | null {
-  const fields = [
-    "salesRep","sales_rep","salesRepresentative","sales_representative",
-    "salesperson","sales_person","accountManager","account_manager",
-    "rep","repName","rep_name","territoryManager","territory_manager",
-  ];
-  for (const f of fields) {
-    const v = cust?.[f];
-    if (!v) continue;
-    if (typeof v === "string" && v.trim()) return v.trim();
-    if (typeof v === "object") {
-      const name = v.name || v.fullName || v.displayName || v.email || "";
-      if (String(name).trim()) return String(name).trim();
-    }
-  }
-  return null;
-}
-
-/** Build table rows for opening hours from JSON/per-day columns. */
-function openingHoursRows(cust: any): Array<{ day: string; hours: string }> {
-  // 1) JSON-like blob
-  const jsonCandidates = [
-    "openingHoursJson","opening_hours_json","openingHoursJSON",
-    "openingHours","opening_hours","hoursJson","hours_json"
-  ];
-  for (const key of jsonCandidates) {
-    const raw = cust?.[key];
-    if (!raw) continue;
-
-    try {
-      const blob =
-        typeof raw === "string" && /^[\[{]/.test(raw.trim())
-          ? JSON.parse(raw)
-          : typeof raw === "object"
-          ? raw
-          : null;
-
-      if (blob && typeof blob === "object") {
-        const rows: Array<{ day: string; hours: string }> = [];
-        const keys = Object.keys(blob);
-        // Accept Mon/Tue or full names
-        for (const k of keys) {
-          const v: any = (blob as any)[k];
-          if (v == null) continue;
-          const open = typeof v === "object" ? (v.open ?? v.isOpen ?? true) : true;
-          const from = typeof v === "object" ? (v.from ?? v.start ?? v.openFrom) : null;
-          const to   = typeof v === "object" ? (v.to ?? v.end ?? v.openTo) : null;
-          const hours =
-            open === false ? "Closed" :
-            from && to ? `${from}–${to}` :
-            typeof v === "string" ? v :
-            "Open";
-          rows.push({ day: labelForDay(k), hours: String(hours) });
-        }
-        if (rows.length) {
-          // Order rows Mon..Sun
-          rows.sort(
-            (a,b) => DAYS.indexOf(a.day.slice(0,3) as any) - DAYS.indexOf(b.day.slice(0,3) as any)
-          );
-          return rows;
-        }
-      }
-    } catch {
-      // fall through
-    }
-
-    // If it's a plain string (not JSON) like "Mon: 9-5 • Tue: 9-5 …"
-    if (typeof raw === "string" && raw.trim()) {
-      const parts = raw.split(/[\n;•]+/).map((s) => s.trim()).filter(Boolean);
-      const rows: Array<{ day: string; hours: string }> = [];
-      for (const p of parts) {
-        const m = p.match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*[:\s-]+(.+)$/i);
-        if (m) rows.push({ day: labelForDay(m[1]), hours: m[2].trim() });
-      }
-      if (rows.length) return rows;
-    }
-  }
-
-  // 2) Per-day columns
-  const perDay = (name: string) =>
-    cust?.[`${name}Hours`] ??
-    cust?.[`${name}_hours`] ??
-    cust?.[`${name}Open`] ??
-    cust?.[`${name}_open`] ??
-    cust?.[name];
-
-  const rows: Array<{ day: string; hours: string }> = [];
-  for (const full of ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]) {
-    const v = perDay(full);
-    if (v == null || v === "") continue;
-    let hours = "";
-    if (typeof v === "object") {
-      const open = v.open ?? v.isOpen ?? true;
-      const from = v.from ?? v.start;
-      const to   = v.to ?? v.end;
-      hours = open === false ? "Closed" : from && to ? `${from}–${to}` : JSON.stringify(v);
-    } else {
-      hours = String(v);
-    }
-    rows.push({ day: labelForDay(full), hours });
-  }
-  return rows;
-}
-/* ------------------------------------------------------------------- */
-
-/** Load calls from a handful of likely tables/columns without crashing builds. */
-async function loadCalls(customerId: string): Promise<any[]> {
-  const tries: Array<{ table: string; col: string }> = [
-    { table: `"Call"`, col: `"customerId"` },
-    { table: `"Call"`, col: `"customer_id"` },
-    { table: `"CallLog"`, col: `"customerId"` },
-    { table: `"CallLog"`, col: `"customer_id"` },
-    { table: `"CustomerCall"`, col: `"customerId"` },
-    { table: `"CustomerCall"`, col: `"customer_id"` },
-    { table: `"Calls"`, col: `"customerId"` },
-    { table: `"Calls"`, col: `"customer_id"` },
-  ];
-
-  for (const t of tries) {
-    try {
-      const safeId = customerId.replace(/'/g, "''");
-      const rows = await prisma.$queryRawUnsafe<any[]>(
-        `SELECT * FROM ${t.table} WHERE ${t.col} = '${safeId}' LIMIT 200`
-      );
-      if (Array.isArray(rows) && rows.length) {
-        rows.sort((a, b) => {
-          const ta = Date.parse(a.createdAt ?? a.created_at ?? a.date ?? a.timestamp ?? 0);
-          const tb = Date.parse(b.createdAt ?? b.created_at ?? b.date ?? b.timestamp ?? 0);
-          return (isNaN(tb) ? 0 : tb) - (isNaN(ta) ? 0 : ta);
-        });
-        return rows.slice(0, 20);
-      }
-    } catch {}
-  }
-  return [];
-}
-
-/** Load notes from likely tables/columns. */
-async function loadNotes(customerId: string): Promise<any[]> {
-  const tries: Array<{ table: string; col: string }> = [
-    { table: `"Note"`, col: `"customerId"` },
-    { table: `"Note"`, col: `"customer_id"` },
-    { table: `"CustomerNote"`, col: `"customerId"` },
-    { table: `"CustomerNote"`, col: `"customer_id"` },
-    { table: `"Notes"`, col: `"customerId"` },
-    { table: `"Notes"`, col: `"customer_id"` },
-  ];
-  for (const t of tries) {
-    try {
-      const safeId = customerId.replace(/'/g, "''");
-      const rows = await prisma.$queryRawUnsafe<any[]>(
-        `SELECT * FROM ${t.table} WHERE ${t.col} = '${safeId}' LIMIT 200`
-      );
-      if (Array.isArray(rows) && rows.length) {
-        rows.sort((a, b) => {
-          const ta = Date.parse(a.createdAt ?? a.created_at ?? a.date ?? a.timestamp ?? 0);
-          const tb = Date.parse(b.createdAt ?? b.created_at ?? b.date ?? b.timestamp ?? 0);
-          return (isNaN(tb) ? 0 : tb) - (isNaN(ta) ? 0 : ta);
-        });
-        return rows.slice(0, 20);
-      }
-    } catch {}
-  }
-  return [];
 }
 
 type PageProps = {
@@ -236,14 +61,11 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     | "orders"
     | "drafts"
     | undefined;
-
   const view: "orders" | "drafts" = tab === "drafts" ? "drafts" : "orders";
 
-  // Fetch the whole record so we can read optional fields (opening hours, sales rep) safely.
   const customer = await prisma.customer.findUnique({
     where: { id: params.id },
   });
-
   if (!customer) return notFound();
 
   // Orders (from CRM DB) – newest first
@@ -253,33 +75,44 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     take: 50,
   });
 
-  // Enrich orders with Shopify payment/fulfillment status (best-effort)
+  // Also fetch Shopify statuses + Shopify dates so UI can match Shopify
   const idCandidates = orders
     .map((o: any) => Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id))
     .filter((n) => Number.isFinite(n)) as number[];
 
-  let statusByShopifyId = new Map<
+  let shopifyById = new Map<
     number,
-    { financial_status?: string | null; fulfillment_status?: string | null }
+    {
+      financial_status?: string | null;
+      fulfillment_status?: string | null;
+      created_at?: string | null;
+      processed_at?: string | null;
+    }
   >();
+
   if (idCandidates.length) {
     try {
       const idsParam = encodeURIComponent(idCandidates.join(","));
+      // ⬅️ include created_at and processed_at
       const res = await shopifyRest(
-        `/orders.json?ids=${idsParam}&status=any&fields=id,financial_status,fulfillment_status`,
+        `/orders.json?ids=${idsParam}&status=any&fields=id,financial_status,fulfillment_status,created_at,processed_at`,
         { method: "GET" }
       );
       if (res.ok) {
         const json = await res.json();
         const arr: Array<any> = json?.orders || [];
         for (const o of arr) {
-          statusByShopifyId.set(Number(o.id), {
+          shopifyById.set(Number(o.id), {
             financial_status: o.financial_status ?? null,
             fulfillment_status: o.fulfillment_status ?? null,
+            created_at: o.created_at ?? null,
+            processed_at: o.processed_at ?? null,
           });
         }
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   // Drafts (live from Shopify for this customer) – newest first
@@ -303,12 +136,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     }
   }
 
-  // Calls & Notes
-  const [calls, notes] = await Promise.all([
-    loadCalls(customer.id),
-    loadNotes(customer.id),
-  ]);
-
   const currency = "GBP";
   const addr = [
     (customer as any).addressLine1,
@@ -319,16 +146,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
   ]
     .filter(Boolean)
     .join(", ");
-
-  const openingRows = openingHoursRows(customer);
-  const openingFallbackString =
-    (customer as any).openingHours ??
-    (customer as any).opening_hours ??
-    (customer as any).openingTimes ??
-    (customer as any).opening_times ??
-    (customer as any).hours ??
-    null;
-  const salesRep = extractSalesRep(customer);
 
   // ---------- Server Action: create Stripe Payment Link from a Shopify draft ----------
   async function createPaymentLinkAction(formData: FormData) {
@@ -385,7 +202,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       source: "SBP-CRM",
     };
 
-    // 3) Create the Payment Link (redirect back to the customer page after payment)
     const origin =
       process.env.APP_URL?.replace(/\/$/, "") ||
       (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL.replace(/\/$/, "")}` : "http://localhost:3000");
@@ -398,10 +214,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       },
       metadata: sharedMeta,
       payment_intent_data: { metadata: sharedMeta },
-      automatic_tax: { enabled: false }, // unit amounts already include VAT
+      automatic_tax: { enabled: false },
     });
 
-    // Open the hosted checkout for this Payment Link.
     redirect(link.url!);
   }
   // -------------------------------------------------------------------------------
@@ -418,9 +233,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
             {(customer as any).salonName || (customer as any).customerName || "Customer"}
           </h1>
           <div className="row" style={{ gap: 8 }}>
-            <Link className="btn" href={`/customers/${customer.id}/edit`}>
-              Edit
-            </Link>
             <Link className="btn" href={`/orders/new?customerId=${customer.id}`}>
               Create Order
             </Link>
@@ -440,42 +252,10 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               <br />
               {(customer as any).customerEmailAddress || "-"}
             </p>
-
-            <div style={{ marginTop: 10 }}>
-              <b>Sales rep</b>
-              <p className="small" style={{ marginTop: 6 }}>{salesRep || "—"}</p>
-            </div>
           </div>
-
           <div>
             <b>Location</b>
             <p className="small" style={{ marginTop: 6 }}>{addr || "-"}</p>
-
-            <div style={{ marginTop: 10 }}>
-              <b>Opening hours</b>
-              {openingRows.length ? (
-                <div style={{ marginTop: 6, overflowX: "auto" }}>
-                  <table className="small" style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <tbody>
-                      {openingRows.map((r) => (
-                        <tr key={r.day}>
-                          <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", width: 130 }}>
-                            <b>{r.day}</b>
-                          </td>
-                          <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee" }}>
-                            {r.hours || "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="small" style={{ marginTop: 6 }}>
-                  {openingFallbackString ? String(openingFallbackString) : "—"}
-                </p>
-              )}
-            </div>
           </div>
         </div>
       </section>
@@ -524,10 +304,19 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                 <div className="small muted">Action</div>
 
                 {orders.map((o: any) => {
-                  const created = fmtDate(o.createdAt);
-                  const name = o.shopifyName || (o.shopifyOrderNumber ? `#${o.shopifyOrderNumber}` : "-");
                   const sid = Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id);
-                  const st = Number.isFinite(sid) ? statusByShopifyId.get(sid) : undefined;
+                  const st = Number.isFinite(sid) ? shopifyById.get(sid) : undefined;
+
+                  // ✅ Prefer Shopify dates so UI matches Shopify
+                  const displayDate =
+                    st?.processed_at ||
+                    st?.created_at ||
+                    (o.shopifyProcessedAt as any) ||
+                    (o.shopifyCreatedAt as any) ||
+                    o.createdAt;
+
+                  const created = fmtDate(displayDate);
+                  const name = o.shopifyName || (o.shopifyOrderNumber ? `#${o.shopifyOrderNumber}` : "-");
 
                   return (
                     <div key={o.id} style={{ display: "contents" }}>
@@ -535,9 +324,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                       <div className="nowrap">{name}</div>
                       <div><span className="badge">{prettyFinancial(st?.financial_status)}</span></div>
                       <div><span className="badge">{prettyFulfillment(st?.fulfillment_status)}</span></div>
-                      <div>{money(o.subtotal, "GBP")}</div>
-                      <div>{money(o.taxes, "GBP")}</div>
-                      <div style={{ fontWeight: 600 }}>{money(o.total, "GBP")}</div>
+                      <div>{money(o.subtotal, currency)}</div>
+                      <div>{money(o.taxes, currency)}</div>
+                      <div style={{ fontWeight: 600 }}>{money(o.total, currency)}</div>
                       <div>
                         <Link className="btn" href={`/orders/${o.id}`}>
                           View
@@ -587,15 +376,13 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                     <div>#{d.id}</div>
                     <div><span className="badge">—</span></div>
                     <div><span className="badge">—</span></div>
-                    <div>{money(subtotal, "GBP")}</div>
-                    <div>{money(taxes, "GBP")}</div>
-                    <div style={{ fontWeight: 600 }}>{money(total, "GBP")}</div>
+                    <div>{money(subtotal, currency)}</div>
+                    <div>{money(taxes, currency)}</div>
+                    <div style={{ fontWeight: 600 }}>{money(total, currency)}</div>
                     <div className="row" style={{ gap: 6 }}>
                       <a className="btn" href={adminUrl} target="_blank" rel="noreferrer" title="Open in Shopify">
                         View in Shopify
                       </a>
-
-                      {/* Create Stripe Payment Link (server action) */}
                       <form action={createPaymentLinkAction}>
                         <input type="hidden" name="draftId" value={String(d.id)} />
                         <button
@@ -611,109 +398,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                           Payment link
                         </button>
                       </form>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </section>
-
-      {/* Calls */}
-      <section className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0 }}>Call log</h3>
-        </div>
-
-        {calls.length === 0 ? (
-          <p className="small muted" style={{ marginTop: 8 }}>No calls yet.</p>
-        ) : (
-          <div style={{ marginTop: 10, overflowX: "auto" }}>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "140px 160px 1fr auto",
-                gap: 6,
-                alignItems: "center",
-              }}
-            >
-              <div className="small muted">When</div>
-              <div className="small muted">Outcome</div>
-              <div className="small muted">Notes</div>
-              <div className="small muted">Action</div>
-
-              {calls.map((c: any) => {
-                const when = c.createdAt || c.created_at || c.date || c.timestamp;
-                const outcome = c.outcome || c.status || c.result || "—";
-                const note = c.note || c.notes || c.summary || c.description || c.outcomeNotes || "";
-                const id = c.id;
-
-                const whenText = fmtDate(when);
-                const noteText = String(note || "");
-                const snippet = noteText.length > 120 ? noteText.slice(0, 120) + "…" : noteText;
-
-                return (
-                  <div key={String(id ?? whenText)} style={{ display: "contents" }}>
-                    <div className="small">{whenText}</div>
-                    <div><span className="badge">{String(outcome || "—")}</span></div>
-                    <div className="small muted" title={noteText}>{snippet}</div>
-                    <div>
-                      <Link className="btn" href={id ? `/calls/${id}` : `/calls?customerId=${customer.id}`}>
-                        View
-                      </Link>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </section>
-
-      {/* Notes */}
-      <section className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0 }}>Notes</h3>
-          <div className="row" style={{ gap: 8 }}>
-            <Link className="btn" href={`/notes?customerId=${customer.id}`}>All notes</Link>
-            <Link className="primary" href={`/notes/new?customerId=${customer.id}`}>Add note</Link>
-          </div>
-        </div>
-
-        {notes.length === 0 ? (
-          <p className="small muted" style={{ marginTop: 8 }}>No notes yet.</p>
-        ) : (
-          <div style={{ marginTop: 10, overflowX: "auto" }}>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "140px 1fr auto",
-                gap: 6,
-                alignItems: "center",
-              }}
-            >
-              <div className="small muted">When</div>
-              <div className="small muted">Note</div>
-              <div className="small muted">Action</div>
-
-              {notes.map((n: any) => {
-                const when = n.createdAt || n.created_at || n.date || n.timestamp;
-                const text = n.text || n.note || n.notes || n.body || n.content || n.message || "";
-                const id = n.id;
-
-                const whenText = fmtDate(when);
-                const body = String(text || "");
-                const snippet = body.length > 140 ? body.slice(0, 140) + "…" : body;
-
-                return (
-                  <div key={String(id ?? whenText)} style={{ display: "contents" }}>
-                    <div className="small">{whenText}</div>
-                    <div className="small" title={body}>{snippet}</div>
-                    <div>
-                      <Link className="btn" href={id ? `/notes/${id}` : `/notes?customerId=${customer.id}`}>
-                        View
-                      </Link>
                     </div>
                   </div>
                 );
