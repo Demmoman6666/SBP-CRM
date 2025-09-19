@@ -56,8 +56,6 @@ const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 function normaliseOpeningHours(raw: any): DayRow[] {
   if (!raw) return [];
   let data: any = raw;
-
-  // raw may be JSON string
   if (typeof data === "string") {
     try {
       data = JSON.parse(data);
@@ -65,8 +63,6 @@ function normaliseOpeningHours(raw: any): DayRow[] {
       return [];
     }
   }
-
-  // shape 1: object keyed by day
   if (data && !Array.isArray(data) && typeof data === "object") {
     return DAYS.map((d) => {
       const entry = data[d] || data[d.toLowerCase()] || data[d.toUpperCase()];
@@ -77,19 +73,11 @@ function normaliseOpeningHours(raw: any): DayRow[] {
       return { day: d, open, from, to };
     });
   }
-
-  // shape 2: array of rows { day, open, from, to }
   if (Array.isArray(data)) {
-    // try to index by day -> final ordered list
     const byDay: Record<string, DayRow> = {};
     for (const r of data) {
       if (!r) continue;
-      const key: string =
-        r.day ||
-        r.Day ||
-        r.name ||
-        r.weekday ||
-        "";
+      const key: string = r.day || r.Day || r.name || r.weekday || "";
       const d = key.slice(0, 3);
       if (!d) continue;
       byDay[d] = {
@@ -101,11 +89,17 @@ function normaliseOpeningHours(raw: any): DayRow[] {
     }
     return DAYS.map((d) => byDay[d] || { day: d, open: false });
   }
-
   return [];
 }
 
-/* Load calls & notes robustly, tolerating differing model names/columns */
+/* -------- Calls & notes loaders (broadened note fields) -------- */
+function pickFirstString(...vals: any[]): string | null {
+  for (const v of vals) {
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
+}
+
 async function loadCalls(customerId: string) {
   const modelNames = ["call", "callLog", "customerCall", "calls"];
   for (const m of modelNames) {
@@ -122,7 +116,23 @@ async function loadCalls(customerId: string) {
           id: r.id ?? r.callId ?? r._id,
           createdAt: r.createdAt ?? r.created_at ?? r.date ?? r.loggedAt,
           outcome: r.outcome ?? r.result ?? r.status ?? null,
-          notes: r.notes ?? r.note ?? r.message ?? r.description ?? "",
+          // ⬇️ Broaden note extraction & trim
+          notes:
+            pickFirstString(
+              r.notes,
+              r.note,
+              r.callNotes,
+              r.callNote,
+              r.comments,
+              r.comment,
+              r.details,
+              r.detail,
+              r.message,
+              r.description,
+              r.summary,
+              r.body,
+              r.content
+            ) || "",
         }));
       }
     } catch {
@@ -131,6 +141,7 @@ async function loadCalls(customerId: string) {
   }
   return [];
 }
+
 async function loadNotes(customerId: string) {
   const modelNames = ["note", "customerNote", "notes"];
   for (const m of modelNames) {
@@ -146,7 +157,8 @@ async function loadNotes(customerId: string) {
         return rows.map((r) => ({
           id: r.id ?? r.noteId ?? r._id,
           createdAt: r.createdAt ?? r.created_at ?? r.date ?? r.loggedAt,
-          body: r.body ?? r.text ?? r.note ?? r.content ?? "",
+          body:
+            pickFirstString(r.body, r.text, r.note, r.content, r.details, r.description, r.message) || "",
         }));
       }
     } catch {
@@ -155,6 +167,7 @@ async function loadNotes(customerId: string) {
   }
   return [];
 }
+/* --------------------------------------------------------------- */
 
 type PageProps = {
   params: { id: string };
@@ -180,19 +193,14 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     take: 50,
   });
 
-  // Fetch Shopify statuses + Shopify dates so UI matches Shopify
+  // Shopify statuses + dates (processed_at preferred)
   const idCandidates = orders
     .map((o: any) => Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id))
     .filter((n) => Number.isFinite(n)) as number[];
 
   const shopifyById = new Map<
     number,
-    {
-      financial_status?: string | null;
-      fulfillment_status?: string | null;
-      created_at?: string | null;
-      processed_at?: string | null;
-    }
+    { financial_status?: string | null; fulfillment_status?: string | null; created_at?: string | null; processed_at?: string | null }
   >();
 
   if (idCandidates.length) {
@@ -214,12 +222,10 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
           });
         }
       }
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }
 
-  // Drafts (live from Shopify for this customer)
+  // Drafts
   let drafts: any[] = [];
   const shopifyCustomerId = (customer as any).shopifyCustomerId;
   if (shopifyCustomerId) {
@@ -233,7 +239,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
           .sort((a: any, b: any) => {
             const ad = a?.created_at ? Date.parse(a.created_at) : 0;
             const bd = b?.created_at ? Date.parse(b.created_at) : 0;
-            return bd - ad; // newest first
+            return bd - ad;
           });
       }
     } catch {
@@ -241,11 +247,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     }
   }
 
-  // Calls & notes
   const calls = await loadCalls(customer.id);
   const notes = await loadNotes(customer.id);
 
-  // Display bits
   const currency = "GBP";
   const addr = [
     (customer as any).addressLine1,
@@ -435,8 +439,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                 {orders.map((o: any) => {
                   const sid = Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id);
                   const st = Number.isFinite(sid) ? shopifyById.get(sid) : undefined;
-
-                  // Prefer Shopify dates (processed_at -> created_at), fall back to DB timestamps
                   const displayDate =
                     st?.processed_at ||
                     st?.created_at ||
@@ -544,7 +546,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                 <div key={c.id} style={{ display: "contents" }}>
                   <div className="small">{fmtDate(c.createdAt)}</div>
                   <div className="small">{c.outcome || "—"}</div>
-                  <div className="small">{String(c.notes || "").slice(0, 120) || "—"}</div>
+                  <div className="small">{(c.notes && c.notes.trim()) ? c.notes.slice(0, 160) : "—"}</div>
                   <div>
                     <Link className="btn" href={`/calls/${c.id}`}>View</Link>
                   </div>
@@ -577,7 +579,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               {notes.map((n: any) => (
                 <div key={n.id} style={{ display: "contents" }}>
                   <div className="small">{fmtDate(n.createdAt)}</div>
-                  <div className="small">{String(n.body || "").slice(0, 160) || "—"}</div>
+                  <div className="small">{(n.body && n.body.trim()) ? n.body.slice(0, 200) : "—"}</div>
                   <div>
                     <Link className="btn" href={`/notes/${n.id}`}>View</Link>
                   </div>
