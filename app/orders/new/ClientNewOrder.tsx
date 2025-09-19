@@ -1,3 +1,4 @@
+// app/orders/new/ClientNewOrder.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -111,9 +112,9 @@ export default function ClientNewOrder() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Stripe actions
-  const [stripeBusy, setStripeBusy] = useState(false);
-  const [linkUrl, setLinkUrl] = useState<string | null>(null);
+  // Payment Link UI state
+  const [creatingLink, setCreatingLink] = useState(false);
+  const [linkMsg, setLinkMsg] = useState<string | null>(null);
 
   // Hide search after first add; allow toggling back on
   const [showSearch, setShowSearch] = useState(true);
@@ -243,60 +244,47 @@ export default function ClientNewOrder() {
     }
   }
 
-  async function createStripeSession(): Promise<string> {
-    // calls our existing Checkout endpoint and returns the shareable URL
-    const res = await fetch("/api/payments/stripe/checkout", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        customerId,
-        lines: cart.map((l) => ({ variantId: l.variantId, quantity: l.quantity })),
-      }),
-    });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json?.error || "Stripe checkout failed");
-    if (!json?.url) throw new Error("Stripe did not return a URL");
-    return json.url as string;
-  }
-
-  async function onPayByCard() {
-    setError(null);
-    if (!customerId) return setError("Missing customerId.");
-    if (cart.length === 0) return setError("Add at least one item to the order.");
-
-    try {
-      setStripeBusy(true);
-      const url = await createStripeSession();
-      // open Checkout immediately
-      window.location.href = url;
-    } catch (err: any) {
-      setError(err?.message || "Stripe checkout failed");
-    } finally {
-      setStripeBusy(false);
-    }
-  }
-
   async function onCreatePaymentLink() {
+    setLinkMsg(null);
     setError(null);
-    if (!customerId) return setError("Missing customerId.");
-    if (cart.length === 0) return setError("Add at least one item to the order.");
+
+    if (!customerId) {
+      setError("Missing customerId. Open this page from a customer profile.");
+      return;
+    }
+    if (cart.length === 0) {
+      setError("Add at least one item to the order.");
+      return;
+    }
 
     try {
-      setStripeBusy(true);
-      const url = await createStripeSession();
-      setLinkUrl(url); // show copy panel
+      setCreatingLink(true);
+      const res = await fetch("/api/payments/stripe/payment-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerId,
+          lines: cart.map((l) => ({ variantId: l.variantId, quantity: l.quantity })),
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to create payment link");
+
+      // Open in a new tab and copy to clipboard for convenience
+      if (json?.url) {
+        try {
+          await navigator.clipboard.writeText(json.url);
+          setLinkMsg("Payment link copied to clipboard.");
+        } catch {
+          setLinkMsg("Payment link ready.");
+        }
+        window.open(json.url, "_blank");
+      }
     } catch (err: any) {
       setError(err?.message || "Failed to create payment link");
     } finally {
-      setStripeBusy(false);
+      setCreatingLink(false);
     }
-  }
-
-  async function copyLink() {
-    if (!linkUrl) return;
-    try {
-      await navigator.clipboard.writeText(linkUrl);
-    } catch {}
   }
 
   return (
@@ -432,7 +420,7 @@ export default function ClientNewOrder() {
                       onChange={(e) => updateQty(l.variantId, Number(e.target.value || 1))}
                       style={{ width: 70 }}
                     />
-                    {/* Totals: ex VAT first, inc VAT underneath (swapped) */}
+                    {/* Totals: ex VAT first, inc VAT underneath */}
                     <div style={{ textAlign: "right" }}>
                       <div>{fmt(lineNet)} ex VAT</div>
                       <div className="small muted">{fmt(lineGross)} inc VAT</div>
@@ -451,67 +439,24 @@ export default function ClientNewOrder() {
               </div>
             </div>
             <div className="small muted" style={{ textAlign: "right" }}>
-              Displayed totals include VAT. Shopify will calculate final tax on the draft order.
+              Displayed totals include VAT. Stripe Payment Link uses VAT-inclusive unit prices.
             </div>
           </div>
         )}
       </section>
 
-      {/* Actions */}
-      <form onSubmit={onSubmit} className="right row" style={{ gap: 8, alignItems: "center" }}>
+      <form onSubmit={onSubmit} className="right row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         {error && <div className="form-error" style={{ marginRight: "auto" }}>{error}</div>}
+        {linkMsg && <div className="small" style={{ marginRight: "auto" }}>{linkMsg}</div>}
 
-        {/* Create payment link (shareable Checkout URL) */}
-        <button
-          className="btn"
-          type="button"
-          onClick={onCreatePaymentLink}
-          disabled={stripeBusy || cart.length === 0}
-          title={cart.length === 0 ? "Add items first" : "Create a shareable payment link"}
-        >
-          Create payment link
+        <button className="btn" type="button" onClick={onCreatePaymentLink} disabled={creatingLink || cart.length === 0}>
+          {creatingLink ? "Creating payment link…" : "Create Payment Link"}
         </button>
 
-        {/* Pay now via card (opens Stripe Checkout) */}
-        <button
-          className="btn"
-          type="button"
-          onClick={onPayByCard}
-          disabled={stripeBusy || cart.length === 0}
-          title={cart.length === 0 ? "Add items first" : "Open Stripe Checkout"}
-        >
-          {stripeBusy ? "Contacting Stripe…" : "Pay by card"}
-        </button>
-
-        {/* Shopify draft order */}
         <button className="primary" type="submit" disabled={submitting || cart.length === 0}>
           {submitting ? "Creating Draft Order…" : "Create Draft Order"}
         </button>
       </form>
-
-      {/* Share panel for the created link */}
-      {linkUrl && (
-        <div className="card" style={{ marginTop: 12 }}>
-          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-            <b>Payment link created</b>
-            <div className="row" style={{ gap: 8 }}>
-              <button className="btn" type="button" onClick={() => window.open(linkUrl, "_blank")}>
-                Open
-              </button>
-              <button className="btn" type="button" onClick={copyLink}>
-                Copy
-              </button>
-              <button className="btn" type="button" onClick={() => setLinkUrl(null)}>
-                Close
-              </button>
-            </div>
-          </div>
-          <input readOnly value={linkUrl} style={{ marginTop: 8 }} />
-          <p className="small muted" style={{ marginTop: 6 }}>
-            Share this link with the customer to pay securely via Stripe Checkout.
-          </p>
-        </div>
-      )}
     </>
   );
 }
