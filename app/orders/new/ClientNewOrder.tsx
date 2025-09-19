@@ -1,7 +1,7 @@
 // app/orders/new/ClientNewOrder.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import ShopifyProductPicker from "@/components/ShopifyProductPicker";
 
 type Customer = {
@@ -39,7 +39,7 @@ const fmtGBP = (n: number) =>
 const to2 = (n: number) => Math.round(n * 100) / 100;
 
 export default function ClientNewOrder({ initialCustomer }: Props) {
-  const [customer, setCustomer] = useState<Customer | null>(initialCustomer ?? null);
+  const [customer] = useState<Customer | null>(initialCustomer ?? null);
   const [draftId, setDraftId] = useState<number | null>(null);
   const [cart, setCart] = useState<Record<number, { line: CartLine; qty: number }>>({});
   const [creating, setCreating] = useState<false | "draft" | "checkout" | "plink">(false);
