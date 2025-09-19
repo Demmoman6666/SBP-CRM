@@ -130,7 +130,7 @@ async function createPaidShopifyOrderFromSession(session: Stripe.Checkout.Sessio
  * Preferred path for Payment Links / draft-backed sessions:
  *  - Resolve draft id from metadata (session / payment_link / product)
  *  - PUT /draft_orders/{id}/complete.json?payment_pending=true
- *  - GraphQL orderMarkAsPaid to set financialStatus=PAID (no REST transaction needed)
+ *  - GraphQL orderMarkAsPaid(input: ...) to set displayFinancialStatus=PAID
  *  - Annotate and upsert into CRM
  *  - Disable Stripe Payment Link
  */
@@ -168,8 +168,7 @@ async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
 
   if (!draftId) return null; // not a draft-backed payment
 
-  const amountTotal = (session.amount_total ?? 0) / 100; // inc VAT
-  const currency = upper(session.currency) || "GBP";
+  const amountTotal = (session.amount_total ?? 0) / 100; // inc VAT (for notes only)
   const paymentIntentId =
     typeof session.payment_intent === "string"
       ? session.payment_intent
@@ -184,7 +183,7 @@ async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
 
   if (!completeRes.ok) {
     const text = await completeRes.text().catch(() => "");
-    // If this was a retry and it's already completed, try to read the order_id from the draft
+    // If already completed, try to read order_id from the draft
     try {
       const draftRes = await shopifyRest(`/draft_orders/${draftId}.json`, { method: "GET" });
       if (draftRes.ok) {
@@ -200,28 +199,35 @@ async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
     if (!shopifyOrderId) throw new Error("Draft completed, but no order_id returned");
   }
 
-  // 2) Mark as PAID via GraphQL (this avoids the REST "sale is not valid" error)
+  // 2) Mark as PAID via GraphQL (correct signature uses `input`)
   const gid = `gid://shopify/Order/${shopifyOrderId}`;
-  const markPaid = await shopifyGraphql<{
+  const result = await shopifyGraphql<{
     orderMarkAsPaid: {
-      order: { id: string; financialStatus: string } | null;
-      userErrors: Array<{ message: string }>;
+      order: { id: string; displayFinancialStatus: string } | null;
+      userErrors: Array<{ field?: string[]; message: string }>;
     };
   }>(
     `
-    mutation MarkPaid($id: ID!, $ref: String, $gateway: String) {
-      orderMarkAsPaid(id: $id, paymentReference: $ref, paymentGateway: $gateway) {
-        order { id financialStatus }
-        userErrors { message }
+    mutation MarkPaid($input: OrderMarkAsPaidInput!) {
+      orderMarkAsPaid(input: $input) {
+        order { id displayFinancialStatus }
+        userErrors { field message }
       }
     }
   `,
-    { id: gid, ref: paymentIntentId || session.id, gateway: "Stripe" }
+    {
+      input: {
+        id: gid,
+        // Optional extras if you want to store references:
+        // transactionReference: paymentIntentId || session.id,
+        // paymentGateway: "Stripe",
+      },
+    }
   );
 
-  const errors = markPaid.orderMarkAsPaid?.userErrors || [];
-  if (errors.length) {
-    throw new Error("orderMarkAsPaid failed: " + errors.map(e => e.message).join("; "));
+  const errs = result?.orderMarkAsPaid?.userErrors || [];
+  if (errs.length) {
+    throw new Error("Shopify GraphQL error: " + JSON.stringify(errs));
   }
 
   // 3) Annotate (best effort)
@@ -230,7 +236,9 @@ async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
     body: JSON.stringify({
       order: {
         id: shopifyOrderId,
-        note: `Paid via Stripe Payment Link\nSession: ${session.id}\nPI: ${paymentIntentId || ""}`,
+        note: `Paid via Stripe Payment Link\nSession: ${session.id}\nPI: ${paymentIntentId || ""}\nGross: £${amountTotal.toFixed(
+          2
+        )}`,
         note_attributes: [
           { name: "Source", value: "CRM" },
           { name: "Stripe Session", value: session.id },
