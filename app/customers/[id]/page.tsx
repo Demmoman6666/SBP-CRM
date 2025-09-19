@@ -41,6 +41,16 @@ const prettyFulfillment = (s?: string | null) => {
 };
 /* -------------------------------------------------- */
 
+/** DD/MM/YYYY date formatter (no time) */
+function fmtDate(d: any): string {
+  const dt = d instanceof Date ? d : new Date(d);
+  if (isNaN(dt.getTime())) return "-";
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const yyyy = dt.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
 /** Try to read opening hours from a few common shapes. */
 function extractOpeningHours(cust: any): string | null {
   if (!cust) return null;
@@ -67,7 +77,6 @@ function extractOpeningHours(cust: any): string | null {
     const j =
       typeof jsonRaw === "string" ? JSON.parse(jsonRaw) : jsonRaw && typeof jsonRaw === "object" ? jsonRaw : null;
     if (j && typeof j === "object") {
-      // Accept { monday: "9–5", ... } or { Mon: {...} }
       const order = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
       const pretty = (k: string) => k.slice(0,1).toUpperCase()+k.slice(1,3);
       const parts: string[] = [];
@@ -79,11 +88,9 @@ function extractOpeningHours(cust: any): string | null {
       }
       if (parts.length) return parts.join(" • ");
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
 
-  // 3) Per-day columns (very best-effort)
+  // 3) Per-day columns
   const day = (name: string) =>
     cust[`${name}Hours`] ??
     cust[`${name}_hours`] ??
@@ -118,13 +125,11 @@ async function loadCalls(customerId: string): Promise<any[]> {
 
   for (const t of tries) {
     try {
-      // Use unsafe only for dynamic identifiers; value is interpolated safely by quoting.
       const safeId = customerId.replace(/'/g, "''");
       const rows = await prisma.$queryRawUnsafe<any[]>(
         `SELECT * FROM ${t.table} WHERE ${t.col} = '${safeId}' LIMIT 200`
       );
       if (Array.isArray(rows) && rows.length) {
-        // Sort newest first by a few likely timestamp fields
         rows.sort((a, b) => {
           const ta = Date.parse(a.createdAt ?? a.created_at ?? a.date ?? a.timestamp ?? 0);
           const tb = Date.parse(b.createdAt ?? b.created_at ?? b.date ?? b.timestamp ?? 0);
@@ -132,9 +137,7 @@ async function loadCalls(customerId: string): Promise<any[]> {
         });
         return rows.slice(0, 20);
       }
-    } catch {
-      // try next shape
-    }
+    } catch {}
   }
   return [];
 }
@@ -163,9 +166,7 @@ async function loadNotes(customerId: string): Promise<any[]> {
         });
         return rows.slice(0, 20);
       }
-    } catch {
-      // try next
-    }
+    } catch {}
   }
   return [];
 }
@@ -223,9 +224,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
           });
         }
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 
   // Drafts (live from Shopify for this customer) – newest first
@@ -437,7 +436,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                 <div className="small muted">Action</div>
 
                 {orders.map((o: any) => {
-                  const created = new Date(o.createdAt).toLocaleString();
+                  const created = fmtDate(o.createdAt);
                   const name = o.shopifyName || (o.shopifyOrderNumber ? `#${o.shopifyOrderNumber}` : "-");
                   const sid = Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id);
                   const st = Number.isFinite(sid) ? statusByShopifyId.get(sid) : undefined;
@@ -495,7 +494,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                 return (
                   <div key={d.id} style={{ display: "contents" }}>
                     <div className="small">
-                      {d.created_at ? new Date(d.created_at).toLocaleString() : "-"}
+                      {fmtDate(d.created_at)}
                     </div>
                     <div>#{d.id}</div>
                     <div><span className="badge">—</span></div>
@@ -537,10 +536,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Call log</h3>
-          <div className="row" style={{ gap: 8 }}>
-            <Link className="btn" href={`/calls?customerId=${customer.id}`}>All calls</Link>
-            <Link className="primary" href={`/calls/new?customerId=${customer.id}`}>New call</Link>
-          </div>
+          {/* Buttons removed as requested */}
         </div>
 
         {calls.length === 0 ? (
@@ -550,7 +546,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "170px 160px 1fr auto",
+                gridTemplateColumns: "140px 160px 1fr auto",
                 gap: 6,
                 alignItems: "center",
               }}
@@ -566,7 +562,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                 const note = c.note || c.notes || c.summary || c.description || c.outcomeNotes || "";
                 const id = c.id;
 
-                const whenText = when ? new Date(when as string | number | Date).toLocaleString() : "-";
+                const whenText = fmtDate(when);
                 const noteText = String(note || "");
                 const snippet = noteText.length > 120 ? noteText.slice(0, 120) + "…" : noteText;
 
@@ -605,7 +601,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "170px 1fr auto",
+                gridTemplateColumns: "140px 1fr auto",
                 gap: 6,
                 alignItems: "center",
               }}
@@ -619,7 +615,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                 const text = n.text || n.note || n.notes || n.body || n.content || n.message || "";
                 const id = n.id;
 
-                const whenText = when ? new Date(when as string | number | Date).toLocaleString() : "-";
+                const whenText = fmtDate(when);
                 const body = String(text || "");
                 const snippet = body.length > 140 ? body.slice(0, 140) + "…" : body;
 
