@@ -1,173 +1,273 @@
-// components/ShopifyProductPicker.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 
-type ApiVariant = {
-  id: string | number;
-  title: string;
-  price: string | null;             // ex VAT (Shopify Admin scalar Money)
+/* ---------- tiny safe fetch helper ---------- */
+async function safeGet<T = any>(url: string): Promise<T> {
+  try {
+    const r = await fetch(url, { credentials: "include", cache: "no-store" });
+    if (!r.ok) throw new Error(String(r.status));
+    return (await r.json()) as T;
+  } catch (e) {
+    console.error("[ShopifyProductPicker] fetch failed", e);
+    throw e;
+  }
+}
+
+/* ---------- types ---------- */
+export type ShopifySearchResult = {
+  variantId: number;              // required
+  productTitle: string;           // required
+  variantTitle?: string | null;
   sku?: string | null;
-  available?: boolean | null;
-  stock?: number | null;
-  barcode?: string | null;
-};
-
-type ApiProduct = {
-  id: string | number;
-  title: string;
-  vendor?: string | null;
-  status?: string | null;
-  image?: { src: string } | null;
-  variants: ApiVariant[];
-};
-
-type PickValue = {
-  variantId: number;
-  productTitle: string;
-  variantTitle: string;
-  sku: string | null;
-  priceExVat: number;               // numeric ex VAT
-  stock: number | null;
-  image: string | null;
+  priceExVat?: number | null;     // £ ex VAT
+  available?: number | null;      // inventory qty
+  image?: string | null;
 };
 
 type Props = {
   placeholder?: string;
-  onPick: (v: PickValue) => void;
+  /** Called when user hits Save; provides all selected results */
+  onConfirm: (items: ShopifySearchResult[]) => void;
+  /** Pre-select some variants (optional) */
+  initialSelectedVariantIds?: number[];
+  /** Optional: clear the selection after confirming (default true) */
+  clearAfterConfirm?: boolean;
 };
 
-export default function ShopifyProductPicker({ placeholder, onPick }: Props) {
-  const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<ApiProduct[]>([]);
+/* ---------- currency helper ---------- */
+const £ = (n: number | null | undefined) =>
+  new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "GBP",
+  }).format(Number.isFinite(Number(n)) ? Number(n) : 0);
 
-  // debounce user input
+export default function ShopifyProductPicker({
+  placeholder = "Search products…",
+  onConfirm,
+  initialSelectedVariantIds = [],
+  clearAfterConfirm = true,
+}: Props) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<ShopifySearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(
+    () => new Set(initialSelectedVariantIds)
+  );
+
+  // simple debounce
   useEffect(() => {
+    let alive = true;
     const t = setTimeout(async () => {
-      const term = q.trim();
-      if (!term) {
+      if (!q.trim()) {
         setResults([]);
         return;
       }
       setLoading(true);
       try {
-        const res = await fetch(`/api/shopify/products?q=${encodeURIComponent(term)}&first=15`, {
-          cache: "no-store",
-        });
-        if (res.ok) {
-          const json = (await res.json()) as ApiProduct[];
-          setResults(Array.isArray(json) ? json : []);
-        } else {
-          setResults([]);
-        }
+        // Try your existing search route first; adjust if your path differs
+        // Expected JSON array of ShopifySearchResult
+        const data =
+          (await safeGet<ShopifySearchResult[]>(
+            `/api/shopify/products/search?q=${encodeURIComponent(q)}`
+          ).catch(() => [])) ?? [];
+        if (alive) setResults(Array.isArray(data) ? data : []);
+      } catch {
+        if (alive) setResults([]);
       } finally {
-        setLoading(false);
+        if (alive) setLoading(false);
       }
-    }, 220);
-    return () => clearTimeout(t);
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
   }, [q]);
 
-  const flat = useMemo(() => {
-    const rows: Array<{ p: ApiProduct; v: ApiVariant }> = [];
-    for (const p of results) {
-      for (const v of p.variants || []) rows.push({ p, v });
-    }
-    return rows;
-  }, [results]);
+  function toggle(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelected(new Set());
+  }
+
+  function confirmSelection() {
+    const picked = results.filter((r) => selected.has(r.variantId));
+    if (picked.length === 0) return;
+    onConfirm(picked);
+    if (clearAfterConfirm) clearSelection();
+  }
 
   return (
-    <div className="grid" style={{ gap: 10 }}>
-      <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder={placeholder || "Search products…"}
-        aria-label="Search products"
-      />
+    <div className="picker">
+      {/* header row */}
+      <div className="row header">
+        <button type="button" className="btn" onClick={clearSelection}>
+          Cancel
+        </button>
+        <div className="title">Products</div>
+        <button
+          type="button"
+          className={`btn ${selected.size ? "primary" : ""}`}
+          disabled={!selected.size}
+          onClick={confirmSelection}
+        >
+          Save
+        </button>
+      </div>
+
+      {/* search box */}
+      <div className="search">
+        <input
+          placeholder={placeholder}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          aria-label="Search products"
+        />
+      </div>
 
       {/* results */}
-      {q.trim() && (
-        <div className="grid" style={{ gap: 8 }}>
-          {loading && <div className="small muted">Searching…</div>}
+      <div className="list">
+        {loading && <div className="muted small">Searching…</div>}
+        {!loading && q && results.length === 0 && (
+          <div className="muted small">No products match “{q}”.</div>
+        )}
 
-          {!loading && flat.length === 0 && (
-            <div className="small muted">No matches.</div>
-          )}
+        {results.map((r) => {
+          const checked = selected.has(r.variantId);
+          return (
+            <label key={r.variantId} className="row item">
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() => toggle(r.variantId)}
+              />
+              {r.image ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={r.image} alt="" className="thumb" />
+              ) : (
+                <div className="thumb placeholder" />
+              )}
+              <div className="meta">
+                <div className="name">
+                  {r.productTitle}
+                  {r.variantTitle ? (
+                    <span className="variant"> — {r.variantTitle}</span>
+                  ) : null}
+                </div>
+                <div className="sub muted">
+                  {£(r.priceExVat || 0)}{" "}
+                  {Number.isFinite(r.available as any) ? (
+                    <>
+                      • <span className={r.available! > 0 ? "" : "oos"}>
+                        {r.available} available
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            </label>
+          );
+        })}
+      </div>
 
-          {!loading &&
-            flat.map(({ p, v }) => {
-              const priceExVat = Number(v.price ?? "0");
-              const image = p.image?.src ?? null;
-              return (
-                <button
-                  key={`${p.id}-${v.id}`}
-                  type="button"
-                  className="card"
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "40px 1fr auto",
-                    gap: 12,
-                    alignItems: "center",
-                    padding: 10,
-                    textAlign: "left",
-                  }}
-                  onClick={() =>
-                    onPick({
-                      variantId: Number(v.id),
-                      productTitle: p.title,
-                      variantTitle: v.title,
-                      sku: v.sku ?? null,
-                      priceExVat: Number.isFinite(priceExVat) ? priceExVat : 0,
-                      stock: typeof v.stock === "number" ? v.stock : null,
-                      image,
-                    })
-                  }
-                >
-                  {/* thumb */}
-                  <div
-                    style={{
-                      width: 40,
-                      height: 40,
-                      borderRadius: 8,
-                      border: "1px solid var(--border)",
-                      background: "#fff",
-                      display: "grid",
-                      placeItems: "center",
-                      overflow: "hidden",
-                    }}
-                  >
-                    {image ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={image} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    ) : (
-                      <div className="small muted">—</div>
-                    )}
-                  </div>
-
-                  {/* text */}
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {p.title}
-                    </div>
-                    <div className="small muted" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      SKU {v.sku || "—"}
-                    </div>
-                  </div>
-
-                  {/* price/stock */}
-                  <div className="small" style={{ textAlign: "right" }}>
-                    {new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
-                      Number.isFinite(priceExVat) ? priceExVat : 0
-                    )}
-                    <div className="small muted">
-                      {typeof v.stock === "number" ? `${v.stock} available` : ""}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-        </div>
-      )}
+      {/* styles (inline to avoid styled-jsx build issues) */}
+      <style jsx>{`
+        .picker {
+          border: 1px solid var(--border, #eee);
+          border-radius: 14px;
+          padding: 10px;
+          background: var(--card, #fff);
+        }
+        .row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .header {
+          justify-content: space-between;
+          margin-bottom: 8px;
+        }
+        .title {
+          font-weight: 700;
+        }
+        .btn {
+          border: 1px solid #ddd;
+          background: #fafafa;
+          border-radius: 10px;
+          padding: 6px 10px;
+          font-weight: 600;
+        }
+        .btn.primary {
+          background: #ffb3d6;
+          border-color: #ffb3d6;
+        }
+        .btn:disabled {
+          opacity: 0.55;
+        }
+        .search {
+          margin-bottom: 8px;
+        }
+        .search input {
+          width: 100%;
+          border: 2px solid #f7c6de;
+          border-radius: 14px;
+          padding: 10px 14px;
+          outline: none;
+        }
+        .list {
+          display: grid;
+          gap: 8px;
+          max-height: 360px;
+          overflow: auto;
+        }
+        .item {
+          padding: 8px;
+          border-radius: 12px;
+          border: 1px solid #eee;
+          cursor: pointer;
+        }
+        .item input[type="checkbox"] {
+          transform: scale(1.15);
+        }
+        .thumb {
+          width: 36px;
+          height: 36px;
+          border-radius: 6px;
+          object-fit: cover;
+          background: #f4f4f4;
+        }
+        .thumb.placeholder {
+          display: inline-block;
+        }
+        .meta {
+          min-width: 0;
+        }
+        .name {
+          font-weight: 700;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .variant {
+          font-weight: 600;
+        }
+        .sub {
+          font-size: 12px;
+        }
+        .muted {
+          color: #6b7280;
+        }
+        .oos {
+          color: #c53030;
+          font-weight: 600;
+        }
+      `}</style>
     </div>
   );
 }
