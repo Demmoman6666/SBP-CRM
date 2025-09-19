@@ -1,4 +1,3 @@
-// app/api/webhooks/stripe/route.ts
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
@@ -73,15 +72,12 @@ async function createPaidShopifyOrderFromSession(session: Stripe.Checkout.Sessio
       quantity: qty,
       price: toMoney(unitEx), // unit price EX VAT
       taxable: true,
-      tax_lines: [
-        { title: "VAT", rate: VAT_RATE, price: toMoney(lineTax) }, // tax amount for this line
-      ],
+      tax_lines: [{ title: "VAT", rate: VAT_RATE, price: toMoney(lineTax) }],
     });
 
     totalTax += lineTax;
   }
 
-  // Build Shopify order payload: taxes_included:false + explicit tax_lines so VAT shows on the order
   const payload: any = {
     order: {
       customer: { id: Number(shopifyCustomerId) },
@@ -107,7 +103,6 @@ async function createPaidShopifyOrderFromSession(session: Stripe.Checkout.Sessio
   const json = await resp.json();
   const order = json?.order;
 
-  // Mirror into CRM for the "Recent Orders" view
   try {
     if (order) await upsertOrderFromShopify(order, process.env.SHOPIFY_SHOP_DOMAIN || "");
   } catch (e) {
@@ -119,7 +114,10 @@ async function createPaidShopifyOrderFromSession(session: Stripe.Checkout.Sessio
 
 /**
  * Preferred path for Payment Links (and any session that references a draft):
- *  - Find draft id from session.metadata.crmDraftOrderId or the Payment Link metadata
+ *  - Find draft id from:
+ *      a) session.metadata.crmDraftOrderId
+ *      b) session.payment_link -> fetch link.metadata.crmDraftOrderId
+ *      c) expand line items and read product.metadata.crmDraftOrderId
  *  - Complete the draft (payment_pending=true) to create a Shopify order
  *  - Post a successful transaction (so order becomes paid)
  *  - Update note and upsert into CRM
@@ -129,18 +127,38 @@ async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
 
   let draftId: string | null = (session.metadata?.crmDraftOrderId as string) || null;
 
-  // If it was created via Payment Link, pull metadata from the link too
+  // b) Try Payment Link metadata
   if (!draftId && session.payment_link) {
     try {
       const link = await stripe.paymentLinks.retrieve(String(session.payment_link));
       draftId = (link.metadata?.crmDraftOrderId as string) || null;
-    } catch {
-      // ignore
+    } catch (e) {
+      console.warn("PaymentLink retrieve failed:", e);
     }
   }
+
+  // c) Fallback: expand line items and look for product.metadata.crmDraftOrderId
+  if (!draftId) {
+    try {
+      const full = await stripe.checkout.sessions.retrieve(session.id, {
+        expand: ["line_items.data.price.product"],
+      });
+      for (const li of full.line_items?.data || []) {
+        const product = li.price?.product as Stripe.Product | undefined;
+        const maybe = product?.metadata?.crmDraftOrderId;
+        if (maybe) {
+          draftId = String(maybe);
+          break;
+        }
+      }
+    } catch (e) {
+      console.warn("Session expand for draftId failed:", e);
+    }
+  }
+
   if (!draftId) return null; // not a draft-backed payment
 
-  const amountTotal = (session.amount_total ?? 0) / 100; // inc VAT
+  const amountTotal = (session.amount_total ?? 0) / 100; // inc VAT (gross)
   const currency = upper(session.currency) || "GBP";
   const paymentIntentId =
     typeof session.payment_intent === "string"
