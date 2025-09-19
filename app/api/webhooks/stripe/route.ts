@@ -1,3 +1,4 @@
+// app/api/webhooks/stripe/route.ts
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
@@ -15,6 +16,25 @@ function toMoney(n: number) {
 }
 function upper(s?: string | null) {
   return (s || "").toUpperCase();
+}
+
+/** After first successful payment, disable the Payment Link to prevent re-use (double-pay) */
+async function disablePaymentLinkIfPresent(session: Stripe.Checkout.Session) {
+  const sk = process.env.STRIPE_SECRET_KEY!;
+  const stripe = new Stripe(sk, { apiVersion: "2023-10-16" });
+
+  const linkId =
+    (typeof session.payment_link === "string" && session.payment_link) ||
+    (session.payment_link as any)?.id ||
+    null;
+
+  if (!linkId) return;
+
+  try {
+    await stripe.paymentLinks.update(linkId, { active: false });
+  } catch (e) {
+    console.warn("paymentLinks.update failed (will ignore):", e);
+  }
 }
 
 /**
@@ -41,7 +61,7 @@ async function createPaidShopifyOrderFromSession(session: Stripe.Checkout.Sessio
     quantity: number;
     price: number; // unit ex VAT
     taxable?: boolean;
-    tax_lines: Array<{ title: string; rate: number; price: number }>; // line tax (amount)
+    tax_lines: Array<{ title: string; rate: number; price: number }>;
   };
 
   const shopifyLines: ShopifyLine[] = [];
@@ -53,7 +73,7 @@ async function createPaidShopifyOrderFromSession(session: Stripe.Checkout.Sessio
     // We charged inc-VAT in Stripe. Convert back to ex-VAT for Shopify and send explicit tax_lines.
     const unitInc =
       li.amount_total && qty > 0
-        ? (li.amount_total / 100) / qty
+        ? li.amount_total / 100 / qty
         : (li.price?.unit_amount ?? 0) / 100;
 
     const unitEx = unitInc / (1 + VAT_RATE);
@@ -121,6 +141,7 @@ async function createPaidShopifyOrderFromSession(session: Stripe.Checkout.Sessio
  *  - Complete the draft (payment_pending=true) to create a Shopify order
  *  - Post a successful transaction (so order becomes paid)
  *  - Update note and upsert into CRM
+ *  - Deactivate the Payment Link to prevent reuse
  */
 async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2023-10-16" });
@@ -226,6 +247,9 @@ async function completeDraftAndMarkPaid(session: Stripe.Checkout.Session) {
     }
   }
 
+  // 5) Disable the Payment Link so it can't be re-used
+  await disablePaymentLinkIfPresent(session);
+
   return shopifyOrderId;
 }
 
@@ -250,17 +274,22 @@ export async function POST(req: Request) {
   }
 
   try {
-    if (event.type === "checkout.session.completed") {
+    // Cover both immediate and async payment methods
+    if (
+      event.type === "checkout.session.completed" ||
+      event.type === "checkout.session.async_payment_succeeded"
+    ) {
       const s = event.data.object as Stripe.Checkout.Session;
       if (s.payment_status === "paid") {
-        // Prefer the draft flow (Payment Link / draft-backed sessions)
-        const completed = await completeDraftAndMarkPaid(s);
+        const completed = await completeDraftAndMarkPaid(s); // Payment Link / draft-backed
         if (!completed) {
-          // Fallback: create a new paid order from the session (older “Pay by card” flow)
-          await createPaidShopifyOrderFromSession(s);
+          await createPaidShopifyOrderFromSession(s); // Fallback: non-draft “Pay by card”
         }
+        // Also disable the link if present (in case fallback path was used but still came from a link)
+        await disablePaymentLinkIfPresent(s);
       }
     }
+
     return NextResponse.json({ received: true }, { status: 200 });
   } catch (err: any) {
     console.error("Stripe webhook handler error:", err);
