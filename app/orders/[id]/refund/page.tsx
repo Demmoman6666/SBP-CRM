@@ -39,22 +39,19 @@ export default async function RefundPage({ params }: { params: { id: string } })
 
   const currency = order.currency || "GBP";
 
-  // Build the shape RefundClient expects
   const lines = order.lineItems.map((li) => ({
     id: li.id,
     maxQty: Number(li.quantity || 0),
-    // required by RefundClient for Shopify refunds
-    shopifyLineItemId: li.shopifyLineItemId ? String(li.shopifyLineItemId) : null,
-    // unit price (ex VAT) for preview maths
+    shopifyLineItemId:
+      li.shopifyLineItemId != null ? Number(li.shopifyLineItemId) : 0, // RefundClient expects a number
     unitNet:
       typeof li.price === "number"
         ? li.price
         : Number.isFinite(Number(li.price))
         ? Number(li.price)
-        : null,
-    // optional display helpers
-    productTitle: li.productTitle ?? li.variantTitle ?? null,
-    sku: li.sku ?? null,
+        : 0,
+    productTitle: li.productTitle ?? li.variantTitle ?? "-",
+    sku: li.sku ?? "-",
   }));
 
   return (
@@ -82,12 +79,7 @@ export default async function RefundPage({ params }: { params: { id: string } })
           payment method.
         </p>
 
-        {/* Client component renders the editable quantities, live total, and preview */}
-        <RefundClient
-          orderId={order.id}
-          currency={currency}
-          lines={lines}
-        />
+        <RefundClient orderId={order.id} currency={currency} lines={lines} />
       </div>
     </div>
   );
