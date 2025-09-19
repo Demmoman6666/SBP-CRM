@@ -1,3 +1,4 @@
+// app/orders/new/ClientNewOrder.tsx
 "use client";
 
 import { useMemo, useState, useEffect } from "react";
@@ -149,14 +150,11 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
         title: l.productTitle,
       }));
 
-      // POST a payload that’s compatible with both your custom handler and Shopify’s draft_order shape.
+      // Send multiple shapes so whichever your API expects will match.
       const payload = {
         customerId: customer.id,
-        // old handler shape:
-        lines: items,
-        // new handler shape:
-        line_items: items,
-        // direct Shopify shape (in case your route forwards this as-is):
+        lines: items, // old handler
+        line_items: items, // alt handler
         draft_order: {
           line_items: items,
           taxes_included: false,
@@ -181,15 +179,10 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
         console.error("Draft create failed:", r.status, t, payload);
         alert(`Draft creation failed: ${r.status}\n${t || "(no body)"}`);
         return null;
-        }
+      }
 
       const j = await r.json().catch(() => null);
-      const id =
-        j?.draft?.id ||
-        j?.draft_order?.id ||
-        j?.id ||
-        null;
-
+      const id = j?.draft?.id || j?.draft_order?.id || j?.id || null;
       if (!id) {
         console.error("Draft create: no ID in response", j);
         alert("Draft created but no ID returned.");
@@ -263,6 +256,43 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
     }
   }
 
+  // ---------- tiny style helpers (avoid styled-jsx so Vercel build doesn’t crash) ----------
+  const resultRowStyle: React.CSSProperties = {
+    width: "100%",
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 6,
+    alignItems: "center",
+    background: "#fff",
+    border: "1px solid var(--border)",
+    borderRadius: 12,
+    padding: "10px 12px",
+    margin: "8px 0",
+    textAlign: "left",
+    cursor: "pointer",
+  };
+  const lineStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "1fr auto",
+    gap: 12,
+    alignItems: "center",
+    padding: "10px 0",
+    borderBottom: "1px solid var(--border)",
+  };
+  const linePricesStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "max-content max-content max-content",
+    gap: 12,
+    marginTop: 6,
+  };
+  const qtyStyle: React.CSSProperties = {
+    width: 64,
+    height: 40,
+    textAlign: "center",
+    borderRadius: 12,
+    fontVariantNumeric: "tabular-nums",
+  };
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       {/* CUSTOMER PANEL */}
@@ -312,12 +342,23 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
                   key={c.id}
                   type="button"
                   onClick={() => selectCustomer(c)}
-                  className="result-row"
+                  style={resultRowStyle}
                   title="Select customer"
                 >
-                  <div className="result-main">
-                    <div className="result-title">{c.salonName || c.customerName || "Customer"}</div>
-                    <div className="result-sub">
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{
+                      fontWeight: 600,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}>
+                      {c.salonName || c.customerName || "Customer"}
+                    </div>
+                    <div className="small muted" style={{
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}>
                       {[c.customerName, c.town, c.customerEmailAddress].filter(Boolean).join(" • ")}
                     </div>
                   </div>
@@ -325,26 +366,6 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
               ))}
             </div>
           )}
-          <style jsx>{`
-            .result-row {
-              width: 100%;
-              display: grid;
-              grid-template-columns: 1fr;
-              gap: 6px;
-              align-items: center;
-              background: #fff;
-              border: 1px solid var(--border);
-              border-radius: 12px;
-              padding: 10px 12px;
-              margin: 8px 0;
-              text-align: left;
-              cursor: pointer;
-              transition: border-color .15s ease, box-shadow .15s ease;
-            }
-            .result-row:hover { border-color: #e9cde1; box-shadow: 0 4px 18px rgba(0,0,0,.06); }
-            .result-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-            .result-sub { font-size: .9rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-          `}</style>
         </section>
       )}
 
@@ -374,25 +395,23 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
               const lineVat = lineEx * VAT_RATE;
               const lineInc = lineEx + lineVat;
               return (
-                <div
-                  key={l.variantId}
-                  className="line"
-                >
-                  <div className="line-left">
-                    <div className="line-title">{l.productTitle}</div>
+                <div key={l.variantId} style={lineStyle}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600 }}>{l.productTitle}</div>
                     {l.title && l.title !== "Default Title" && (
                       <div className="small muted">{l.title}</div>
                     )}
                     {l.sku && <div className="small muted">SKU: {l.sku}</div>}
-                    <div className="line-prices">
+                    <div style={linePricesStyle}>
                       <div className="small">Ex VAT: <b>{money(lineEx)}</b></div>
                       <div className="small">VAT (20%): <b>{money(lineVat)}</b></div>
                       <div className="small">Inc VAT: <b>{money(lineInc)}</b></div>
                     </div>
                   </div>
 
-                  <div className="line-right">
+                  <div className="row" style={{ gap: 8, alignItems: "center" }}>
                     <input
+                      style={qtyStyle}
                       className="qty"
                       type="number"
                       min={1}
@@ -442,31 +461,6 @@ export default function ClientNewOrder({ initialCustomer }: { initialCustomer: C
           </div>
         )}
       </section>
-
-      <style jsx>{`
-        .line {
-          display: grid;
-          grid-template-columns: 1fr auto;
-          gap: 12px;
-          align-items: center;
-          padding: 10px 0;
-          border-bottom: 1px solid var(--border);
-        }
-        .line-left { min-width: 0; }
-        .line-title { font-weight: 600; }
-        .line-prices { display: grid; grid-template-columns: repeat(3, max-content); gap: 12px; margin-top: 6px; }
-        .line-right { display: flex; gap: 8px; align-items: center; }
-        .qty {
-          width: 64px;
-          height: 40px;
-          text-align: center;
-          border-radius: 12px;
-          font-variant-numeric: tabular-nums;
-        }
-        @media (max-width: 480px) {
-          .line-prices { grid-template-columns: 1fr; gap: 2px; }
-        }
-      `}</style>
     </div>
   );
 }
