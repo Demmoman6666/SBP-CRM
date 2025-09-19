@@ -31,7 +31,7 @@ type Props = { initialCustomer?: Customer | null };
 
 const VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE ?? "0.20");
 
-// currency helper (ASCII name)
+// currency helper
 const fmtGBP = (n: number) =>
   new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
     Number.isFinite(n) ? n : 0
@@ -43,6 +43,9 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
   const [draftId, setDraftId] = useState<number | null>(null);
   const [cart, setCart] = useState<Record<number, { line: CartLine; qty: number }>>({});
   const [creating, setCreating] = useState<false | "draft" | "checkout" | "plink">(false);
+
+  // when a payment link is created, we show a panel instead of redirecting
+  const [plink, setPlink] = useState<{ url: string; draftAdminUrl?: string | null } | null>(null);
 
   // --- cart ops ---
   function addToCart(newLine: CartLine) {
@@ -99,7 +102,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         body: JSON.stringify({
           recreate,
           customerId: customer.id,
-          // be generous: server will pick whichever shape it prefers
+          // send tolerant shapes so the API can pick whichever it prefers
           lines: simpleLines,
           draft_order_line_items: simpleLines.map((l) => ({
             variant_id: Number(l.variantId),
@@ -155,7 +158,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  // --- Stripe: Payment Link ---
+  // --- Stripe: Payment Link (now shows a panel instead of redirect) ---
   async function createPaymentLink() {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
@@ -173,10 +176,15 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.url) throw new Error(j?.error || `Payment Link failed: ${r.status}`);
+
+      setPlink({ url: j.url as string, draftAdminUrl: j.draftAdminUrl || null });
+
+      // try to copy link automatically; ignore errors
       try {
         await navigator.clipboard.writeText(j.url as string);
       } catch {}
-      window.open(j.url as string, "_blank", "noopener,noreferrer");
+
+      // no redirect; we keep the user on this page and show the panel
     } catch (err: any) {
       console.error(err);
       alert(err?.message || "Payment Link failed");
@@ -362,6 +370,74 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     );
   }
 
+  function PaymentLinkPanel() {
+    if (!plink) return null;
+
+    const message =
+      `Thank you for your Salon Brands Pro order.\n\n` +
+      `Your total is ${fmtGBP(totals.inc)}\n\n` +
+      `Your payment link is:\n${plink.url}\n\n` +
+      `Thank you ☺️`;
+
+    async function copy(text: string) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {}
+    }
+
+    return (
+      <section className="card" role="dialog" aria-labelledby="plink-title">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h3 id="plink-title" style={{ margin: 0 }}>Payment link created</h3>
+          <button className="btn" type="button" onClick={() => setPlink(null)}>
+            Done
+          </button>
+        </div>
+
+        <div className="grid" style={{ gap: 10, marginTop: 12 }}>
+          <div>
+            <label>Link</label>
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                readOnly
+                value={plink.url}
+                onFocus={(e) => e.currentTarget.select()}
+                style={{ flex: 1 }}
+              />
+              <button className="btn" type="button" onClick={() => copy(plink.url)}>
+                Copy link
+              </button>
+              <a className="btn" href={plink.url} target="_blank" rel="noreferrer">
+                Open
+              </a>
+            </div>
+          </div>
+
+          <div>
+            <label>Message</label>
+            <textarea
+              readOnly
+              rows={5}
+              value={message}
+              onFocus={(e) => e.currentTarget.select()}
+              style={{ width: "100%" }}
+            />
+            <div className="row" style={{ justifyContent: "flex-end", marginTop: 8, gap: 8 }}>
+              <button className="btn" type="button" onClick={() => copy(message)}>
+                Copy message
+              </button>
+              {plink.draftAdminUrl && (
+                <a className="btn" href={plink.draftAdminUrl} target="_blank" rel="noreferrer">
+                  Open draft in Shopify
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <CustomerBlock />
@@ -388,6 +464,9 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
       </section>
 
       <CartBlock />
+
+      {/* Show the link + message panel when we have one */}
+      <PaymentLinkPanel />
     </div>
   );
 }
