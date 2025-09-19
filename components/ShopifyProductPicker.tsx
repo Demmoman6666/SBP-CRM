@@ -223,7 +223,7 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
     return () => clearTimeout(t);
   }, [query]);
 
-  // Price hydration (kept as-is)
+  // Price hydration (unchanged)
   useEffect(() => {
     const missing = items.filter(
       (i) => (i.priceExVat == null || !Number.isFinite(Number(i.priceExVat))) && Number.isFinite(i.variantId)
@@ -232,10 +232,11 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
 
     (async () => {
       try {
+        const ids = Array.from(new Set(missing.map((m) => m.variantId)));
         const r = await fetch("/api/shopify/variant-prices", {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ ids: missing.map((m) => m.variantId) }),
+          body: JSON.stringify({ ids }),
         });
         const j = await r.json().catch(() => ({}));
         const map = (j?.prices || {}) as Record<string, { priceExVat?: number }>;
@@ -252,7 +253,7 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
     })();
   }, [items]);
 
-  // ✅ NEW: Stock hydration via inventory_levels (multi-location safe)
+  // ✅ Stock hydration (now backed by variants.json inventory_quantity)
   useEffect(() => {
     const missing = items.filter(
       (i) => (i.available == null || !Number.isFinite(Number(i.available))) && Number.isFinite(i.variantId)
@@ -261,10 +262,11 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
 
     (async () => {
       try {
+        const ids = Array.from(new Set(missing.map((m) => m.variantId)));
         const r = await fetch("/api/shopify/variant-stock", {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ ids: missing.map((m) => m.variantId) }),
+          body: JSON.stringify({ ids }),
         });
         const j = await r.json().catch(() => ({}));
         const map = (j?.stock || {}) as Record<string, number>;
@@ -343,6 +345,13 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
 
         {items.map((v) => {
           const isChecked = !!selected[v.variantId];
+          const stockText =
+            v.available == null
+              ? "" // unknown until hydrated
+              : v.available === 0
+              ? " • Out of stock"
+              : ` • ${v.available} in stock`;
+
           return (
             <label
               key={v.variantId}
@@ -364,12 +373,11 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600 }}>
                   {v.productTitle}
-                  {/* hide "Default Title" */}
                   {v.variantTitle ? ` — ${v.variantTitle}` : ""}
                 </div>
                 <div className="small muted">
                   {fmtGBP(v.priceExVat)}
-                  {v.available != null ? ` • ${v.available} in stock` : ""}
+                  {stockText}
                   {v.sku ? ` • SKU ${v.sku}` : ""}
                 </div>
               </div>
