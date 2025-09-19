@@ -9,8 +9,10 @@
 
 html, body { height: 100%; }
 
-/* Prevent iOS auto-zooming quirks and respect user settings */
-html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 
 body {
   margin: 0;
@@ -18,11 +20,8 @@ body {
   color: var(--text);
   background: var(--bg);
   line-height: 1.5;
-  -webkit-tap-highlight-color: transparent; /* nicer touch feel on mobile */
+  overflow-x: hidden;          /* stop tiny sideways scrolls on narrow screens */
 }
-
-/* Media that might overflow */
-img, svg, video { max-width: 100%; height: auto; }
 
 /* 2) Theme Tokens */
 :root{
@@ -41,20 +40,16 @@ img, svg, video { max-width: 100%; height: auto; }
 
   /* unified field tokens */
   --field-bg: #ffffff;
-  --field-border: #111111;   /* prominent border like your preferred style */
-  --field-height: 44px;      /* ✅ 44px minimum touch target */
-  --field-radius: 14px;
-
-  /* iOS safe areas (used below) */
-  --safe-left: env(safe-area-inset-left, 0px);
-  --safe-right: env(safe-area-inset-right, 0px);
+  --field-border: #111111;     /* prominent border like your preferred style */
+  --field-height: 44px;        /* iOS-friendly tap target */
+  --container-pad: clamp(12px, 3.5vw, 16px);
 }
 
-/* 3) Typography */
+/* 3) Typography (mobile-first with fluid sizes) */
 h1,h2,h3,h4 { margin: 0 0 .6rem 0; line-height: 1.2; color: var(--text); }
-h1 { font-size: clamp(1.6rem, 1.2rem + 1.2vw, 2.1rem); }
-h2 { font-size: clamp(1.3rem, 1.1rem + .6vw, 1.6rem); }
-h3 { font-size: 1.1rem; }
+h1 { font-size: clamp(1.4rem, 1rem + 2.2vw, 2.1rem); }
+h2 { font-size: clamp(1.2rem, .95rem + 1.2vw, 1.6rem); }
+h3 { font-size: clamp(1rem, .9rem + .6vw, 1.2rem); }
 p  { margin: 0 0 .9rem 0; }
 .small { font-size: .9rem; color: var(--muted); }
 .muted { color: var(--muted); }
@@ -68,17 +63,21 @@ a:hover { text-decoration: underline; }
   width: 100%;
   max-width: 1100px;
   margin-inline: auto;
-  padding-inline: calc(16px + var(--safe-left)) calc(16px + var(--safe-right));
+  padding-inline: var(--container-pad);
 }
-.row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.row { display: flex; gap: 10px; }
 .grid { display: grid; gap: 12px; }
 .grid-2 { grid-template-columns: 1fr; gap: 12px; }
 @media (min-width: 768px) { .grid-2 { grid-template-columns: repeat(2, 1fr); } }
 
-/* 6) Header logo */
-.brand-logo { height: 48px; width: auto; display: block; image-rendering: -webkit-optimize-contrast; }
-@media (min-width: 480px) { .brand-logo { height: 55px; } }
-@media (min-width: 1024px) { .brand-logo { height: 60px; } }
+/* 6) Header / logo */
+.brand-logo {
+  height: clamp(40px, 7vw, 60px);
+  width: auto;
+  display: block;
+  image-rendering: -webkit-optimize-contrast;
+}
 
 /* 7) Cards */
 .card {
@@ -86,7 +85,9 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 16px;
+  padding: clamp(12px, 3vw, 16px);
+  overflow-x: auto;            /* lets wide tables scroll instead of breaking layout */
+  -webkit-overflow-scrolling: touch;
 }
 
 /* 8) Buttons */
@@ -99,7 +100,7 @@ button, .btn, .primary {
   background: var(--btn-bg);
   color: var(--btn-fg);
   font-weight: 600;
-  padding: 10px 14px;                  /* ✅ comfy on mobile */
+  padding: 8px 12px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: transform .02s ease, background .15s ease, box-shadow .15s ease;
@@ -108,14 +109,15 @@ button, .btn, .primary {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 44px;                    /* ✅ 44px minimum tap size */
+  min-height: 44px;            /* iOS comfortable tap target */
+  font-size: 16px;             /* prevents iOS zoom on tap */
 }
 .primary:hover { background: var(--pink-600); }
 .primary:active { transform: translateY(1px); }
 .primary:focus-visible { outline: none; box-shadow: var(--ring); }
 button:disabled, .btn:disabled { opacity: .55; cursor: not-allowed; }
 
-/* 9) Forms */
+/* 9) Forms (mobile-first) */
 
 /* labels */
 label {
@@ -126,7 +128,7 @@ label {
   font-weight: 600;
 }
 
-/* IMPORTANT: style only text-like inputs (NOT checkboxes/radios) */
+/* Only style text-like inputs (not checkboxes/radios/range/file) */
 :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])),
 select,
 textarea {
@@ -135,17 +137,17 @@ textarea {
   background: var(--field-bg) !important;
   color: var(--text);
   border: 1px solid var(--field-border) !important;
-  border-radius: var(--field-radius);
-  padding: 10px 12px;
+  border-radius: 14px;
+  padding: 12px 14px;
   line-height: 1.4;
   height: var(--field-height);
   outline: none;
   transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
   font-variant-numeric: tabular-nums;
-  font-size: 16px;                     /* ✅ prevents iOS zoom-on-focus */
+  font-size: 16px;             /* **critical**: stops iOS auto-zoom on focus */
 }
 
-/* keep native checkboxes/radios (restores old Opening Hours look) */
+/* keep native checkboxes/radios (restores Opening Hours look) */
 input[type="checkbox"],
 input[type="radio"] {
   appearance: auto;
@@ -165,9 +167,8 @@ input::placeholder, textarea::placeholder { color: #9ca3af; }
 
 :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])),
 textarea,
-select {
-  border-color: var(--field-border);
-}
+select { border-color: var(--field-border); }
+
 :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])):focus,
 textarea:focus,
 select:focus {
@@ -180,7 +181,7 @@ input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type="number"] { -moz-appearance: textfield; }
 
-/* Selects generally */
+/* Selects */
 select { padding-right: 28px; }
 
 /* Opening Hours — compact rectangular look */
@@ -190,15 +191,15 @@ select { padding-right: 28px; }
 .opening-hours td { padding: 6px 8px; vertical-align: middle; }
 
 .opening-hours select {
-  height: 40px;                 /* slightly smaller than main fields */
-  min-width: 72px;              /* wide enough for “09” / “00” */
-  border-radius: 10px;          /* rectangular, not pill */
+  height: 36px;
+  min-width: 72px;
+  border-radius: 10px;
   border: 1px solid var(--border) !important;
   background: #fff !important;
   text-align: center;
   padding: 6px 10px;
   font-variant-numeric: tabular-nums;
-  font-size: 16px;              /* avoid iOS zoom */
+  font-size: 16px;
 }
 .opening-hours select[data-min="true"] { min-width: 64px; }
 .opening-hours input[type="checkbox"] { margin-right: 6px; }
@@ -215,18 +216,24 @@ select { padding-right: 28px; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden;
+  overflow: hidden; /* rounded top on header row */
+  font-size: 0.95rem;
 }
-.table th, .table td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.table th, .table td {
+  text-align: left;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  white-space: nowrap;          /* keeps dates/totals tidy */
+}
 .table th { font-size: .85rem; color: var(--muted); background: #fafafa; font-weight: 600; }
 .table tr:hover td { background: #fafafa; }
 
-/* Mobile: allow horizontal scroll for wide tables without breaking layout */
-@supports selector(:has(*)) {
-  .card:has(.table) { overflow-x: auto; }
-}
+/* Make wide tables usable on phones */
 @media (max-width: 640px) {
-  .table { min-width: 720px; }  /* gives a sensible scroll width on phones */
+  .table th, .table td { padding: 10px 12px; }
+  .card:has(.table) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .table { min-width: 640px; } /* allow horizontal scroll instead of squashing */
 }
 
 /* 11) Badges */
@@ -244,7 +251,6 @@ footer small { color: var(--muted); }
 
 /* 14) Home Tiles */
 .home-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
-@media (max-width: 480px) { .home-actions { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); } }
 .action-tile {
   aspect-ratio: 1 / 1;
   display: flex;
@@ -284,10 +290,10 @@ footer small { color: var(--muted); }
 .field > select,
 .field > textarea {
   width: 100%;
-  border-radius: var(--field-radius);
+  border-radius: 14px;
   padding: 12px 14px;
   height: var(--field-height);
-  font-size: 16px; /* avoid iOS zoom */
+  font-size: 16px;   /* again, no zoom on iOS */
 }
 .field > textarea { height: auto; }
 .field > label {
@@ -298,8 +304,6 @@ footer small { color: var(--muted); }
   font-weight: 600;
 }
 
-/* 16) Mobile polish */
-@media (max-width: 640px) {
-  .card { padding: 12px; }
-  .row { gap: 8px; }
-}
+/* 16) Mobile niceties */
+img, svg, video, canvas { max-width: 100%; height: auto; }
+.row { flex-wrap: wrap; } /* lets button groups wrap on narrow screens */
