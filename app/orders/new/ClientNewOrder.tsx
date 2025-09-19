@@ -162,7 +162,10 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
   async function createPaymentLink() {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
-    await ensureDraft({ recreate: false });
+
+    // ✅ ensure we have a single draft and REUSE IT
+    const id = await ensureDraft({ recreate: false });
+
     setCreating("plink");
     try {
       const r = await fetch("/api/payments/stripe/payment-link", {
@@ -171,6 +174,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         body: JSON.stringify({
           customerId: customer.id,
           lines: simpleLines,
+          draftOrderId: id, // ⬅️ pass the draft id so the API doesn't create a second draft
           note: `Payment link for ${customer.salonName || customer.customerName || customer.id}`,
         }),
       });
