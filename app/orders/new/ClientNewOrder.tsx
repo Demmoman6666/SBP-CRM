@@ -31,7 +31,7 @@ type Props = { initialCustomer?: Customer | null };
 
 const VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE ?? "0.20");
 
-// currency helper (ASCII name to keep SWC happy)
+// currency helper (ASCII name)
 const fmtGBP = (n: number) =>
   new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
     Number.isFinite(n) ? n : 0
@@ -44,6 +44,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
   const [cart, setCart] = useState<Record<number, { line: CartLine; qty: number }>>({});
   const [creating, setCreating] = useState<false | "draft" | "checkout" | "plink">(false);
 
+  // --- cart ops ---
   function addToCart(newLine: CartLine) {
     setCart((prev) => {
       const cur = prev[newLine.variantId];
@@ -68,6 +69,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     });
   }
 
+  // data sent to server for draft/stripe
   const simpleLines = useMemo(
     () =>
       Object.values(cart).map(({ line, qty }) => ({
@@ -85,7 +87,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     return { ex: to2(ex), tax: to2(tax), inc: to2(inc) };
   }, [cart]);
 
-  // ---- Draft (server normalizes for Shopify) ----
+  // --- draft creation (normalizes payload on server) ---
   async function ensureDraft({ recreate = false }: { recreate?: boolean } = {}) {
     if (!customer?.id) throw new Error("Select a customer first.");
     if (simpleLines.length === 0) throw new Error("Add at least one line item to the cart.");
@@ -97,7 +99,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         body: JSON.stringify({
           recreate,
           customerId: customer.id,
-          // send tolerant shapes so the API can pick what it needs
+          // be generous: server will pick whichever shape it prefers
           lines: simpleLines,
           draft_order_line_items: simpleLines.map((l) => ({
             variant_id: Number(l.variantId),
@@ -126,7 +128,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  // ---- Pay by card (Stripe Checkout) ----
+  // --- Stripe: Checkout (card) ---
   async function payByCard() {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
@@ -153,7 +155,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  // ---- Payment Link (Stripe Payment Links) ----
+  // --- Stripe: Payment Link ---
   async function createPaymentLink() {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
@@ -183,6 +185,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
+  // --- UI blocks ---
   function CustomerBlock() {
     if (!customer) {
       return (
@@ -371,13 +374,13 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         <div style={{ marginTop: 12 }}>
           <ShopifyProductPicker
             placeholder="Search by product title, SKU, vendor…"
-            onPick={(v: any) => {
+            onPick={(v) => {
               addToCart({
                 variantId: Number(v.variantId),
                 productTitle: v.productTitle,
                 variantTitle: v.variantTitle ?? null,
                 sku: v.sku ?? null,
-                unitExVat: Number(v.priceExVat ?? v.price ?? 0),
+                unitExVat: Number.isFinite(v.priceExVat) ? v.priceExVat : 0,
               });
             }}
           />
