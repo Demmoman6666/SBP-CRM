@@ -1,7 +1,7 @@
 // app/orders/[id]/refund/page.tsx
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import RefundClient from "./RefundClient";
+import RefundClient, { type Line as RefundLine } from "./RefundClient";
 
 function money(n?: any, currency?: string) {
   if (n == null) return "-";
@@ -30,12 +30,32 @@ export default async function RefundPage({ params }: { params: { id: string } })
     return (
       <div className="card">
         <h2>Order not found</h2>
-        <Link className="primary" href="/customers">Back</Link>
+        <Link className="primary" href="/customers">
+          Back
+        </Link>
       </div>
     );
   }
 
   const currency = order.currency || "GBP";
+
+  // Build the shape RefundClient expects
+  const lines: RefundLine[] = order.lineItems.map((li) => ({
+    id: li.id,
+    maxQty: Number(li.quantity || 0),
+    // pass through for Shopify's refund API mapping
+    shopifyLineItemId: li.shopifyLineItemId ? String(li.shopifyLineItemId) : null,
+    // unit price (ex VAT) so the client can show a rough calc if needed
+    unitNet:
+      typeof li.price === "number"
+        ? li.price
+        : Number.isFinite(Number(li.price))
+        ? Number(li.price)
+        : null,
+    // optional display helpers (RefundClient may ignore these)
+    productTitle: li.productTitle ?? li.variantTitle ?? null,
+    sku: li.sku ?? null,
+  }));
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -45,80 +65,29 @@ export default async function RefundPage({ params }: { params: { id: string } })
             Refund {order.shopifyName || `Order ${order.shopifyOrderNumber ?? ""}`}
           </h1>
           <div className="row" style={{ gap: 8 }}>
-            <Link className="btn" href={`/orders/${order.id}`}>Back to order</Link>
-            <Link className="primary" href={order.customer ? `/customers/${order.customer.id}` : "/customers"}>
+            <Link className="btn" href={`/orders/${order.id}`}>
+              Back to order
+            </Link>
+            <Link
+              className="primary"
+              href={order.customer ? `/customers/${order.customer.id}` : "/customers"}
+            >
               Back to customer
             </Link>
           </div>
         </div>
 
         <p className="small muted" style={{ marginTop: 8 }}>
-          Select the items/quantities to refund. The refund will be issued back via the original payment method.
+          Select the items/quantities to refund. The refund will be issued back via the original
+          payment method.
         </p>
 
-        <form
-          method="POST"
-          action={`/api/orders/${order.id}/refund`}
-          className="grid"
-          style={{ gap: 12, marginTop: 12 }}
-        >
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr",
-              gap: 8,
-              alignItems: "center",
-            }}
-          >
-            <div className="small muted">Product</div>
-            <div className="small muted">SKU</div>
-            <div className="small muted">Qty (max)</div>
-            <div className="small muted">Unit</div>
-            <div className="small muted">Refund Qty</div>
-
-            {order.lineItems.map((li) => (
-              <div key={li.id} style={{ display: "contents" }}>
-                <div>{li.productTitle || li.variantTitle || "-"}</div>
-                <div>{li.sku || "-"}</div>
-                <div>{li.quantity}</div>
-                <div>{money(li.price, currency)}</div>
-                <div>
-                  <input
-                    type="number"
-                    name={`qty_${li.id}`}
-                    min={0}
-                    max={li.quantity}
-                    defaultValue={0}
-                    style={{ width: 90 }}
-                    data-refund-qty
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <textarea
-            name="reason"
-            placeholder="Reason (optional)"
-            className="textarea"
-            rows={3}
-          />
-
-          {/* Live Shopify-calculated refund preview */}
-          <RefundClient
-            orderId={order.id}
-            currency={currency}
-            lines={order.lineItems.map((li) => ({
-              id: li.id,
-              maxQty: Number(li.quantity || 0),
-            }))}
-          />
-
-          <div className="right row" style={{ gap: 8 }}>
-            <Link className="btn" href={`/orders/${order.id}`}>Cancel</Link>
-            <button className="primary" type="submit">Process refund</button>
-          </div>
-        </form>
+        {/* Client component renders the editable quantities, live total, and preview */}
+        <RefundClient
+          orderId={order.id}
+          currency={currency}
+          lines={lines}
+        />
       </div>
     </div>
   );
