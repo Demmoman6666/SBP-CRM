@@ -16,7 +16,7 @@ type Customer = {
   country?: string | null;
   customerTelephone?: string | null;
   customerEmailAddress?: string | null;
-  shopifyCustomerId?: string | null; // used by draft creation on the server
+  shopifyCustomerId?: string | null;
 };
 
 type CartLine = {
@@ -24,36 +24,26 @@ type CartLine = {
   productTitle: string;
   variantTitle?: string | null;
   sku?: string | null;
-  unitExVat: number; // £ ex VAT (from Shopify Admin API)
+  unitExVat: number; // £ ex VAT
 };
 
-type Props = {
-  initialCustomer?: Customer | null;
-};
+type Props = { initialCustomer?: Customer | null };
 
 const VAT_RATE = Number(process.env.NEXT_PUBLIC_VAT_RATE ?? "0.20");
 
-// money helpers
-const £ = (n: number) =>
+// currency helper (ASCII name to keep SWC happy)
+const fmtGBP = (n: number) =>
   new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(
     Number.isFinite(n) ? n : 0
   );
 const to2 = (n: number) => Math.round(n * 100) / 100;
 
 export default function ClientNewOrder({ initialCustomer }: Props) {
-  // customer
   const [customer, setCustomer] = useState<Customer | null>(initialCustomer ?? null);
-
-  // draft state we get back from the server (used for idempotency and visibility)
   const [draftId, setDraftId] = useState<number | null>(null);
-
-  // cart data keyed by variantId
   const [cart, setCart] = useState<Record<number, { line: CartLine; qty: number }>>({});
-
-  // UI state for async actions
   const [creating, setCreating] = useState<false | "draft" | "checkout" | "plink">(false);
 
-  // Add product from picker
   function addToCart(newLine: CartLine) {
     setCart((prev) => {
       const cur = prev[newLine.variantId];
@@ -78,7 +68,6 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     });
   }
 
-  // cart → simple lines (variantId, quantity)
   const simpleLines = useMemo(
     () =>
       Object.values(cart).map(({ line, qty }) => ({
@@ -88,22 +77,18 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     [cart]
   );
 
-  // totals
   const totals = useMemo(() => {
     let ex = 0;
-    for (const { line, qty } of Object.values(cart)) {
-      ex += line.unitExVat * qty;
-    }
+    for (const { line, qty } of Object.values(cart)) ex += line.unitExVat * qty;
     const tax = ex * VAT_RATE;
     const inc = ex + tax;
     return { ex: to2(ex), tax: to2(tax), inc: to2(inc) };
   }, [cart]);
 
-  // ----- Draft creation (server does the real Shopify call) -----
+  // ---- Draft (server normalizes for Shopify) ----
   async function ensureDraft({ recreate = false }: { recreate?: boolean } = {}) {
     if (!customer?.id) throw new Error("Select a customer first.");
     if (simpleLines.length === 0) throw new Error("Add at least one line item to the cart.");
-
     setCreating("draft");
     try {
       const res = await fetch("/api/shopify/draft-orders", {
@@ -112,8 +97,8 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         body: JSON.stringify({
           recreate,
           customerId: customer.id,
-          // send both shapes so the server can normalize for Shopify
-          lines: simpleLines, // [{ variantId, quantity }]
+          // send tolerant shapes so the API can pick what it needs
+          lines: simpleLines,
           draft_order_line_items: simpleLines.map((l) => ({
             variant_id: Number(l.variantId),
             quantity: Number(l.quantity),
@@ -124,11 +109,8 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
           })),
         }),
       });
-
       const text = await res.text();
       if (!res.ok) throw new Error(text || `Draft error ${res.status}`);
-
-      // Server returns either { id, draft_order } or { draft: {...} }
       const json = JSON.parse(text || "{}");
       const id: number | null =
         json?.id ??
@@ -136,11 +118,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         json?.draft?.id ??
         json?.draft?.draft_order?.id ??
         null;
-
-      if (!id) {
-        console.warn("Draft API response:", json);
-        throw new Error("Draft created but no id returned");
-      }
+      if (!id) throw new Error("Draft created but no id returned");
       setDraftId(id);
       return id;
     } finally {
@@ -148,19 +126,11 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  // ----- Pay by card (Stripe Checkout) -----
+  // ---- Pay by card (Stripe Checkout) ----
   async function payByCard() {
-    if (!customer?.id) {
-      alert("Pick a customer first.");
-      return;
-    }
-    if (simpleLines.length === 0) {
-      alert("Add at least one line item to the cart.");
-      return;
-    }
-    // Make sure draft exists/refreshes in Shopify (staff visibility)
+    if (!customer?.id) return alert("Pick a customer first.");
+    if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
     await ensureDraft({ recreate: false });
-
     setCreating("checkout");
     try {
       const r = await fetch("/api/payments/stripe/checkout", {
@@ -174,29 +144,20 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.url) throw new Error(j?.error || `Stripe Checkout failed: ${r.status}`);
-      // Redirect the browser to Stripe Checkout
       window.location.href = j.url as string;
     } catch (err: any) {
-      console.error("Pay by card error:", err);
+      console.error(err);
       alert(err?.message || "Stripe Checkout failed");
     } finally {
       setCreating(false);
     }
   }
 
-  // ----- Payment link (Stripe Payment Links) -----
+  // ---- Payment Link (Stripe Payment Links) ----
   async function createPaymentLink() {
-    if (!customer?.id) {
-      alert("Pick a customer first.");
-      return;
-    }
-    if (simpleLines.length === 0) {
-      alert("Add at least one line item to the cart.");
-      return;
-    }
-    // Ensure draft exists so back office sees it immediately
+    if (!customer?.id) return alert("Pick a customer first.");
+    if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
     await ensureDraft({ recreate: false });
-
     setCreating("plink");
     try {
       const r = await fetch("/api/payments/stripe/payment-link", {
@@ -210,21 +171,17 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.url) throw new Error(j?.error || `Payment Link failed: ${r.status}`);
-
-      // Copy + open
       try {
         await navigator.clipboard.writeText(j.url as string);
       } catch {}
       window.open(j.url as string, "_blank", "noopener,noreferrer");
     } catch (err: any) {
-      console.error("Payment link error:", err);
+      console.error(err);
       alert(err?.message || "Payment Link failed");
     } finally {
       setCreating(false);
     }
   }
-
-  // ----- UI bits -----
 
   function CustomerBlock() {
     if (!customer) {
@@ -304,19 +261,14 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
                 {line.productTitle}
                 {line.variantTitle ? ` ${line.variantTitle}` : ""}
               </div>
-              <div className="small muted">
-                {line.sku ? `SKU: ${line.sku}` : ""}
-              </div>
+              <div className="small muted">{line.sku ? `SKU: ${line.sku}` : ""}</div>
 
-              {/* price strip */}
               <div className="small muted" style={{ marginTop: 6 }}>
-                Ex VAT: {£(ex)} &nbsp; • &nbsp; VAT ({Math.round(VAT_RATE * 100)}%): {£(tax)} &nbsp;
-                • &nbsp; Inc VAT: {£(inc)}
+                Ex VAT: {fmtGBP(ex)} &nbsp; • &nbsp; VAT ({Math.round(VAT_RATE * 100)}%):{" "}
+                {fmtGBP(tax)} &nbsp; • &nbsp; Inc VAT: {fmtGBP(inc)}
               </div>
 
-              {/* controls row */}
               <div className="row" style={{ marginTop: 8, gap: 10, alignItems: "center" }}>
-                {/* quantity bubble — same look everywhere */}
                 <div
                   style={{
                     border: "1px solid #111",
@@ -348,11 +300,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
                   />
                 </div>
 
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={() => removeFromCart(line.variantId)}
-                >
+                <button className="btn" type="button" onClick={() => removeFromCart(line.variantId)}>
                   Remove
                 </button>
               </div>
@@ -360,29 +308,25 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
           );
         })}
 
-        {/* Totals */}
         <div style={{ marginTop: 12 }}>
           <div className="row" style={{ justifyContent: "space-between" }}>
             <div className="small muted">Net:</div>
-            <div className="small">{£(totals.ex)}</div>
+            <div className="small">{fmtGBP(totals.ex)}</div>
           </div>
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <div className="small muted">
-              VAT ({Math.round(VAT_RATE * 100)}%):
-            </div>
-            <div className="small">{£(totals.tax)}</div>
+            <div className="small muted">VAT ({Math.round(VAT_RATE * 100)}%):</div>
+            <div className="small">{fmtGBP(totals.tax)}</div>
           </div>
           <div className="row" style={{ justifyContent: "space-between" }}>
             <div className="small" style={{ fontWeight: 700 }}>
               Total:
             </div>
             <div className="small" style={{ fontWeight: 700 }}>
-              {£(totals.inc)}
+              {fmtGBP(totals.inc)}
             </div>
           </div>
         </div>
 
-        {/* Actions */}
         <div
           className="row"
           style={{ marginTop: 14, gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}
@@ -403,12 +347,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
             {creating === "draft" ? "Creating draft…" : draftId ? "Re-create draft" : "Create draft"}
           </button>
 
-          <button
-            className="primary"
-            type="button"
-            onClick={payByCard}
-            disabled={creating !== false}
-          >
+          <button className="primary" type="button" onClick={payByCard} disabled={creating !== false}>
             {creating === "checkout" ? "Starting checkout…" : "Pay by card"}
           </button>
 
@@ -424,7 +363,6 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     <div className="grid" style={{ gap: 16 }}>
       <CustomerBlock />
 
-      {/* Search / add products */}
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Search Products</h3>
@@ -434,7 +372,6 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
           <ShopifyProductPicker
             placeholder="Search by product title, SKU, vendor…"
             onPick={(v: any) => {
-              // Expect the picker to give us ex-VAT price & identifiers
               addToCart({
                 variantId: Number(v.variantId),
                 productTitle: v.productTitle,
