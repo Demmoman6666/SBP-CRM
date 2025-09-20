@@ -116,7 +116,6 @@ async function loadCalls(customerId: string) {
           id: r.id ?? r.callId ?? r._id,
           createdAt: r.createdAt ?? r.created_at ?? r.date ?? r.loggedAt,
           outcome: r.outcome ?? r.result ?? r.status ?? null,
-          // ⬇️ Broaden note extraction & trim
           notes:
             pickFirstString(
               r.notes,
@@ -135,9 +134,7 @@ async function loadCalls(customerId: string) {
             ) || "",
         }));
       }
-    } catch {
-      /* try next */
-    }
+    } catch {}
   }
   return [];
 }
@@ -157,13 +154,10 @@ async function loadNotes(customerId: string) {
         return rows.map((r) => ({
           id: r.id ?? r.noteId ?? r._id,
           createdAt: r.createdAt ?? r.created_at ?? r.date ?? r.loggedAt,
-          body:
-            pickFirstString(r.body, r.text, r.note, r.content, r.details, r.description, r.message) || "",
+          body: pickFirstString(r.body, r.text, r.note, r.content, r.details, r.description, r.message) || "",
         }));
       }
-    } catch {
-      /* try next */
-    }
+    } catch {}
   }
   return [];
 }
@@ -173,6 +167,27 @@ type PageProps = {
   params: { id: string };
   searchParams?: Record<string, string | string[] | undefined>;
 };
+
+/* ---------- Shopify terms we’ll show in the selector ---------- */
+const TERMS: Array<{ value: string; label: string; dueInDays?: number | null }> = [
+  { value: "Due on receipt", label: "Due on receipt", dueInDays: null },
+  { value: "Due on fulfillment", label: "Due on fulfillment", dueInDays: null },
+  { value: "Net 7", label: "Net 7 days", dueInDays: 7 },
+  { value: "Net 15", label: "Net 15 days", dueInDays: 15 },
+  { value: "Net 30", label: "Net 30 days", dueInDays: 30 },
+  { value: "Net 45", label: "Net 45 days", dueInDays: 45 },
+  { value: "Net 60", label: "Net 60 days", dueInDays: 60 },
+  { value: "Net 90", label: "Net 90 days", dueInDays: 90 },
+  // Fixed date exists in Shopify but needs a date value; we’ll skip here for now.
+];
+
+/* ---------- Helpers for rendering terms nicely ---------- */
+function displayTerms(name?: string | null, due?: number | null) {
+  if (!name) return "—";
+  const base = name;
+  if (typeof due === "number" && Number.isFinite(due)) return `${base} (${due} days)`;
+  return base;
+}
 
 export default async function CustomerPage({ params, searchParams }: PageProps) {
   const tab = (Array.isArray(searchParams?.tab) ? searchParams?.tab[0] : searchParams?.tab) as
@@ -193,7 +208,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     take: 50,
   });
 
-  // Shopify statuses + dates (processed_at preferred)
+  // Shopify statuses + dates
   const idCandidates = orders
     .map((o: any) => Number(o.shopifyOrderId ?? o.shopifyId ?? o.shopify_order_id))
     .filter((n) => Number.isFinite(n)) as number[];
@@ -225,7 +240,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     } catch {}
   }
 
-  // Drafts
+  // Drafts for this Shopify customer
   let drafts: any[] = [];
   const shopifyCustomerId = (customer as any).shopifyCustomerId;
   if (shopifyCustomerId) {
@@ -270,6 +285,24 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     null;
 
   const openingHoursRows = normaliseOpeningHours((customer as any).openingHours ?? (customer as any).opening_hours);
+
+  /* ---------- Server Action: save payment terms on the customer ---------- */
+  async function savePaymentTermsAction(formData: FormData) {
+    "use server";
+    const enabled = formData.get("paymentDueLater") === "on";
+    const name = String(formData.get("paymentTermsName") || "");
+    const dueStr = String(formData.get("paymentTermsDueInDays") || "");
+    const dueNum = dueStr ? Number(dueStr) : null;
+
+    await prisma.customer.update({
+      where: { id: customer.id },
+      data: {
+        paymentDueLater: enabled,
+        paymentTermsName: enabled ? (name || null) : null,
+        paymentTermsDueInDays: enabled ? (Number.isFinite(dueNum as any) ? (dueNum as number) : null) : null,
+      },
+    });
+  }
 
   // ---------- Server Action: create Stripe Payment Link from a Shopify draft ----------
   async function createPaymentLinkAction(formData: FormData) {
@@ -338,36 +371,17 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
   const ordersCount = orders.length;
   const draftsCount = drafts.length;
 
-  /* ---------- NEW: Payment terms label (from newest draft) ---------- */
-  function paymentTermsLabelFromDraft(d: any): string | null {
-    if (!d) return null;
-    const pt = d.payment_terms ?? d.paymentTerms ?? null;
-    if (!pt) return null;
-
-    const name =
-      pt.payment_terms_name ??
-      pt.paymentTermsName ??
-      pt.name ??
-      null;
-
-    const due =
-      pt.due_in_days ??
-      pt.dueInDays ??
-      (Array.isArray(pt.payment_schedules) && pt.payment_schedules[0]?.due_in_days) ??
-      null;
-
-    if (name && Number.isFinite(Number(due))) return `${name} (${Number(due)} days)`;
-    if (name) return String(name);
-    return null;
-  }
-
-  const paymentTermsLabel: string =
-    (drafts.length ? paymentTermsLabelFromDraft(drafts[0]) : null) || "—";
-  /* ------------------------------------------------------------------ */
+  /* Payment terms values currently stored for this customer */
+  const paymentDueLater = (customer as any).paymentDueLater ?? false;
+  const paymentTermsName = (customer as any).paymentTermsName ?? null;
+  const paymentTermsDueInDays =
+    typeof (customer as any).paymentTermsDueInDays === "number"
+      ? (customer as any).paymentTermsDueInDays
+      : null;
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      {/* Header / identity (with Edit + Opening hours + Sales rep) */}
+      {/* Header / identity */}
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h1 style={{ margin: 0 }}>{(customer as any).salonName || (customer as any).customerName || "Customer"}</h1>
@@ -427,30 +441,66 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
         </div>
       </section>
 
-      {/* ---------- NEW: Payment Terms / Price lists ---------- */}
+      {/* Payment Terms / Price lists */}
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Payment Terms / Price lists</h3>
         </div>
 
         <div className="grid grid-2" style={{ marginTop: 10 }}>
+          {/* Payment terms editor */}
           <div>
-            <b>Payment terms</b>
-            <p className="small" style={{ marginTop: 6 }}>{paymentTermsLabel}</p>
-            <p className="mini muted" style={{ marginTop: 6 }}>
-              <span className="badge">Shopify</span> Pulled from the newest draft order’s payment terms.
-            </p>
+            <form action={savePaymentTermsAction}>
+              <b>Payment terms</b>
+
+              <div className="row" style={{ marginTop: 8, gap: 10, alignItems: "center" }}>
+                <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    name="paymentDueLater"
+                    defaultChecked={!!paymentDueLater}
+                    aria-label="Enable payment due later"
+                  />
+                  <span className="small">Payment due later</span>
+                </label>
+
+                <select
+                  name="paymentTermsName"
+                  defaultValue={paymentTermsName || "Net 30"}
+                  disabled={!paymentDueLater}
+                >
+                  {TERMS.map(t => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+
+                {/* Carry dueInDays as hidden to persist with the chosen name */}
+                <input
+                  type="hidden"
+                  name="paymentTermsDueInDays"
+                  defaultValue={
+                    TERMS.find(t => t.value === (paymentTermsName || "Net 30"))?.dueInDays ?? ""
+                  }
+                />
+              </div>
+
+              <div className="small muted" style={{ marginTop: 6 }}>
+                Current: {paymentDueLater ? displayTerms(paymentTermsName, paymentTermsDueInDays) : "—"}
+              </div>
+
+              <div className="row" style={{ marginTop: 10, justifyContent: "flex-end" }}>
+                <button className="btn" type="submit">Save</button>
+              </div>
+            </form>
           </div>
 
+          {/* Price lists placeholder */}
           <div>
             <b>Price lists</b>
             <div className="small" style={{ marginTop: 6 }}>
               <div className="muted">No price lists assigned yet.</div>
               <div className="row" style={{ gap: 8, marginTop: 8 }}>
-                {/* Placeholder route to wire later */}
-                <a className="btn" href={`/customers/${customer.id}/price-lists`} title="Manage price lists">
-                  Manage
-                </a>
+                <a className="btn" href={`/customers/${customer.id}/price-lists`}>Manage</a>
               </div>
             </div>
             <p className="mini muted" style={{ marginTop: 6 }}>
@@ -459,7 +509,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
           </div>
         </div>
       </section>
-      {/* ------------------------------------------------------ */}
 
       {/* Orders / Drafts switcher */}
       <section className="card">
@@ -467,10 +516,10 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
           <h3 style={{ margin: 0 }}>Orders / Drafts</h3>
           <div className="row" style={{ gap: 8 }}>
             <Link href={`/customers/${customer.id}?tab=orders`} className={`btn ${view === "orders" ? "primary" : ""}`}>
-              Orders ({ordersCount})
+              Orders ({orders.length})
             </Link>
             <Link href={`/customers/${customer.id}?tab=drafts`} className={`btn ${view === "drafts" ? "primary" : ""}`}>
-              Drafts ({draftsCount})
+              Drafts ({drafts.length})
             </Link>
           </div>
         </div>
