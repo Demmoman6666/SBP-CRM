@@ -170,7 +170,7 @@ model Customer {
 
   // Orders relationship
   orders               Order[]
-}
+
   // ---------------- Route Planning ----------------
   /// Toggle to include this salon in the 4-week route plan
   routePlanEnabled     Boolean     @default(false)
