@@ -56,6 +56,11 @@ export async function POST(req: Request) {
     let email: string | undefined;
     let shipping_address: any | undefined;
 
+    // 🔽 NEW: pull saved payment terms fields as well
+    let paymentDueLater = false;
+    let paymentTermsName: string | null = null;
+    let paymentTermsDueInDays: number | null = null;
+
     if (crmCustomerId) {
       const c = await prisma.customer.findUnique({
         where: { id: String(crmCustomerId) },
@@ -70,6 +75,11 @@ export async function POST(req: Request) {
           county: true,
           postCode: true,
           country: true,
+
+          // ⬇️ NEW
+          paymentDueLater: true,
+          paymentTermsName: true,
+          paymentTermsDueInDays: true,
         },
       });
 
@@ -86,6 +96,12 @@ export async function POST(req: Request) {
           zip: c.postCode || undefined,
           country_code: (c.country || "GB").toUpperCase(),
         };
+
+        // ⬇️ NEW
+        paymentDueLater = !!c.paymentDueLater;
+        paymentTermsName = c.paymentTermsName ?? null;
+        paymentTermsDueInDays =
+          typeof c.paymentTermsDueInDays === "number" ? c.paymentTermsDueInDays : null;
       }
     }
 
@@ -93,7 +109,7 @@ export async function POST(req: Request) {
     const payload: any = {
       draft_order: {
         line_items,
-        taxes_included: false,                 // we send EX VAT unit prices
+        taxes_included: false, // we send EX VAT unit prices
         use_customer_default_address: true,
         note: "Created from SBP CRM",
         ...(email ? { email } : {}),
@@ -101,6 +117,18 @@ export async function POST(req: Request) {
           ? { customer: { id: shopifyCustomerIdNum } }
           : shipping_address
           ? { shipping_address }
+          : {}),
+
+        // ⬇️ NEW: apply saved Payment Terms when enabled
+        ...(paymentDueLater && paymentTermsName
+          ? {
+              payment_terms: {
+                payment_terms_name: paymentTermsName,
+                ...(Number.isFinite(paymentTermsDueInDays as any)
+                  ? { due_in_days: paymentTermsDueInDays }
+                  : {}),
+              },
+            }
           : {}),
       },
     };
