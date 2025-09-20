@@ -64,6 +64,9 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         : null,
   });
 
+  /** 🔹 Minimal debug surface: what we sent vs. what Shopify stored on the draft */
+  const [accountDebug, setAccountDebug] = useState<{ sent?: any; draft?: any } | null>(null);
+
   useEffect(() => {
     let abort = false;
 
@@ -209,7 +212,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
   // --- draft creation (normalizes payload on server) ---
   async function ensureDraft(
     { recreate = false, applyPaymentTerms = false }: { recreate?: boolean; applyPaymentTerms?: boolean } = {}
-  ) {
+  ): Promise<{ id: number; sentPaymentTerms?: any; draftPaymentTerms?: any }> {
     if (!customer?.id) throw new Error("Select a customer first.");
     if (simpleLines.length === 0) throw new Error("Add at least one line item to the cart.");
     setCreating("draft");
@@ -244,7 +247,11 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         null;
       if (!id) throw new Error("Draft created but no id returned");
       setDraftId(id);
-      return id;
+
+      // expose what we/Shopify set for payment terms so we can see it
+      const sentPaymentTerms = json?.sentPaymentTerms;
+      const draftPaymentTerms = json?.draftPaymentTerms;
+      return { id, sentPaymentTerms, draftPaymentTerms };
     } finally {
       setCreating(false);
     }
@@ -256,7 +263,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
 
     try {
-      const id = await ensureDraft({ recreate: false, applyPaymentTerms: false });
+      const { id } = await ensureDraft({ recreate: false, applyPaymentTerms: false });
       if (!id) throw new Error("Could not create draft order.");
 
       setCreating("checkout");
@@ -279,13 +286,14 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
       setCreating(false);
     }
   }
+
   // --- Stripe: Payment Link (panel) ---
   async function createPaymentLink() {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
 
     try {
-      const id = await ensureDraft({ recreate: false, applyPaymentTerms: false });
+      const { id } = await ensureDraft({ recreate: false, applyPaymentTerms: false });
       if (!id) throw new Error("Could not create draft order.");
 
       setCreating("plink");
@@ -324,11 +332,17 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     try {
       setCreating("account");
       // create/ensure draft with payment_terms attached
-      const id = await ensureDraft({ recreate: false, applyPaymentTerms: true });
+      const { id, sentPaymentTerms, draftPaymentTerms } = await ensureDraft({
+        recreate: false,
+        applyPaymentTerms: true,
+      });
       if (!id) throw new Error("Could not create draft order.");
 
+      // surface what happened for quick inspection
+      setAccountDebug({ sent: sentPaymentTerms, draft: draftPaymentTerms });
+
       // complete the draft as unpaid (payment pending)
-      const r = await fetch("/api/shopify/draft-orders/complete", {
+      const r = await fetch("/api/shopify/draft-orders/complete?payment_pending=true", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ draftId: id }),
@@ -565,6 +579,14 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
             {creating === "account" ? "Placing on account…" : "Pay on account"}
           </button>
         </div>
+
+        {/* tiny debug readout: lets us see what we sent/what Shopify kept on the draft */}
+        {accountDebug && (
+          <div className="small muted" style={{ marginTop: 6 }}>
+            <div><b>Sent terms:</b> {JSON.stringify(accountDebug.sent)}</div>
+            <div><b>Draft terms (from Shopify):</b> {JSON.stringify(accountDebug.draft)}</div>
+          </div>
+        )}
       </section>
     );
   }
