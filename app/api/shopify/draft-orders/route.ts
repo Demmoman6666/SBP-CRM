@@ -57,7 +57,7 @@ function pickLines(
 /**
  * Canonicalize stored terms to Shopify Admin API (2025-07+) shape:
  *  - payment_terms_name: enum "NET" | "DUE_ON_RECEIPT" | "DUE_ON_FULFILLMENT" | "FIXED_DATE"
- *  - payment_terms_type: "NET" only for NET terms (Shopify expects it alongside name)
+ *  - payment_terms_type: "NET" only for NET terms
  *  - due_in_days: required for NET
  */
 function canonicalizeTerms(
@@ -210,6 +210,7 @@ export async function POST(req: Request) {
       }
     }
 
+    // 1) Create
     const resp = await shopifyRest(`/draft_orders.json`, {
       method: "POST",
       body: JSON.stringify(payload),
@@ -223,8 +224,8 @@ export async function POST(req: Request) {
       );
     }
 
-    const json = await resp.json().catch(() => ({}));
-    const draft = json?.draft_order || null;
+    let json = await resp.json().catch(() => ({}));
+    let draft = json?.draft_order || null;
     if (!draft?.id) {
       return NextResponse.json(
         { error: "Draft created but response did not include an id", raw: json },
@@ -232,12 +233,52 @@ export async function POST(req: Request) {
       );
     }
 
+    // 2) Fallback: some shops ignore payment_terms on create.
+    // If we *sent* terms but draft.payment_terms is still null, PUT them now.
+    if (sentPaymentTerms && !draft.payment_terms) {
+      const putResp = await shopifyRest(`/draft_orders/${draft.id}.json`, {
+        method: "PUT",
+        body: JSON.stringify({
+          draft_order: {
+            id: draft.id,
+            payment_terms: sentPaymentTerms,
+          },
+        }),
+      });
+
+      if (putResp.ok) {
+        // re-load to confirm what's stored
+        const getResp = await shopifyRest(`/draft_orders/${draft.id}.json`, {
+          method: "GET",
+        });
+        if (getResp.ok) {
+          const reJson = await getResp.json().catch(() => ({}));
+          draft = reJson?.draft_order || draft;
+        }
+      } else {
+        // surface a hint in the response (still return 200 so flow continues)
+        const txt = await putResp.text().catch(() => "");
+        return NextResponse.json(
+          {
+            id: String(draft.id),
+            draft_order: draft,
+            sentPaymentTerms,
+            draftPaymentTerms: draft?.payment_terms || null,
+            warning:
+              "Shopify did not accept payment_terms on create and the subsequent update failed.",
+            updateError: txt,
+          },
+          { status: 200, headers: { "Cache-Control": "no-store" } }
+        );
+      }
+    }
+
     return NextResponse.json(
       {
         id: String(draft.id),
         draft_order: draft,
-        sentPaymentTerms, // ← check this in DevTools Response
-        draftPaymentTerms: draft?.payment_terms || null, // ← should mirror what Shopify stored
+        sentPaymentTerms,                                 // inspect in DevTools
+        draftPaymentTerms: draft?.payment_terms || null,  // should now be set
       },
       { status: 200, headers: { "Cache-Control": "no-store" } }
     );
