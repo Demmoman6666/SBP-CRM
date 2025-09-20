@@ -14,21 +14,27 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing or invalid draftId" }, { status: 400 });
     }
 
-    // IMPORTANT: Shopify expects payment_pending=true as a QUERY PARAM.
+    // Shopify wants PUT + payment_pending=true as a query param.
     const resp = await shopifyRest(
       `/draft_orders/${draftId}/complete.json?payment_pending=true`,
-      { method: "POST" }
+      {
+        method: "PUT",
+        // Be explicit; some shops return 406 without Accept.
+        headers: { Accept: "application/json" },
+      }
     );
 
+    const text = await resp.text().catch(() => "");
     if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
+      // Surface Shopify’s error payload to the browser so you can see why it rejected
       return NextResponse.json(
-        { error: `Shopify draft complete failed: ${resp.status} ${text}` },
-        { status: 400 }
+        { error: `Shopify draft complete failed: ${resp.status}`, shopify: text },
+        { status: 400, headers: { "Cache-Control": "no-store" } }
       );
     }
 
-    const json = await resp.json().catch(() => ({}));
+    let json: any = {};
+    try { json = text ? JSON.parse(text) : {}; } catch {}
     const draft = json?.draft_order || json;
     const orderId = draft?.order_id ?? draft?.order?.id ?? null;
 
@@ -39,7 +45,7 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json(
-      { ok: true, draft_id: draftId, order_id: orderId, orderAdminUrl },
+      { ok: true, draft_id: draftId, order_id: orderId, orderAdminUrl, raw: json },
       { status: 200, headers: { "Cache-Control": "no-store" } }
     );
   } catch (e: any) {
