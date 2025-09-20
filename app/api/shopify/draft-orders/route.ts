@@ -61,7 +61,6 @@ function canonicalizeTerms(
   if (!name) return null;
   const s = String(name).trim();
 
-  // Direct matches first
   if (/^Due on receipt$/i.test(s)) {
     return { payment_terms_name: "Due on receipt", payment_terms_type: "RECEIPT" };
   }
@@ -77,7 +76,6 @@ function canonicalizeTerms(
     return { payment_terms_name: `Net ${d}`, payment_terms_type: "NET", due_in_days: d };
   }
 
-  // Tolerate “Within 30 days”, “Net 30 days”, or raw number “30”
   const within = s.match(/within\s+(\d+)\s*days?/i);
   const parsed =
     within?.[1] ??
@@ -90,20 +88,20 @@ function canonicalizeTerms(
   }
 
   if (/receipt/i.test(s)) return { payment_terms_name: "Due on receipt", payment_terms_type: "RECEIPT" };
-  if (/fulfil?ment/i.test(s)) return { payment_terms_name: "Due on fulfillment", payment_terms_type: "FULFILLMENT" };
+  if (/fulfil?ment/i.test(s))
+    return { payment_terms_name: "Due on fulfillment", payment_terms_type: "FULFILLMENT" };
   if (/fixed/i.test(s)) return { payment_terms_name: "Fixed date", payment_terms_type: "FIXED" };
 
   return null;
 }
 
-// --- NEW: helpers for GraphQL ---
+// --- GraphQL helpers ---
 const gid = {
   variant: (id: number | string) => `gid://shopify/ProductVariant/${String(id)}`,
   customer: (id: number | string) => `gid://shopify/Customer/${String(id)}`,
 };
 
-/** Call Shopify GraphQL via the same shopifyRest helper (POST /graphql.json). */
-async function shopifyGraphQL<T = any>(query: string, variables?: Record<string, any>): Promise<Response> {
+async function shopifyGraphQL(query: string, variables?: Record<string, any>): Promise<Response> {
   return shopifyRest(`/graphql.json`, {
     method: "POST",
     body: JSON.stringify({ query, variables }),
@@ -111,7 +109,6 @@ async function shopifyGraphQL<T = any>(query: string, variables?: Record<string,
   }) as unknown as Response;
 }
 
-/** Fetch all payment terms templates once, then pick the one that matches our canonical term. */
 async function resolvePaymentTermsTemplateId(
   canonical:
     | {
@@ -140,7 +137,6 @@ async function resolvePaymentTermsTemplateId(
   const templates: Array<{ id: string; name: string; paymentTermsType: string; dueInDays?: number | null }> =
     data?.data?.paymentTermsTemplates || [];
 
-  // Match by type + dueInDays for NET; by type/name for others.
   if (canonical.payment_terms_type === "NET") {
     const d = typeof canonical.due_in_days === "number" ? canonical.due_in_days : undefined;
     const t = templates.find(
@@ -149,11 +145,9 @@ async function resolvePaymentTermsTemplateId(
     return t?.id || null;
   }
 
-  // RECEIPT / FULFILLMENT / FIXED
   const t = templates.find(
     (x) =>
       x.paymentTermsType === canonical.payment_terms_type &&
-      // some shops name "Due on fulfillment" exactly; match either by name or type
       (x.name?.toLowerCase() === canonical.payment_terms_name.toLowerCase())
   );
   return t?.id || null;
@@ -162,7 +156,8 @@ async function resolvePaymentTermsTemplateId(
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const crmCustomerId: string | undefined = body.customerId ?? body.crmCustomerId ?? body.customer_id;
+    const crmCustomerId: string | undefined =
+      body.customerId ?? body.crmCustomerId ?? body.customer_id;
     const applyPaymentTerms: boolean = !!body.applyPaymentTerms;
 
     const line_items = pickLines(body);
@@ -214,16 +209,16 @@ export async function POST(req: Request) {
           province: c.county || undefined,
           zip: c.postCode || undefined,
           country_code: (c.country || "GB").toUpperCase(),
-          country: undefined, // let Shopify infer from country_code
         };
 
         savedPaymentDueLater = !!c.paymentDueLater;
         savedPaymentTermsName = c.paymentTermsName ?? null;
-        savedPaymentTermsDueInDays = typeof c.paymentTermsDueInDays === "number" ? c.paymentTermsDueInDays : null;
+        savedPaymentTermsDueInDays =
+          typeof c.paymentTermsDueInDays === "number" ? c.paymentTermsDueInDays : null;
       }
     }
 
-    // Build a REST payload for the non-terms path (or fallback), and re-use addresses
+    // REST payload (fallback/no-terms path)
     const restPayload: any = {
       draft_order: {
         line_items,
@@ -241,16 +236,17 @@ export async function POST(req: Request) {
 
     // If we want terms, use GraphQL draftOrderCreate with a template id
     if (applyPaymentTerms && savedPaymentDueLater && savedPaymentTermsName) {
-      const canonical = canonicalizeTerms(savedPaymentTermsName, savedPaymentTermsDueInDays);
+      const canonical = canonicalizeTerms(
+        savedPaymentTermsName,
+        savedPaymentTermsDueInDays
+      );
 
-      // Resolve template id from shop's templates
       const templateId = await resolvePaymentTermsTemplateId(canonical);
 
       if (templateId) {
-        // Build GraphQL input
+        // ✅ REMOVED taxesIncluded here — it is NOT part of DraftOrderInput
         const input: any = {
           note: "Created from SBP CRM",
-          taxesIncluded: false,
           useCustomerDefaultAddress: true,
           lineItems: line_items.map((li) => ({
             variantId: gid.variant(li.variant_id),
@@ -318,9 +314,7 @@ export async function POST(req: Request) {
           );
         }
 
-        // Convert gid -> numeric id for consistency with the rest of your code
         const numericId = Number(draftGid.split("/").pop());
-        // Load the full draft via REST so the client sees the usual shape
         const load = await shopifyRest(`/draft_orders/${numericId}.json`, { method: "GET" });
         if (!load.ok) {
           const t = await load.text().catch(() => "");
@@ -342,14 +336,14 @@ export async function POST(req: Request) {
           {
             id: String(numericId),
             draft_order: draft,
-            sentPaymentTerms: { templateId }, // what we used
-            draftPaymentTerms: draftPT,       // GraphQL echo (should be set)
+            sentPaymentTerms: { templateId },
+            draftPaymentTerms: draftPT,
           },
           { status: 200, headers: { "Cache-Control": "no-store" } }
         );
       }
-      // If template not found, fall through to REST create (no terms); we’ll echo what we tried
-      // so you can see why it didn’t attach.
+
+      // No template found → fallback REST create (no terms), but echo what we tried
       const resp = await shopifyRest(`/draft_orders.json`, {
         method: "POST",
         body: JSON.stringify(restPayload),
@@ -359,7 +353,6 @@ export async function POST(req: Request) {
         return NextResponse.json(
           {
             error: `Shopify draft create failed (REST fallback, no template match): ${resp.status} ${text}`,
-            triedCanonical: canonical,
           },
           { status: 400, headers: { "Cache-Control": "no-store" } }
         );
@@ -368,11 +361,7 @@ export async function POST(req: Request) {
       const draft = json?.draft_order || null;
       if (!draft?.id) {
         return NextResponse.json(
-          {
-            error: "Draft created (REST fallback) but response did not include an id",
-            raw: json,
-            triedCanonical: canonical,
-          },
+          { error: "Draft created (REST fallback) but response did not include an id", raw: json },
           { status: 500, headers: { "Cache-Control": "no-store" } }
         );
       }
@@ -380,14 +369,14 @@ export async function POST(req: Request) {
         {
           id: String(draft.id),
           draft_order: draft,
-          sentPaymentTerms: { triedCanonical: canonical, templateResolved: null },
+          sentPaymentTerms: { templateResolved: null },
           draftPaymentTerms: draft?.payment_terms || null,
         },
         { status: 200, headers: { "Cache-Control": "no-store" } }
       );
     }
 
-    // ---- No terms path (or terms disabled) -> plain REST create ----
+    // No terms path -> plain REST create
     const resp = await shopifyRest(`/draft_orders.json`, {
       method: "POST",
       body: JSON.stringify(restPayload),
@@ -428,7 +417,6 @@ export async function POST(req: Request) {
   }
 }
 
-// Keep other verbs blocked
 export async function GET() {
   return NextResponse.json({ error: "Method Not Allowed" }, { status: 405 });
 }
