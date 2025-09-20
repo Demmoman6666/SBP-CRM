@@ -17,9 +17,11 @@ type Customer = {
   customerTelephone?: string | null;
   customerEmailAddress?: string | null;
   shopifyCustomerId?: string | null;
-  /** ✅ for Pay on account */
+
+  /** ✅ NEW: payment terms from customer profile */
   paymentDueLater?: boolean | null;
   paymentTermsName?: string | null;
+  paymentTermsDueInDays?: number | null;
 };
 
 type CartLine = {
@@ -28,7 +30,7 @@ type CartLine = {
   variantTitle?: string | null;
   sku?: string | null;
   unitExVat: number; // £ ex VAT
-  /** ✅ NEW: live stock cap (null = unknown/no cap) */
+  /** live stock cap (null = unknown/no cap) */
   maxAvailable?: number | null;
 };
 
@@ -52,12 +54,17 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
   // when a payment link is created, we show a panel instead of redirecting
   const [plink, setPlink] = useState<{ url: string; draftAdminUrl?: string | null } | null>(null);
 
+  // derived: can this customer pay on account?
+  const canPayOnAccount =
+    !!customer?.shopifyCustomerId &&
+    !!customer?.paymentDueLater &&
+    !!(customer?.paymentTermsName || customer?.paymentTermsDueInDays || customer?.paymentDueLater);
+
   // --- cart ops ---
   function addToCart(newLine: CartLine) {
     setCart((prev) => {
       const cur = prev[newLine.variantId];
       const cap = newLine.maxAvailable;
-      // if we know it's out of stock, don't add
       if (cap != null && cap < 1) {
         alert("That item is out of stock.");
         return prev;
@@ -104,7 +111,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     return { ex: to2(ex), tax: to2(tax), inc: to2(inc) };
   }, [cart]);
 
-  // ✅ NEW: hydrate missing stock for items already in cart (if picker didn't provide it)
+  // hydrate missing stock for items already in cart
   useEffect(() => {
     const missing = Object.values(cart)
       .filter(({ line }) => line.maxAvailable == null || !Number.isFinite(Number(line.maxAvailable)))
@@ -131,22 +138,21 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
             if (!entry) continue;
             const cap = Number(map[vidStr]);
             if (Number.isFinite(cap)) {
-              // update line cap
               entry.line = { ...entry.line, maxAvailable: cap };
-              // clamp qty to cap
               entry.qty = Math.min(entry.qty, Math.max(1, cap));
             }
           }
           return next;
         });
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     })();
   }, [cart]);
 
   // --- draft creation (normalizes payload on server) ---
-  async function ensureDraft({ recreate = false }: { recreate?: boolean } = {}) {
+  async function ensureDraft({
+    recreate = false,
+    applyPaymentTerms = false,
+  }: { recreate?: boolean; applyPaymentTerms?: boolean } = {}) {
     if (!customer?.id) throw new Error("Select a customer first.");
     if (simpleLines.length === 0) throw new Error("Add at least one line item to the cart.");
     setCreating("draft");
@@ -157,7 +163,9 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         body: JSON.stringify({
           recreate,
           customerId: customer.id,
-          // send tolerant shapes so the API can pick whichever it prefers
+          // tell the server to attach payment_terms from the CRM record
+          applyPaymentTerms: !!applyPaymentTerms,
+          // tolerant shapes
           lines: simpleLines,
           draft_order_line_items: simpleLines.map((l) => ({
             variant_id: Number(l.variantId),
@@ -186,7 +194,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  // --- Stripe: Checkout (card) ---
+  // Stripe: Checkout
   async function payByCard() {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
@@ -216,53 +224,12 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  // --- Pay on account (creates unpaid order with customer’s terms) ---
-  async function payOnAccount() {
-    if (!customer?.id) return alert("Pick a customer first.");
-    if (Object.keys(cart).length === 0) return alert("Add at least one line item to the cart.");
-
-    // must have terms enabled
-    const canPayOnAccount = !!customer.paymentDueLater && !!customer.paymentTermsName;
-    if (!canPayOnAccount) return;
-
-    try {
-      setCreating("account");
-      // shape expected by /api/shopify/orders/on-account
-      const lines = Object.values(cart).map(({ line, qty }) => ({
-        variant_id: line.variantId,
-        quantity: qty,
-        // include ex VAT unit price if you want to override Shopify’s price
-        price: Number.isFinite(line.unitExVat) ? line.unitExVat : undefined,
-        title: line.variantTitle ? `${line.productTitle} — ${line.variantTitle}` : line.productTitle,
-      }));
-
-      const r = await fetch("/api/shopify/orders/on-account", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ customerId: customer.id, lines }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.ok) throw new Error(j?.error || "Failed to create order on account");
-
-      if (j.adminUrl) window.open(j.adminUrl as string, "_blank");
-      alert(`On-account order created ${j.orderNumber ? `(${j.orderNumber})` : ""}`.trim());
-      // optional: clear cart after success
-      // setCart({});
-    } catch (err: any) {
-      console.error(err);
-      alert(err?.message || "Pay on account failed");
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  // --- Stripe: Payment Link (now shows a panel instead of redirect) ---
+  // Stripe: Payment Link
   async function createPaymentLink() {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
 
     try {
-      // ensure we have a single draft and REUSE IT
       const id = await ensureDraft({ recreate: false });
       if (!id) throw new Error("Could not create draft order.");
 
@@ -273,7 +240,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         body: JSON.stringify({
           customerId: customer.id,
           lines: simpleLines,
-          draftOrderId: id, // pass the draft id so the API doesn't create a second draft
+          draftOrderId: id,
           note: `Payment link for ${customer.salonName || customer.customerName || customer.id}`,
         }),
       });
@@ -282,15 +249,53 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
 
       setPlink({ url: j.url as string, draftAdminUrl: j.draftAdminUrl || null });
 
-      // try to copy link automatically; ignore errors
       try {
         await navigator.clipboard.writeText(j.url as string);
-      } catch {
-        /* no-op */
-      }
+      } catch {}
     } catch (err: any) {
       console.error(err);
       alert(err?.message || "Payment Link failed");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  // ✅ NEW: Pay on account (create order as UNPAID with customer’s terms)
+  async function payOnAccount() {
+    if (!customer?.id) return alert("Pick a customer first.");
+    if (!canPayOnAccount) return alert("This customer does not have payment terms.");
+    if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
+
+    try {
+      // 1) Create (or reuse) a draft that includes payment_terms from CRM
+      const id = await ensureDraft({ recreate: false, applyPaymentTerms: true });
+      if (!id) throw new Error("Could not create draft order.");
+
+      setCreating("account");
+
+      // 2) Complete the draft as payment pending (unpaid, unfulfilled)
+      // Server route: POST /api/shopify/draft-orders/complete
+      // Body: { draftId: number, paymentPending: true }
+      const r = await fetch("/api/shopify/draft-orders/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ draftId: id, paymentPending: true }),
+      });
+
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `Failed to complete draft: ${r.status}`);
+
+      // If server returns an admin URL for the created order, open it
+      if (j?.orderAdminUrl) {
+        window.open(j.orderAdminUrl as string, "_blank");
+      }
+      alert("Order created on account (unpaid, unfulfilled).");
+      // Optionally clear cart / draft state
+      setCart({});
+      setDraftId(null);
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || "Pay on account failed");
     } finally {
       setCreating(false);
     }
@@ -355,7 +360,6 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
 
   function CartBlock() {
     const rows = Object.values(cart);
-    const canPayOnAccount = !!customer?.paymentDueLater && !!customer?.paymentTermsName;
 
     return (
       <section className="card">
@@ -378,13 +382,11 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
               </div>
               <div className="small muted">
                 {line.sku ? `SKU: ${line.sku}` : ""}
-                {/* ✅ NEW: show a tiny stock hint when known */}
                 {line.maxAvailable != null ? ` • In stock: ${line.maxAvailable}` : ""}
               </div>
 
               <div className="small muted" style={{ marginTop: 6 }}>
-                Ex VAT: {fmtGBP(ex)} &nbsp; • &nbsp; VAT ({Math.round(VAT_RATE * 100)}%):{" "}
-                {fmtGBP(tax)} &nbsp; • &nbsp; Inc VAT: {fmtGBP(inc)}
+                Ex VAT: {fmtGBP(ex)} &nbsp; • &nbsp; VAT ({Math.round(VAT_RATE * 100)}%): {fmtGBP(tax)} &nbsp; • &nbsp; Inc VAT: {fmtGBP(inc)}
               </div>
 
               <div className="row" style={{ marginTop: 8, gap: 10, alignItems: "center" }}>
@@ -475,23 +477,19 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
             {creating === "plink" ? "Creating link…" : "Payment link"}
           </button>
 
-          {/* ✅ Pay on account button */}
+          {/* ✅ NEW: Pay on account */}
           <button
             className="btn"
             type="button"
             onClick={payOnAccount}
             disabled={creating !== false || !canPayOnAccount}
             title={
-              !canPayOnAccount
-                ? "Customer has no payment terms set"
-                : "Create unpaid order with customer's payment terms"
+              canPayOnAccount
+                ? "Create order as unpaid with customer's payment terms"
+                : "Enable payment terms on the customer's profile to use this"
             }
-            style={{
-              opacity: creating !== false || !canPayOnAccount ? 0.6 : 1,
-              cursor: creating !== false || !canPayOnAccount ? "not-allowed" : "pointer",
-            }}
           >
-            {creating === "account" ? "Creating…" : "Pay on account"}
+            {creating === "account" ? "Creating on account…" : "Pay on account"}
           </button>
         </div>
       </section>
@@ -586,7 +584,6 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
                   variantTitle: v.variantTitle ?? null,
                   sku: v.sku ?? null,
                   unitExVat: Number.isFinite(v.priceExVat) ? Number(v.priceExVat) : 0,
-                  /** ✅ pass live stock so we can cap qty */
                   maxAvailable: Number.isFinite(Number(v.available)) ? Number(v.available) : null,
                 })
               );
