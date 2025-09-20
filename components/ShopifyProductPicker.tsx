@@ -345,12 +345,52 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
 
         {items.map((v) => {
           const isChecked = !!selected[v.variantId];
-          const stockText =
-            v.available == null
-              ? "" // unknown until hydrated
-              : v.available === 0
-              ? " • Out of stock"
-              : ` • ${v.available} in stock`;
+
+          // Build a red/green badge and a quantity suffix
+          let stockBadge: React.ReactNode = null;
+          let qtySuffix = "";
+
+          if (v.available == null) {
+            // unknown until hydrated – show nothing
+            stockBadge = null;
+            qtySuffix = "";
+          } else if (v.available === 0) {
+            stockBadge = (
+              <span
+                className="small"
+                style={{
+                  display: "inline-block",
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: "#fde8e8",
+                  color: "#b00020",
+                  fontWeight: 700,
+                  marginLeft: 6,
+                }}
+              >
+                Out of stock
+              </span>
+            );
+            qtySuffix = "";
+          } else {
+            stockBadge = (
+              <span
+                className="small"
+                style={{
+                  display: "inline-block",
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: "#e6f4ea",
+                  color: "#137333",
+                  fontWeight: 700,
+                  marginLeft: 6,
+                }}
+              >
+                In stock
+              </span>
+            );
+            qtySuffix = ` • ${v.available} available`;
+          }
 
           return (
             <label
@@ -374,10 +414,11 @@ export default function ShopifyProductPicker({ placeholder, onConfirm }: Props) 
                 <div style={{ fontWeight: 600 }}>
                   {v.productTitle}
                   {v.variantTitle ? ` — ${v.variantTitle}` : ""}
+                  {stockBadge}
                 </div>
                 <div className="small muted">
                   {fmtGBP(v.priceExVat)}
-                  {stockText}
+                  {qtySuffix}
                   {v.sku ? ` • SKU ${v.sku}` : ""}
                 </div>
               </div>
