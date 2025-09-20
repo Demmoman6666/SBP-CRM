@@ -18,7 +18,7 @@ type Customer = {
   customerEmailAddress?: string | null;
   shopifyCustomerId?: string | null;
 
-  /** ✅ NEW: payment terms from customer profile */
+  /** Optional (may not be present in initial props) */
   paymentDueLater?: boolean | null;
   paymentTermsName?: string | null;
   paymentTermsDueInDays?: number | null;
@@ -54,17 +54,49 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
   // when a payment link is created, we show a panel instead of redirecting
   const [plink, setPlink] = useState<{ url: string; draftAdminUrl?: string | null } | null>(null);
 
-  // derived: can this customer pay on account?
-  const canPayOnAccount =
-    !!customer?.shopifyCustomerId &&
-    !!customer?.paymentDueLater &&
-    !!(customer?.paymentTermsName || customer?.paymentTermsDueInDays || customer?.paymentDueLater);
+  /** 🔹 Payment terms (hydrated from API when customer changes) */
+  const [pt, setPt] = useState<{ enabled: boolean; name: string | null; dueInDays: number | null }>({
+    enabled: !!initialCustomer?.paymentDueLater,
+    name: initialCustomer?.paymentTermsName ?? null,
+    dueInDays:
+      typeof initialCustomer?.paymentTermsDueInDays === "number"
+        ? (initialCustomer?.paymentTermsDueInDays as number)
+        : null,
+  });
+
+  useEffect(() => {
+    let abort = false;
+    async function hydrateTerms(id: string) {
+      try {
+        const r = await fetch(`/api/customers/${encodeURIComponent(id)}/payment-terms`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        if (!r.ok) return;
+        const j = await r.json().catch(() => ({}));
+        if (abort) return;
+        setPt({
+          enabled: !!j?.enabled,
+          name: j?.name ?? null,
+          dueInDays:
+            typeof j?.dueInDays === "number" ? (j.dueInDays as number) : null,
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+    if (customer?.id) hydrateTerms(customer.id);
+    return () => {
+      abort = true;
+    };
+  }, [customer?.id]);
 
   // --- cart ops ---
   function addToCart(newLine: CartLine) {
     setCart((prev) => {
       const cur = prev[newLine.variantId];
       const cap = newLine.maxAvailable;
+      // if we know it's out of stock, don't add
       if (cap != null && cap < 1) {
         alert("That item is out of stock.");
         return prev;
@@ -144,15 +176,14 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
           }
           return next;
         });
-      } catch {}
+      } catch {
+        /* ignore */
+      }
     })();
   }, [cart]);
 
   // --- draft creation (normalizes payload on server) ---
-  async function ensureDraft({
-    recreate = false,
-    applyPaymentTerms = false,
-  }: { recreate?: boolean; applyPaymentTerms?: boolean } = {}) {
+  async function ensureDraft({ recreate = false, applyPaymentTerms = false }: { recreate?: boolean; applyPaymentTerms?: boolean } = {}) {
     if (!customer?.id) throw new Error("Select a customer first.");
     if (simpleLines.length === 0) throw new Error("Add at least one line item to the cart.");
     setCreating("draft");
@@ -163,9 +194,8 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         body: JSON.stringify({
           recreate,
           customerId: customer.id,
-          // tell the server to attach payment_terms from the CRM record
-          applyPaymentTerms: !!applyPaymentTerms,
-          // tolerant shapes
+          applyPaymentTerms, // 🔹 tell the API whether to attach payment_terms
+          // send tolerant shapes so the API can pick whichever it prefers
           lines: simpleLines,
           draft_order_line_items: simpleLines.map((l) => ({
             variant_id: Number(l.variantId),
@@ -194,13 +224,13 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  // Stripe: Checkout
+  // --- Stripe: Checkout (card) ---
   async function payByCard() {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
 
     try {
-      const id = await ensureDraft({ recreate: false });
+      const id = await ensureDraft({ recreate: false, applyPaymentTerms: false });
       if (!id) throw new Error("Could not create draft order.");
 
       setCreating("checkout");
@@ -224,13 +254,13 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  // Stripe: Payment Link
+  // --- Stripe: Payment Link (panel) ---
   async function createPaymentLink() {
     if (!customer?.id) return alert("Pick a customer first.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
 
     try {
-      const id = await ensureDraft({ recreate: false });
+      const id = await ensureDraft({ recreate: false, applyPaymentTerms: false });
       if (!id) throw new Error("Could not create draft order.");
 
       setCreating("plink");
@@ -260,39 +290,29 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  // ✅ NEW: Pay on account (create order as UNPAID with customer’s terms)
+  /** --- Pay on account (attach payment terms, then complete draft as payment pending) --- */
   async function payOnAccount() {
     if (!customer?.id) return alert("Pick a customer first.");
-    if (!canPayOnAccount) return alert("This customer does not have payment terms.");
     if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
+    if (!(pt.enabled && pt.name)) return alert("Customer has no payment terms enabled.");
 
     try {
-      // 1) Create (or reuse) a draft that includes payment_terms from CRM
+      setCreating("account");
+      // create/ensure draft with payment_terms attached
       const id = await ensureDraft({ recreate: false, applyPaymentTerms: true });
       if (!id) throw new Error("Could not create draft order.");
 
-      setCreating("account");
-
-      // 2) Complete the draft as payment pending (unpaid, unfulfilled)
-      // Server route: POST /api/shopify/draft-orders/complete
-      // Body: { draftId: number, paymentPending: true }
+      // complete the draft as unpaid (payment pending)
       const r = await fetch("/api/shopify/draft-orders/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ draftId: id, paymentPending: true }),
+        body: JSON.stringify({ draftId: id }),
       });
-
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j?.error || `Failed to complete draft: ${r.status}`);
+      if (!r.ok) throw new Error(j?.error || `Complete draft failed: ${r.status}`);
 
-      // If server returns an admin URL for the created order, open it
-      if (j?.orderAdminUrl) {
-        window.open(j.orderAdminUrl as string, "_blank");
-      }
-      alert("Order created on account (unpaid, unfulfilled).");
-      // Optionally clear cart / draft state
-      setCart({});
-      setDraftId(null);
+      alert("Order placed on account successfully.");
+      // you could redirect to the order page if you have the id in j
     } catch (err: any) {
       console.error(err);
       alert(err?.message || "Pay on account failed");
@@ -361,6 +381,13 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
   function CartBlock() {
     const rows = Object.values(cart);
 
+    const canPayOnAccount =
+      !!customer &&
+      pt.enabled &&
+      !!pt.name &&
+      rows.length > 0 &&
+      creating === false;
+
     return (
       <section className="card">
         <div className="small" style={{ fontWeight: 800, marginBottom: 8 }}>
@@ -386,7 +413,8 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
               </div>
 
               <div className="small muted" style={{ marginTop: 6 }}>
-                Ex VAT: {fmtGBP(ex)} &nbsp; • &nbsp; VAT ({Math.round(VAT_RATE * 100)}%): {fmtGBP(tax)} &nbsp; • &nbsp; Inc VAT: {fmtGBP(inc)}
+                Ex VAT: {fmtGBP(ex)} &nbsp; • &nbsp; VAT ({Math.round(VAT_RATE * 100)}%):{" "}
+                {fmtGBP(tax)} &nbsp; • &nbsp; Inc VAT: {fmtGBP(inc)}
               </div>
 
               <div className="row" style={{ marginTop: 8, gap: 10, alignItems: "center" }}>
@@ -458,7 +486,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
             type="button"
             onClick={async () => {
               try {
-                await ensureDraft({ recreate: true });
+                await ensureDraft({ recreate: true, applyPaymentTerms: false });
                 alert("Draft created or refreshed.");
               } catch (err: any) {
                 alert(err?.message || "Draft error");
@@ -477,19 +505,19 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
             {creating === "plink" ? "Creating link…" : "Payment link"}
           </button>
 
-          {/* ✅ NEW: Pay on account */}
+          {/* 🔹 Pay on account */}
           <button
             className="btn"
             type="button"
             onClick={payOnAccount}
-            disabled={creating !== false || !canPayOnAccount}
+            disabled={!canPayOnAccount}
             title={
               canPayOnAccount
-                ? "Create order as unpaid with customer's payment terms"
-                : "Enable payment terms on the customer's profile to use this"
+                ? "Create order on account"
+                : "Enable payment terms on the customer to use Pay on account"
             }
           >
-            {creating === "account" ? "Creating on account…" : "Pay on account"}
+            {creating === "account" ? "Placing on account…" : "Pay on account"}
           </button>
         </div>
       </section>
@@ -594,7 +622,6 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
 
       <CartBlock />
 
-      {/* Show the link + message panel when we have one */}
       <PaymentLinkPanel />
     </div>
   );
