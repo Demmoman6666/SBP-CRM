@@ -1,7 +1,7 @@
 // app/api/shopify/draft-orders/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { shopifyRest } from "@/lib/shopify"; // keep for parity; we’ll use our own GQL call below too
+import { shopifyRest } from "@/lib/shopify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,20 +47,16 @@ function pickLines(body: any): Array<{ variant_id: number; quantity: number; pri
   return out;
 }
 
-/** Convert numeric Shopify ID -> GraphQL gid, e.g. 123 -> gid://shopify/ProductVariant/123 */
 function gid(kind: "ProductVariant" | "Customer" | "DraftOrder" | "PaymentTermsTemplate", id: number | string) {
   return `gid://shopify/${kind}/${String(id)}`;
 }
 
-/** Simple GraphQL caller using your Admin token & shop domain. */
 async function shopifyGraphQL<T = any>(query: string, variables?: Record<string, any>) {
   const shop = (process.env.SHOPIFY_SHOP_DOMAIN || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
   const token = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || "";
   const apiVer = process.env.SHOPIFY_API_VERSION || "2025-07";
 
-  if (!shop || !token) {
-    throw new Error("Missing SHOPIFY_SHOP_DOMAIN or SHOPIFY_ADMIN_ACCESS_TOKEN env vars.");
-  }
+  if (!shop || !token) throw new Error("Missing SHOPIFY_SHOP_DOMAIN or SHOPIFY_ADMIN_ACCESS_TOKEN.");
 
   const resp = await fetch(`https://${shop}/admin/api/${apiVer}/graphql.json`, {
     method: "POST",
@@ -73,15 +69,10 @@ async function shopifyGraphQL<T = any>(query: string, variables?: Record<string,
 
   const text = await resp.text();
   let json: any = {};
-  try {
-    json = JSON.parse(text || "{}");
-  } catch {
-    // leave as is
-  }
+  try { json = JSON.parse(text || "{}"); } catch {}
   return { ok: resp.ok, status: resp.status, text, json };
 }
 
-/** Get all PaymentTerms templates (name → id mapping). */
 async function fetchTermsTemplates(): Promise<Array<{ id: string; name: string; paymentTermsType: string; dueInDays: number | null }>> {
   const q = `
     query Templates {
@@ -100,7 +91,6 @@ async function fetchTermsTemplates(): Promise<Array<{ id: string; name: string; 
   return (json?.data?.paymentTermsTemplates ?? []) as any[];
 }
 
-/** Map whatever we stored to Shopify’s canonical template name. */
 function canonicalName(name?: string | null, due?: number | null): string | null {
   if (!name) return null;
   const s = name.trim();
@@ -117,7 +107,6 @@ function canonicalName(name?: string | null, due?: number | null): string | null
   return null;
 }
 
-/** Build a PaymentTermsInput for GraphQL, including a schedule for NET terms (issuedAt = today). */
 function buildPaymentTermsInput(
   template: { id: string; name: string; paymentTermsType: string; dueInDays: number | null }
 ) {
@@ -127,22 +116,13 @@ function buildPaymentTermsInput(
   const dd = String(today.getUTCDate()).padStart(2, "0");
   const isoDate = `${yyyy}-${mm}-${dd}`; // YYYY-MM-DD
 
-  // For NET, Shopify 2025-07 requires a schedule with an issuedAt date
   if (template.paymentTermsType === "NET") {
     return {
       paymentTermsTemplateId: template.id,
-      paymentSchedules: [
-        {
-          issuedAt: isoDate,
-        },
-      ],
+      paymentSchedules: [{ issuedAt: isoDate }],
     };
   }
-
-  // For receipt/fulfillment/fixed, just the template is fine
-  return {
-    paymentTermsTemplateId: template.id,
-  };
+  return { paymentTermsTemplateId: template.id };
 }
 
 export async function POST(req: Request) {
@@ -156,7 +136,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "At least one line item is required" }, { status: 400 });
     }
 
-    // Lookup CRM customer + saved terms
     let shopifyCustomerIdNum: number | null = null;
     let email: string | undefined;
     let savedPaymentDueLater = false;
@@ -184,8 +163,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // ---------- Create via GraphQL so Payment Terms are applied ----------
-    // Find the template we should use
     let sentPaymentTerms: any = null;
     let paymentTermsInput: any = null;
 
@@ -195,7 +172,6 @@ export async function POST(req: Request) {
         const templates = await fetchTermsTemplates();
         const tpl =
           templates.find((t) => t.name === want) ||
-          // tolerate a bit of mismatch (“Fixed date” vs “Fixed”)
           (want === "Fixed" ? templates.find((t) => /^Fixed/i.test(t.name)) : null);
 
         if (!tpl) {
@@ -209,20 +185,19 @@ export async function POST(req: Request) {
       }
     }
 
-    // Build GQL DraftOrderInput
     const draftInput: any = {
       note: "Created from SBP CRM",
       useCustomerDefaultAddress: true,
       lineItems: line_items.map((li) => ({
         variantId: gid("ProductVariant", li.variant_id),
         quantity: Number(li.quantity || 1),
-        // price is optional on Drafts; omit unless you are overriding
       })),
       ...(email ? { email } : {}),
       ...(shopifyCustomerIdNum ? { customerId: gid("Customer", shopifyCustomerIdNum) } : {}),
       ...(paymentTermsInput ? { paymentTerms: paymentTermsInput } : {}),
     };
 
+    // ⬇️ Only request fields your schema allows (no nextPaymentSchedule here)
     const mutate = `
       mutation CreateDraft($input: DraftOrderInput!) {
         draftOrderCreate(input: $input) {
@@ -232,13 +207,13 @@ export async function POST(req: Request) {
               paymentTermsName
               paymentTermsType
               dueInDays
-              nextPaymentSchedule { issuedAt dueAt }
             }
           }
           userErrors { field message }
         }
       }
     `;
+
     const { ok, json, status, text } = await shopifyGraphQL(mutate, { input: draftInput });
     if (!ok || json?.errors) {
       return NextResponse.json(
@@ -263,17 +238,15 @@ export async function POST(req: Request) {
       );
     }
 
-    // Return the draft + what we sent (for quick DevTools inspection)
     return NextResponse.json(
       {
-        id: String(draft.id).replace(/.*\//, ""), // return numeric suffix if you prefer
+        id: String(draft.id).replace(/.*\//, ""),
         draft_order: { id: draft.id, payment_terms: draft.paymentTerms || null },
         sentPaymentTerms,
         draftPaymentTerms: draft.paymentTerms || null,
       },
       { status: 200, headers: { "Cache-Control": "no-store" } }
     );
-    // -------------------------------------------------------------
   } catch (e: any) {
     console.error("Create draft error:", e);
     return NextResponse.json(
@@ -283,7 +256,6 @@ export async function POST(req: Request) {
   }
 }
 
-// Keep GET blocked (you create drafts with POST only)
 export async function GET() {
   return NextResponse.json({ error: "Method Not Allowed" }, { status: 405 });
 }
