@@ -338,6 +338,33 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
   const ordersCount = orders.length;
   const draftsCount = drafts.length;
 
+  /* ---------- NEW: Payment terms label (from newest draft) ---------- */
+  function paymentTermsLabelFromDraft(d: any): string | null {
+    if (!d) return null;
+    const pt = d.payment_terms ?? d.paymentTerms ?? null;
+    if (!pt) return null;
+
+    const name =
+      pt.payment_terms_name ??
+      pt.paymentTermsName ??
+      pt.name ??
+      null;
+
+    const due =
+      pt.due_in_days ??
+      pt.dueInDays ??
+      (Array.isArray(pt.payment_schedules) && pt.payment_schedules[0]?.due_in_days) ??
+      null;
+
+    if (name && Number.isFinite(Number(due))) return `${name} (${Number(due)} days)`;
+    if (name) return String(name);
+    return null;
+  }
+
+  const paymentTermsLabel: string =
+    (drafts.length ? paymentTermsLabelFromDraft(drafts[0]) : null) || "—";
+  /* ------------------------------------------------------------------ */
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       {/* Header / identity (with Edit + Opening hours + Sales rep) */}
@@ -399,6 +426,40 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
           </div>
         </div>
       </section>
+
+      {/* ---------- NEW: Payment Terms / Price lists ---------- */}
+      <section className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0 }}>Payment Terms / Price lists</h3>
+        </div>
+
+        <div className="grid grid-2" style={{ marginTop: 10 }}>
+          <div>
+            <b>Payment terms</b>
+            <p className="small" style={{ marginTop: 6 }}>{paymentTermsLabel}</p>
+            <p className="mini muted" style={{ marginTop: 6 }}>
+              <span className="badge">Shopify</span> Pulled from the newest draft order’s payment terms.
+            </p>
+          </div>
+
+          <div>
+            <b>Price lists</b>
+            <div className="small" style={{ marginTop: 6 }}>
+              <div className="muted">No price lists assigned yet.</div>
+              <div className="row" style={{ gap: 8, marginTop: 8 }}>
+                {/* Placeholder route to wire later */}
+                <a className="btn" href={`/customers/${customer.id}/price-lists`} title="Manage price lists">
+                  Manage
+                </a>
+              </div>
+            </div>
+            <p className="mini muted" style={{ marginTop: 6 }}>
+              In future: assign multiple price lists here. If a cart item is on an active list, its custom price will be applied.
+            </p>
+          </div>
+        </div>
+      </section>
+      {/* ------------------------------------------------------ */}
 
       {/* Orders / Drafts switcher */}
       <section className="card">
