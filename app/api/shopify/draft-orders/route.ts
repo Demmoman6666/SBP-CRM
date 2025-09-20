@@ -153,15 +153,6 @@ async function resolvePaymentTermsTemplateId(
   return t?.id || null;
 }
 
-/** YYYY-MM-DD */
-function todayYMD(): string {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -261,9 +252,7 @@ export async function POST(req: Request) {
             quantity: li.quantity,
           })),
           paymentTerms: {
-            paymentTermsTemplateId: templateId,
-            // Required for NET; safe to include always.
-            issueDate: todayYMD(),
+            paymentTermsTemplateId: templateId, // ← NO issueDate here
           },
           ...(email ? { email } : {}),
           ...(shopifyCustomerIdNum
@@ -332,7 +321,7 @@ export async function POST(req: Request) {
             {
               id: String(numericId),
               draft_order: null,
-              sentPaymentTerms: { templateId, issueDate: todayYMD() },
+              sentPaymentTerms: { templateId },
               draftPaymentTerms: draftPT,
               warn: `Draft created, but failed to load via REST: ${load.status} ${t}`,
             },
@@ -346,7 +335,7 @@ export async function POST(req: Request) {
           {
             id: String(numericId),
             draft_order: draft,
-            sentPaymentTerms: { templateId, issueDate: todayYMD() },
+            sentPaymentTerms: { templateId },
             draftPaymentTerms: draftPT,
           },
           { status: 200, headers: { "Cache-Control": "no-store" } }
@@ -386,7 +375,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // No terms path -> plain REST create
+    // No-terms path -> plain REST create
     const resp = await shopifyRest(`/draft_orders.json`, {
       method: "POST",
       body: JSON.stringify(restPayload),
