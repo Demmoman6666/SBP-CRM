@@ -153,6 +153,15 @@ async function resolvePaymentTermsTemplateId(
   return t?.id || null;
 }
 
+/** YYYY-MM-DD (Shopify GraphQL Date scalar expects this shape) */
+function todayYMD(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -244,7 +253,6 @@ export async function POST(req: Request) {
       const templateId = await resolvePaymentTermsTemplateId(canonical);
 
       if (templateId) {
-        // ✅ REMOVED taxesIncluded here — it is NOT part of DraftOrderInput
         const input: any = {
           note: "Created from SBP CRM",
           useCustomerDefaultAddress: true,
@@ -254,6 +262,8 @@ export async function POST(req: Request) {
           })),
           paymentTerms: {
             paymentTermsTemplateId: templateId,
+            // 🔑 Required by Shopify for NET terms (safe to include always)
+            issueDate: todayYMD(),
           },
           ...(email ? { email } : {}),
           ...(shopifyCustomerIdNum
@@ -280,7 +290,7 @@ export async function POST(req: Request) {
               draftOrder {
                 id
                 name
-                paymentTerms { paymentTermsName paymentTermsType dueInDays }
+                paymentTerms { paymentTermsName paymentTermsType dueInDays issueDate }
               }
               userErrors { field message }
             }
@@ -322,7 +332,7 @@ export async function POST(req: Request) {
             {
               id: String(numericId),
               draft_order: null,
-              sentPaymentTerms: { templateId },
+              sentPaymentTerms: { templateId, issueDate: todayYMD() },
               draftPaymentTerms: draftPT,
               warn: `Draft created, but failed to load via REST: ${load.status} ${t}`,
             },
@@ -336,7 +346,7 @@ export async function POST(req: Request) {
           {
             id: String(numericId),
             draft_order: draft,
-            sentPaymentTerms: { templateId },
+            sentPaymentTerms: { templateId, issueDate: todayYMD() },
             draftPaymentTerms: draftPT,
           },
           { status: 200, headers: { "Cache-Control": "no-store" } }
