@@ -160,9 +160,17 @@ model Customer {
   shopifyTags          String[]  @default([])
   shopifyLastSyncedAt  DateTime?
 
+  // --- NEW: Payment terms (applied to Shopify draft orders) ---
+  // If true, CRM should send a payment_terms block to Shopify when creating drafts
+  paymentDueLater      Boolean   @default(false)
+  // Matches Shopify payment term name, e.g. "Net 30", "Due on receipt", etc.
+  paymentTermsName     String?
+  // Optional: number of days (e.g. 30 for "Net 30"); not required for "Due on receipt"
+  paymentTermsDueInDays Int?
+
   // Orders relationship
   orders               Order[]
-
+}
   // ---------------- Route Planning ----------------
   /// Toggle to include this salon in the 4-week route plan
   routePlanEnabled     Boolean     @default(false)
