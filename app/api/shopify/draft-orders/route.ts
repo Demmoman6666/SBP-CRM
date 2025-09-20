@@ -153,7 +153,7 @@ async function resolvePaymentTermsTemplateId(
   return t?.id || null;
 }
 
-/** YYYY-MM-DD (Shopify GraphQL Date scalar expects this shape) */
+/** YYYY-MM-DD */
 function todayYMD(): string {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -262,7 +262,7 @@ export async function POST(req: Request) {
           })),
           paymentTerms: {
             paymentTermsTemplateId: templateId,
-            // 🔑 Required by Shopify for NET terms (safe to include always)
+            // Required for NET; safe to include always.
             issueDate: todayYMD(),
           },
           ...(email ? { email } : {}),
@@ -290,7 +290,7 @@ export async function POST(req: Request) {
               draftOrder {
                 id
                 name
-                paymentTerms { paymentTermsName paymentTermsType dueInDays issueDate }
+                paymentTerms { paymentTermsName paymentTermsType dueInDays }
               }
               userErrors { field message }
             }
