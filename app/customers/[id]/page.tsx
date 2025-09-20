@@ -290,16 +290,59 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
   async function savePaymentTermsAction(formData: FormData) {
     "use server";
     const enabled = formData.get("paymentDueLater") === "on";
-    const name = String(formData.get("paymentTermsName") || "");
-    const dueStr = String(formData.get("paymentTermsDueInDays") || "");
-    const dueNum = dueStr ? Number(dueStr) : null;
+
+    // If not enabled: only flip the flag off; do NOT set a term.
+    if (!enabled) {
+      await prisma.customer.update({
+        where: { id: customer.id },
+        data: {
+          paymentDueLater: false,
+          paymentTermsName: null,
+          paymentTermsDueInDays: null,
+        },
+      });
+      return;
+    }
+
+    // Enabled: persist the chosen term; default to "Due on receipt" if not provided
+    const nameRaw = String(formData.get("paymentTermsName") || "Due on receipt").trim();
+
+    // Map common Shopify labels to "due in days"
+    const daysMap: Record<string, number | null> = {
+      "Due on receipt": 0,
+      "Due on fulfillment": 0,
+      "Within 7 days": 7,
+      "Within 15 days": 15,
+      "Within 30 days": 30,
+      "Within 45 days": 45,
+      "Within 60 days": 60,
+      "Within 90 days": 90,
+      "Fixed date": null, // leave null; date is set per-order in Shopify UI
+      // Net variants (if you use these labels)
+      "Net 7": 7,
+      "Net 15": 15,
+      "Net 30": 30,
+      "Net 45": 45,
+      "Net 60": 60,
+      "Net 90": 90,
+    };
+
+    // Try exact match, then try to parse "Within X days"/"Net X"
+    let dueDays: number | null | undefined = daysMap[nameRaw];
+    if (typeof dueDays === "undefined") {
+      const within = nameRaw.match(/within\s+(\d+)\s*days?/i);
+      const net = nameRaw.match(/net\s+(\d+)/i);
+      if (within) dueDays = Number(within[1]);
+      else if (net) dueDays = Number(net[1]);
+      else dueDays = null;
+    }
 
     await prisma.customer.update({
       where: { id: customer.id },
       data: {
-        paymentDueLater: enabled,
-        paymentTermsName: enabled ? (name || null) : null,
-        paymentTermsDueInDays: enabled ? (Number.isFinite(dueNum as any) ? (dueNum as number) : null) : null,
+        paymentDueLater: true,
+        paymentTermsName: nameRaw,
+        paymentTermsDueInDays: dueDays,
       },
     });
   }
@@ -456,6 +499,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               <div className="row" style={{ marginTop: 8, gap: 10, alignItems: "center" }}>
                 <label className="row" style={{ gap: 8, alignItems: "center" }}>
                   <input
+                    id="pt-enabled"
                     type="checkbox"
                     name="paymentDueLater"
                     defaultChecked={!!paymentDueLater}
@@ -464,22 +508,30 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                   <span className="small">Payment due later</span>
                 </label>
 
-                <select
-                  name="paymentTermsName"
-                  defaultValue={paymentTermsName || "Net 30"}
-                  disabled={!paymentDueLater}
+                {/* Terms select (hidden/disabled when not enabled) */}
+                <div
+                  id="pt-wrap"
+                  style={{ display: paymentDueLater ? "block" : "none" }}
                 >
-                  {TERMS.map(t => (
-                    <option key={t.value} value={t.value}>{t.label}</option>
-                  ))}
-                </select>
+                  <select
+                    id="pt-select"
+                    name="paymentTermsName"
+                    defaultValue={paymentTermsName || "Due on receipt"}
+                    disabled={!paymentDueLater}
+                    style={{ minWidth: 180 }}
+                  >
+                    {TERMS.map(t => (
+                      <option key={t.value} value={t.value}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
 
-                {/* Carry dueInDays as hidden to persist with the chosen name */}
+                {/* (Optional) hidden carries due days; server calculates anyway */}
                 <input
                   type="hidden"
                   name="paymentTermsDueInDays"
                   defaultValue={
-                    TERMS.find(t => t.value === (paymentTermsName || "Net 30"))?.dueInDays ?? ""
+                    TERMS.find(t => t.value === (paymentTermsName || "Due on receipt"))?.dueInDays ?? ""
                   }
                 />
               </div>
@@ -487,6 +539,32 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               <div className="small muted" style={{ marginTop: 6 }}>
                 Current: {paymentDueLater ? displayTerms(paymentTermsName, paymentTermsDueInDays) : "—"}
               </div>
+
+              {/* Tiny inline script to toggle the select visibility without a client component */}
+              <script
+                dangerouslySetInnerHTML={{
+                  __html: `
+                    (function(){
+                      var cb=document.getElementById('pt-enabled');
+                      var wrap=document.getElementById('pt-wrap');
+                      var sel=document.getElementById('pt-select');
+                      if(!cb||!wrap||!sel) return;
+                      function apply(){
+                        if(cb.checked){
+                          wrap.style.display='block';
+                          sel.disabled=false;
+                          if(!sel.value) sel.value='Due on receipt';
+                        }else{
+                          wrap.style.display='none';
+                          sel.disabled=true;
+                        }
+                      }
+                      cb.addEventListener('change', apply);
+                      apply();
+                    })();
+                  `,
+                }}
+              />
 
               <div className="row" style={{ marginTop: 10, justifyContent: "flex-end" }}>
                 <button className="btn" type="submit">Save</button>
