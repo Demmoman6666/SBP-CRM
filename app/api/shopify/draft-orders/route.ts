@@ -7,7 +7,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type AnyLine =
-  | { variant_id?: number | string; variantId?: number | string; quantity?: number | string; price?: number | string; title?: string }
+  | {
+      variant_id?: number | string;
+      variantId?: number | string;
+      quantity?: number | string;
+      price?: number | string;
+      title?: string;
+    }
   | Record<string, any>;
 
 function toNum(n: any): number | undefined {
@@ -15,7 +21,9 @@ function toNum(n: any): number | undefined {
   return Number.isFinite(v) ? v : undefined;
 }
 
-function pickLines(body: any): Array<{ variant_id: number; quantity: number; price?: number; title?: string }> {
+function pickLines(
+  body: any
+): Array<{ variant_id: number; quantity: number; price?: number; title?: string }> {
   const candidates: AnyLine[] =
     body?.lines ??
     body?.line_items ??
@@ -36,68 +44,83 @@ function pickLines(body: any): Array<{ variant_id: number; quantity: number; pri
     const price = toNum(raw.price);
     const title = typeof raw.title === "string" ? raw.title : undefined;
 
-    out.push({ variant_id, quantity, ...(price != null ? { price } : {}), ...(title ? { title } : {}) });
+    out.push({
+      variant_id,
+      quantity,
+      ...(price != null ? { price } : {}),
+      ...(title ? { title } : {}),
+    });
   }
   return out;
 }
 
 /**
- * Canonicalize stored terms to Shopify’s REST Admin shape:
- *   - payment_terms_name (ex: "Net 30", "Due on receipt", "Due on fulfillment")
- *   - payment_terms_type (ex: "NET", "RECEIPT", "FULFILLMENT", "FIXED")
- *   - due_in_days (for NET only)
+ * Canonicalize stored terms to Shopify Admin API (2025-07+) shape:
+ *  - payment_terms_name: enum "NET" | "DUE_ON_RECEIPT" | "DUE_ON_FULFILLMENT" | "FIXED_DATE"
+ *  - payment_terms_type: "NET" only for NET terms (Shopify expects it alongside name)
+ *  - due_in_days: required for NET
  */
-function canonicalizeTerms(name?: string | null, dueInDays?: number | null): null | {
-  payment_terms_name: string;
-  payment_terms_type: "NET" | "RECEIPT" | "FULFILLMENT" | "FIXED";
-  due_in_days?: number;
-} {
+function canonicalizeTerms(
+  name?: string | null,
+  dueInDays?: number | null
+):
+  | {
+      payment_terms_name: "NET" | "DUE_ON_RECEIPT" | "DUE_ON_FULFILLMENT" | "FIXED_DATE";
+      payment_terms_type?: "NET";
+      due_in_days?: number;
+    }
+  | null {
   if (!name) return null;
   const s = String(name).trim();
 
-  // Direct matches first
-  if (/^Due on receipt$/i.test(s)) {
-    return { payment_terms_name: "Due on receipt", payment_terms_type: "RECEIPT" };
+  // Already canonical enums?
+  if (/^NET$/i.test(s)) {
+    return {
+      payment_terms_name: "NET",
+      payment_terms_type: "NET",
+      ...(typeof dueInDays === "number" ? { due_in_days: dueInDays } : {}),
+    };
   }
-  if (/^Due on fulfillment$/i.test(s)) {
-    return { payment_terms_name: "Due on fulfillment", payment_terms_type: "FULFILLMENT" };
-  }
-  if (/^Fixed date$/i.test(s)) {
-    return { payment_terms_name: "Fixed date", payment_terms_type: "FIXED" };
-  }
-  const netDirect = s.match(/^Net\s*(7|15|30|45|60|90)$/i);
-  if (netDirect) {
-    const d = Number(netDirect[1]);
-    return { payment_terms_name: `Net ${d}`, payment_terms_type: "NET", due_in_days: d };
-  }
+  if (/^DUE_ON_RECEIPT$/i.test(s)) return { payment_terms_name: "DUE_ON_RECEIPT" };
+  if (/^DUE_ON_FULFILLMENT$/i.test(s)) return { payment_terms_name: "DUE_ON_FULFILLMENT" };
+  if (/^FIXED_DATE$/i.test(s)) return { payment_terms_name: "FIXED_DATE" };
 
-  // Tolerate “Within 30 days”, “Net 30 days”, plain “30”
+  // Human labels we may have stored/displayed:
+  if (/^due\s+on\s+receipt$/i.test(s)) return { payment_terms_name: "DUE_ON_RECEIPT" };
+  if (/^due\s+on\s+fulfil?lment$/i.test(s)) return { payment_terms_name: "DUE_ON_FULFILLMENT" };
+  if (/^fixed/i.test(s)) return { payment_terms_name: "FIXED_DATE" };
+
+  // Net variants: "Net 30", "Net 30 days", "Within 30 days", plain "30"
   const within = s.match(/within\s+(\d+)\s*days?/i);
-  const netNum = within ? Number(within[1])
-    : (s.match(/net\s*(\d+)/i)?.[1] ? Number(s.match(/net\s*(\d+)/i)![1]) : undefined)
-      ?? (Number.isFinite(dueInDays as any) ? Number(dueInDays) : undefined);
+  const net = s.match(/net\s*(\d+)/i);
+  const lone = s.match(/^\s*(\d{1,3})\s*$/);
+  const d =
+    within ? Number(within[1]) :
+    net ? Number(net[1]) :
+    lone ? Number(lone[1]) :
+    typeof dueInDays === "number" ? dueInDays : NaN;
 
-  if (netNum && [7, 15, 30, 45, 60, 90].includes(netNum)) {
-    return { payment_terms_name: `Net ${netNum}`, payment_terms_type: "NET", due_in_days: netNum };
+  if ([7, 15, 30, 45, 60, 90].includes(d)) {
+    return { payment_terms_name: "NET", payment_terms_type: "NET", due_in_days: d };
   }
 
-  // Fallbacks for fuzzy words
-  if (/receipt/i.test(s)) return { payment_terms_name: "Due on receipt", payment_terms_type: "RECEIPT" };
-  if (/fulfil?ment/i.test(s)) return { payment_terms_name: "Due on fulfillment", payment_terms_type: "FULFILLMENT" };
-  if (/fixed/i.test(s)) return { payment_terms_name: "Fixed date", payment_terms_type: "FIXED" };
-
+  // Unknown/unsupported -> no terms
   return null;
 }
 
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const crmCustomerId: string | undefined = body.customerId ?? body.crmCustomerId ?? body.customer_id;
+    const crmCustomerId: string | undefined =
+      body.customerId ?? body.crmCustomerId ?? body.customer_id;
     const applyPaymentTerms: boolean = !!body.applyPaymentTerms;
 
     const line_items = pickLines(body);
     if (!line_items.length) {
-      return NextResponse.json({ error: "At least one line item is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "At least one line item is required" },
+        { status: 400 }
+      );
     }
 
     // Lookup customer + any saved terms
@@ -146,7 +169,8 @@ export async function POST(req: Request) {
 
         savedPaymentDueLater = !!c.paymentDueLater;
         savedPaymentTermsName = c.paymentTermsName ?? null;
-        savedPaymentTermsDueInDays = typeof c.paymentTermsDueInDays === "number" ? c.paymentTermsDueInDays : null;
+        savedPaymentTermsDueInDays =
+          typeof c.paymentTermsDueInDays === "number" ? c.paymentTermsDueInDays : null;
       }
     }
 
@@ -165,15 +189,22 @@ export async function POST(req: Request) {
       },
     };
 
-    // Attach terms in the exact shape (for 2025-07+ some shops require type as well)
+    // Attach terms in the exact shape Shopify expects (2025-07+)
     let sentPaymentTerms: any = null;
     if (applyPaymentTerms && savedPaymentDueLater && savedPaymentTermsName) {
-      const canonical = canonicalizeTerms(savedPaymentTermsName, savedPaymentTermsDueInDays);
+      const canonical = canonicalizeTerms(
+        savedPaymentTermsName,
+        savedPaymentTermsDueInDays
+      );
       if (canonical) {
         payload.draft_order.payment_terms = {
-          payment_terms_name: canonical.payment_terms_name,
-          payment_terms_type: canonical.payment_terms_type,
-          ...(typeof canonical.due_in_days === "number" ? { due_in_days: canonical.due_in_days } : {}),
+          payment_terms_name: canonical.payment_terms_name, // enum (e.g. "NET")
+          ...(canonical.payment_terms_type
+            ? { payment_terms_type: canonical.payment_terms_type } // "NET" when name is NET
+            : {}),
+          ...(typeof canonical.due_in_days === "number"
+            ? { due_in_days: canonical.due_in_days } // 7/15/30/45/60/90
+            : {}),
         };
         sentPaymentTerms = payload.draft_order.payment_terms;
       }
@@ -205,8 +236,8 @@ export async function POST(req: Request) {
       {
         id: String(draft.id),
         draft_order: draft,
-        sentPaymentTerms,                  // <-- inspect in DevTools Response
-        draftPaymentTerms: draft?.payment_terms || null, // <-- inspect too
+        sentPaymentTerms, // ← check this in DevTools Response
+        draftPaymentTerms: draft?.payment_terms || null, // ← should mirror what Shopify stored
       },
       { status: 200, headers: { "Cache-Control": "no-store" } }
     );
