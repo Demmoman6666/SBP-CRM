@@ -168,17 +168,42 @@ type PageProps = {
   searchParams?: Record<string, string | string[] | undefined>;
 };
 
-/* ---------- Shopify terms we’ll show in the selector ---------- */
+/* ---------- Shopify terms we’ll show in the selector (values are canonical) ---------- */
 const TERMS: Array<{ value: string; label: string; dueInDays?: number | null }> = [
-  { value: "Due on receipt", label: "Due on receipt", dueInDays: null },
+  { value: "Due on receipt",     label: "Due on receipt",     dueInDays: null },
   { value: "Due on fulfillment", label: "Due on fulfillment", dueInDays: null },
-  { value: "Net 7", label: "Net 7 days", dueInDays: 7 },
-  { value: "Net 15", label: "Net 15 days", dueInDays: 15 },
-  { value: "Net 30", label: "Net 30 days", dueInDays: 30 },
-  { value: "Net 45", label: "Net 45 days", dueInDays: 45 },
-  { value: "Net 60", label: "Net 60 days", dueInDays: 60 },
-  { value: "Net 90", label: "Net 90 days", dueInDays: 90 },
+  { value: "Net 7",              label: "Within 7 days",      dueInDays: 7 },
+  { value: "Net 15",             label: "Within 15 days",     dueInDays: 15 },
+  { value: "Net 30",             label: "Within 30 days",     dueInDays: 30 },
+  { value: "Net 45",             label: "Within 45 days",     dueInDays: 45 },
+  { value: "Net 60",             label: "Within 60 days",     dueInDays: 60 },
+  { value: "Net 90",             label: "Within 90 days",     dueInDays: 90 },
 ];
+
+/** Map any UI label (e.g. “Within 30 days”) to Shopify’s canonical name (“Net 30”). */
+function uiLabelToCanonicalName(input?: string | null): string | null {
+  if (!input) return null;
+  const s = input.trim();
+
+  // Already canonical?
+  if (/^(Due on receipt|Due on fulfillment|Net (7|15|30|45|60|90)|Fixed date)$/i.test(s)) return s;
+
+  // “Within X days”
+  const within = s.match(/within\s+(\d+)\s*days?/i);
+  if (within) return `Net ${Number(within[1])}`;
+
+  // “Net 30 days” etc, or lone number “30”
+  const m = s.match(/net\s*(\d+)/i) || s.match(/\b(\d{1,3})\b/);
+  if (m) {
+    const d = Number(m[1]);
+    if ([7, 15, 30, 45, 60, 90].includes(d)) return `Net ${d}`;
+  }
+
+  if (/receipt/i.test(s)) return "Due on receipt";
+  if (/fulfil?ment/i.test(s)) return "Due on fulfillment";
+  if (/fixed/i.test(s)) return "Fixed date";
+  return null;
+}
 
 /* ---------- Helpers for rendering terms nicely ---------- */
 function displayTerms(name?: string | null, due?: number | null) {
@@ -300,51 +325,27 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
           paymentTermsDueInDays: null,
         },
       });
-      // show success banner
       redirect(`/customers/${customer.id}?saved=1`);
     }
 
     // Enabled: persist the chosen term; default to "Due on receipt" if not provided
     const nameRaw = String(formData.get("paymentTermsName") || "Due on receipt").trim();
 
-    // Map common Shopify labels to "due in days"
-    const daysMap: Record<string, number | null> = {
-      "Due on receipt": 0,
-      "Due on fulfillment": 0,
-      "Within 7 days": 7,
-      "Within 15 days": 15,
-      "Within 30 days": 30,
-      "Within 45 days": 45,
-      "Within 60 days": 60,
-      "Within 90 days": 90,
-      "Fixed date": null,
-      "Net 7": 7,
-      "Net 15": 15,
-      "Net 30": 30,
-      "Net 45": 45,
-      "Net 60": 60,
-      "Net 90": 90,
-    };
-
-    let dueDays: number | null | undefined = daysMap[nameRaw];
-    if (typeof dueDays === "undefined") {
-      const within = nameRaw.match(/within\s+(\d+)\s*days?/i);
-      const net = nameRaw.match(/net\s+(\d+)/i);
-      if (within) dueDays = Number(within[1]);
-      else if (net) dueDays = Number(net[1]);
-      else dueDays = null;
-    }
+    // Ensure we store the canonical Shopify name (e.g. "Net 30")
+    const canonicalName = uiLabelToCanonicalName(nameRaw) || "Due on receipt";
+    const term = TERMS.find((t) => t.value === canonicalName);
+    const dueDays =
+      typeof term?.dueInDays === "number" ? (term!.dueInDays as number) : null;
 
     await prisma.customer.update({
       where: { id: customer.id },
       data: {
         paymentDueLater: true,
-        paymentTermsName: nameRaw,
-        paymentTermsDueInDays: dueDays,
+        paymentTermsName: canonicalName,     // e.g. "Net 30"
+        paymentTermsDueInDays: dueDays,      // e.g. 30
       },
     });
 
-    // show success banner
     redirect(`/customers/${customer.id}?saved=1`);
   }
 
