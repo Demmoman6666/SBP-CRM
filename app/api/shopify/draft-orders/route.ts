@@ -244,6 +244,9 @@ export async function POST(req: Request) {
       const templateId = await resolvePaymentTermsTemplateId(canonical);
 
       if (templateId) {
+        // ⚠️ NEW: supply issuedAt (YYYY-MM-DD) — Shopify requires an issue date for NET terms
+        const issuedAt = new Date().toISOString().slice(0, 10);
+
         const input: any = {
           note: "Created from SBP CRM",
           useCustomerDefaultAddress: true,
@@ -252,7 +255,8 @@ export async function POST(req: Request) {
             quantity: li.quantity,
           })),
           paymentTerms: {
-            paymentTermsTemplateId: templateId, // ← NO issueDate here
+            paymentTermsTemplateId: templateId,
+            issuedAt, // ← the required issue date
           },
           ...(email ? { email } : {}),
           ...(shopifyCustomerIdNum
@@ -321,7 +325,7 @@ export async function POST(req: Request) {
             {
               id: String(numericId),
               draft_order: null,
-              sentPaymentTerms: { templateId },
+              sentPaymentTerms: { templateId, issuedAt },
               draftPaymentTerms: draftPT,
               warn: `Draft created, but failed to load via REST: ${load.status} ${t}`,
             },
@@ -335,7 +339,7 @@ export async function POST(req: Request) {
           {
             id: String(numericId),
             draft_order: draft,
-            sentPaymentTerms: { templateId },
+            sentPaymentTerms: { templateId, issuedAt },
             draftPaymentTerms: draftPT,
           },
           { status: 200, headers: { "Cache-Control": "no-store" } }
