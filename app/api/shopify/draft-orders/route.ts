@@ -7,7 +7,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type AnyLine =
-  | { variant_id?: number | string; variantId?: number | string; quantity?: number | string; price?: number | string; title?: string }
+  | {
+      variant_id?: number | string;
+      variantId?: number | string;
+      quantity?: number | string;
+      price?: number | string;
+      title?: string;
+    }
   | Record<string, any>;
 
 function toNum(n: any): number | undefined {
@@ -15,7 +21,9 @@ function toNum(n: any): number | undefined {
   return Number.isFinite(v) ? v : undefined;
 }
 
-function pickLines(body: any): Array<{ variant_id: number; quantity: number; price?: number; title?: string }> {
+function pickLines(
+  body: any
+): Array<{ variant_id: number; quantity: number; price?: number; title?: string }> {
   const candidates: AnyLine[] =
     body?.lines ??
     body?.line_items ??
@@ -41,12 +49,7 @@ function pickLines(body: any): Array<{ variant_id: number; quantity: number; pri
   return out;
 }
 
-/**
- * Canonicalize stored terms to Shopify’s REST Admin shape:
- *   - payment_terms_name (ex: "Net 30", "Due on receipt", "Due on fulfillment", "Fixed date")
- *   - payment_terms_type (ex: "NET", "RECEIPT", "FULFILLMENT", "FIXED")
- *   - due_in_days (for NET only)
- */
+/** Canonicalise to Shopify terms & type; also extract due days for NET. */
 function canonicalizeTerms(
   name?: string | null,
   dueInDays?: number | null
@@ -74,24 +77,86 @@ function canonicalizeTerms(
     return { payment_terms_name: `Net ${d}`, payment_terms_type: "NET", due_in_days: d };
   }
 
-  // Tolerate “Within 30 days”, “Net 30 days”, plain “30”
+  // Tolerate “Within 30 days”, “Net 30 days”, or raw number “30”
   const within = s.match(/within\s+(\d+)\s*days?/i);
-  const parsedNet =
+  const parsed =
     within?.[1] ??
     s.match(/net\s*(\d+)/i)?.[1] ??
     (Number.isFinite(dueInDays as any) ? String(dueInDays) : undefined);
 
-  const netNum = parsedNet ? Number(parsedNet) : undefined;
+  const netNum = parsed ? Number(parsed) : undefined;
   if (netNum && [7, 15, 30, 45, 60, 90].includes(netNum)) {
     return { payment_terms_name: `Net ${netNum}`, payment_terms_type: "NET", due_in_days: netNum };
   }
 
-  // Fallbacks for fuzzy words
   if (/receipt/i.test(s)) return { payment_terms_name: "Due on receipt", payment_terms_type: "RECEIPT" };
   if (/fulfil?ment/i.test(s)) return { payment_terms_name: "Due on fulfillment", payment_terms_type: "FULFILLMENT" };
   if (/fixed/i.test(s)) return { payment_terms_name: "Fixed date", payment_terms_type: "FIXED" };
 
   return null;
+}
+
+// --- NEW: helpers for GraphQL ---
+const gid = {
+  variant: (id: number | string) => `gid://shopify/ProductVariant/${String(id)}`,
+  customer: (id: number | string) => `gid://shopify/Customer/${String(id)}`,
+};
+
+/** Call Shopify GraphQL via the same shopifyRest helper (POST /graphql.json). */
+async function shopifyGraphQL<T = any>(query: string, variables?: Record<string, any>): Promise<Response> {
+  return shopifyRest(`/graphql.json`, {
+    method: "POST",
+    body: JSON.stringify({ query, variables }),
+    headers: { "Content-Type": "application/json" },
+  }) as unknown as Response;
+}
+
+/** Fetch all payment terms templates once, then pick the one that matches our canonical term. */
+async function resolvePaymentTermsTemplateId(
+  canonical:
+    | {
+        payment_terms_name: string;
+        payment_terms_type: "NET" | "RECEIPT" | "FULFILLMENT" | "FIXED";
+        due_in_days?: number;
+      }
+    | null
+): Promise<string | null> {
+  if (!canonical) return null;
+
+  const q = /* GraphQL */ `
+    query PaymentTermsTemplates {
+      paymentTermsTemplates {
+        id
+        name
+        paymentTermsType
+        dueInDays
+      }
+    }
+  `;
+
+  const resp = await shopifyGraphQL(q);
+  if (!resp.ok) return null;
+  const data = await resp.json().catch(() => ({} as any));
+  const templates: Array<{ id: string; name: string; paymentTermsType: string; dueInDays?: number | null }> =
+    data?.data?.paymentTermsTemplates || [];
+
+  // Match by type + dueInDays for NET; by type/name for others.
+  if (canonical.payment_terms_type === "NET") {
+    const d = typeof canonical.due_in_days === "number" ? canonical.due_in_days : undefined;
+    const t = templates.find(
+      (x) => x.paymentTermsType === "NET" && typeof x.dueInDays === "number" && x.dueInDays === d
+    );
+    return t?.id || null;
+  }
+
+  // RECEIPT / FULFILLMENT / FIXED
+  const t = templates.find(
+    (x) =>
+      x.paymentTermsType === canonical.payment_terms_type &&
+      // some shops name "Due on fulfillment" exactly; match either by name or type
+      (x.name?.toLowerCase() === canonical.payment_terms_name.toLowerCase())
+  );
+  return t?.id || null;
 }
 
 export async function POST(req: Request) {
@@ -105,7 +170,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "At least one line item is required" }, { status: 400 });
     }
 
-    // Lookup customer + any saved terms
+    // Lookup CRM customer and any saved terms
     let shopifyCustomerIdNum: number | null = null;
     let email: string | undefined;
     let shipping_address: any | undefined;
@@ -140,6 +205,8 @@ export async function POST(req: Request) {
         email = c.customerEmailAddress ?? undefined;
         const name = c.salonName || c.customerName || undefined;
         shipping_address = {
+          first_name: (c.customerName || name || "").split(" ")[0] || undefined,
+          last_name: (c.customerName || name || "").split(" ").slice(1).join(" ") || undefined,
           name,
           address1: c.addressLine1 || undefined,
           address2: c.addressLine2 || undefined,
@@ -147,6 +214,7 @@ export async function POST(req: Request) {
           province: c.county || undefined,
           zip: c.postCode || undefined,
           country_code: (c.country || "GB").toUpperCase(),
+          country: undefined, // let Shopify infer from country_code
         };
 
         savedPaymentDueLater = !!c.paymentDueLater;
@@ -155,7 +223,8 @@ export async function POST(req: Request) {
       }
     }
 
-    const payload: any = {
+    // Build a REST payload for the non-terms path (or fallback), and re-use addresses
+    const restPayload: any = {
       draft_order: {
         line_items,
         taxes_included: false, // prices are ex VAT
@@ -170,51 +239,158 @@ export async function POST(req: Request) {
       },
     };
 
-    // Attach terms exactly; also guard against the accidental "NET" as name bug
-    let sentPaymentTerms: any = null;
+    // If we want terms, use GraphQL draftOrderCreate with a template id
     if (applyPaymentTerms && savedPaymentDueLater && savedPaymentTermsName) {
       const canonical = canonicalizeTerms(savedPaymentTermsName, savedPaymentTermsDueInDays);
 
-      if (canonical) {
-        // Build the object carefully
-        const pt: any = { payment_terms_type: canonical.payment_terms_type };
+      // Resolve template id from shop's templates
+      const templateId = await resolvePaymentTermsTemplateId(canonical);
 
-        if (canonical.payment_terms_type === "NET") {
-          const d =
-            typeof canonical.due_in_days === "number"
-              ? canonical.due_in_days
-              : typeof savedPaymentTermsDueInDays === "number"
-              ? savedPaymentTermsDueInDays
-              : undefined;
+      if (templateId) {
+        // Build GraphQL input
+        const input: any = {
+          note: "Created from SBP CRM",
+          taxesIncluded: false,
+          useCustomerDefaultAddress: true,
+          lineItems: line_items.map((li) => ({
+            variantId: gid.variant(li.variant_id),
+            quantity: li.quantity,
+          })),
+          paymentTerms: {
+            paymentTermsTemplateId: templateId,
+          },
+          ...(email ? { email } : {}),
+          ...(shopifyCustomerIdNum
+            ? { customerId: gid.customer(shopifyCustomerIdNum) }
+            : shipping_address
+            ? {
+                shippingAddress: {
+                  address1: shipping_address.address1,
+                  address2: shipping_address.address2,
+                  city: shipping_address.city,
+                  province: shipping_address.province,
+                  zip: shipping_address.zip,
+                  countryCode: shipping_address.country_code,
+                  firstName: shipping_address.first_name,
+                  lastName: shipping_address.last_name,
+                },
+              }
+            : {}),
+        };
 
-          if (typeof d === "number") {
-            pt.due_in_days = d;
-            pt.payment_terms_name = `Net ${d}`; // ✅ ensure name, not "NET"
-          } else {
-            // Fallback to 30 if we somehow have NET but no days
-            pt.due_in_days = 30;
-            pt.payment_terms_name = "Net 30";
+        const m = /* GraphQL */ `
+          mutation CreateDraft($input: DraftOrderInput!) {
+            draftOrderCreate(input: $input) {
+              draftOrder {
+                id
+                name
+                paymentTerms { paymentTermsName paymentTermsType dueInDays }
+              }
+              userErrors { field message }
+            }
           }
-        } else {
-          // RECEIPT / FULFILLMENT / FIXED
-          pt.payment_terms_name = canonical.payment_terms_name;
+        `;
+
+        const resp = await shopifyGraphQL(m, { input });
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => "");
+          return NextResponse.json(
+            { error: `Shopify draft create (GraphQL) failed: ${resp.status} ${text}` },
+            { status: 400, headers: { "Cache-Control": "no-store" } }
+          );
         }
 
-        // Final safety: if name accidentally equals the type string, fix it
-        if (pt.payment_terms_name === pt.payment_terms_type) {
-          if (pt.payment_terms_type === "NET" && typeof pt.due_in_days === "number") {
-            pt.payment_terms_name = `Net ${pt.due_in_days}`;
-          }
+        const data = await resp.json().catch(() => ({} as any));
+        const err = data?.data?.draftOrderCreate?.userErrors?.[0]?.message;
+        const draftGid: string | null = data?.data?.draftOrderCreate?.draftOrder?.id || null;
+        const draftPT: any = data?.data?.draftOrderCreate?.draftOrder?.paymentTerms || null;
+
+        if (err) {
+          return NextResponse.json(
+            { error: `Shopify draft create (GraphQL) error: ${err}` },
+            { status: 400, headers: { "Cache-Control": "no-store" } }
+          );
+        }
+        if (!draftGid) {
+          return NextResponse.json(
+            { error: "Shopify draft create (GraphQL) returned no id", raw: data },
+            { status: 400, headers: { "Cache-Control": "no-store" } }
+          );
         }
 
-        payload.draft_order.payment_terms = pt;
-        sentPaymentTerms = pt;
+        // Convert gid -> numeric id for consistency with the rest of your code
+        const numericId = Number(draftGid.split("/").pop());
+        // Load the full draft via REST so the client sees the usual shape
+        const load = await shopifyRest(`/draft_orders/${numericId}.json`, { method: "GET" });
+        if (!load.ok) {
+          const t = await load.text().catch(() => "");
+          return NextResponse.json(
+            {
+              id: String(numericId),
+              draft_order: null,
+              sentPaymentTerms: { templateId },
+              draftPaymentTerms: draftPT,
+              warn: `Draft created, but failed to load via REST: ${load.status} ${t}`,
+            },
+            { status: 200, headers: { "Cache-Control": "no-store" } }
+          );
+        }
+        const draftJson = await load.json().catch(() => ({}));
+        const draft = draftJson?.draft_order || null;
+
+        return NextResponse.json(
+          {
+            id: String(numericId),
+            draft_order: draft,
+            sentPaymentTerms: { templateId }, // what we used
+            draftPaymentTerms: draftPT,       // GraphQL echo (should be set)
+          },
+          { status: 200, headers: { "Cache-Control": "no-store" } }
+        );
       }
+      // If template not found, fall through to REST create (no terms); we’ll echo what we tried
+      // so you can see why it didn’t attach.
+      const resp = await shopifyRest(`/draft_orders.json`, {
+        method: "POST",
+        body: JSON.stringify(restPayload),
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        return NextResponse.json(
+          {
+            error: `Shopify draft create failed (REST fallback, no template match): ${resp.status} ${text}`,
+            triedCanonical: canonical,
+          },
+          { status: 400, headers: { "Cache-Control": "no-store" } }
+        );
+      }
+      const json = await resp.json().catch(() => ({}));
+      const draft = json?.draft_order || null;
+      if (!draft?.id) {
+        return NextResponse.json(
+          {
+            error: "Draft created (REST fallback) but response did not include an id",
+            raw: json,
+            triedCanonical: canonical,
+          },
+          { status: 500, headers: { "Cache-Control": "no-store" } }
+        );
+      }
+      return NextResponse.json(
+        {
+          id: String(draft.id),
+          draft_order: draft,
+          sentPaymentTerms: { triedCanonical: canonical, templateResolved: null },
+          draftPaymentTerms: draft?.payment_terms || null,
+        },
+        { status: 200, headers: { "Cache-Control": "no-store" } }
+      );
     }
 
+    // ---- No terms path (or terms disabled) -> plain REST create ----
     const resp = await shopifyRest(`/draft_orders.json`, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify(restPayload),
     });
 
     if (!resp.ok) {
@@ -238,8 +414,8 @@ export async function POST(req: Request) {
       {
         id: String(draft.id),
         draft_order: draft,
-        sentPaymentTerms,                      // Inspect this in Network → Response
-        draftPaymentTerms: draft?.payment_terms || null, // Shopify’s echo
+        sentPaymentTerms: null,
+        draftPaymentTerms: draft?.payment_terms || null,
       },
       { status: 200, headers: { "Cache-Control": "no-store" } }
     );
@@ -252,7 +428,7 @@ export async function POST(req: Request) {
   }
 }
 
-// Optional: keep other verbs blocked so only POST is used for creation
+// Keep other verbs blocked
 export async function GET() {
   return NextResponse.json({ error: "Method Not Allowed" }, { status: 405 });
 }
