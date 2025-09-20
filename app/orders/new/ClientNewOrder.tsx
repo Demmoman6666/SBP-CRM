@@ -66,26 +66,49 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
 
   useEffect(() => {
     let abort = false;
+
     async function hydrateTerms(id: string) {
       try {
         const r = await fetch(`/api/customers/${encodeURIComponent(id)}/payment-terms`, {
           headers: { Accept: "application/json" },
           cache: "no-store",
         });
-        if (!r.ok) return;
+        if (!r.ok) {
+          if (!abort) setPt({ enabled: false, name: null, dueInDays: null });
+          return;
+        }
+
         const j = await r.json().catch(() => ({}));
         if (abort) return;
-        // Expecting { enabled, name, dueInDays } from the API
+
+        // Accept both the new keys and your existing legacy keys.
+        const enabled =
+          (typeof j?.enabled === "boolean" ? j.enabled : undefined) ??
+          (typeof j?.paymentDueLater === "boolean" ? j.paymentDueLater : false);
+
+        const name =
+          (typeof j?.name === "string" && j.name.trim() ? j.name.trim() : undefined) ??
+          (typeof j?.paymentTermsName === "string" && j.paymentTermsName.trim()
+            ? j.paymentTermsName.trim()
+            : null);
+
+        const dueInDaysRaw =
+          typeof j?.dueInDays === "number"
+            ? j.dueInDays
+            : typeof j?.paymentTermsDueInDays === "number"
+            ? j.paymentTermsDueInDays
+            : null;
+
         setPt({
-          enabled: !!j?.enabled,
-          name: j?.name ?? null,
-          dueInDays: typeof j?.dueInDays === "number" ? (j.dueInDays as number) : null,
+          enabled: !!enabled,
+          name,
+          dueInDays: Number.isFinite(dueInDaysRaw as any) ? (dueInDaysRaw as number) : null,
         });
       } catch {
-        if (abort) return;
-        setPt({ enabled: false, name: null, dueInDays: null });
+        if (!abort) setPt({ enabled: false, name: null, dueInDays: null });
       }
     }
+
     if (customer?.id) hydrateTerms(customer.id);
     return () => {
       abort = true;
@@ -256,7 +279,6 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
       setCreating(false);
     }
   }
-
   // --- Stripe: Payment Link (panel) ---
   async function createPaymentLink() {
     if (!customer?.id) return alert("Pick a customer first.");
