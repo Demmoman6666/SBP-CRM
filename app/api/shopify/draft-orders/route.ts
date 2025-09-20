@@ -41,28 +41,67 @@ function pickLines(body: any): Array<{ variant_id: number; quantity: number; pri
   return out;
 }
 
+/** Map whatever we stored to Shopify’s canonical names and due_in_days. */
+function canonicalizeTerms(name?: string | null, dueInDays?: number | null) {
+  if (!name) return null;
+  const n = name.trim();
+
+  // Exact Shopify-accepted names first
+  const allowed = new Set([
+    "Due on receipt",
+    "Due on fulfillment",
+    "Net 7",
+    "Net 15",
+    "Net 30",
+    "Net 45",
+    "Net 60",
+    "Net 90",
+    "Fixed date",
+  ]);
+  if (allowed.has(n)) {
+    if (n.startsWith("Net ")) {
+      const d = Number(n.replace("Net", "").trim());
+      return { payment_terms_name: n, due_in_days: Number.isFinite(d) ? d : undefined };
+    }
+    // receipt / fulfillment / fixed date -> no due_in_days
+    return { payment_terms_name: n };
+  }
+
+  // Tolerate labels like "Net 30 days" or "Within 30 days"
+  const mNet = n.match(/net\s*(\d+)/i);
+  const mWithin = n.match(/within\s*(\d+)\s*days?/i);
+  const netNum = mNet ? Number(mNet[1]) : mWithin ? Number(mWithin[1]) : (Number.isFinite(dueInDays as any) ? (dueInDays as number) : null);
+  if (netNum && [7, 15, 30, 45, 60, 90].includes(netNum)) {
+    return { payment_terms_name: `Net ${netNum}`, due_in_days: netNum };
+  }
+  if (/receipt/i.test(n)) return { payment_terms_name: "Due on receipt" };
+  if (/fulfillment|fulfilment/i.test(n)) return { payment_terms_name: "Due on fulfillment" };
+  if (/fixed/i.test(n)) return { payment_terms_name: "Fixed date" };
+
+  // If we can’t recognise it, don’t send terms at all
+  return null;
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const crmCustomerId: string | undefined = body.customerId ?? body.crmCustomerId ?? body.customer_id;
-
-    // NEW: only apply payment terms if the client asked us to (e.g., Pay on account)
     const applyPaymentTerms: boolean = !!body.applyPaymentTerms;
 
     const line_items = pickLines(body);
     if (!line_items.length) {
-      return NextResponse.json({ error: "At least one line item is required" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+      return NextResponse.json({ error: "At least one line item is required" }, { status: 400 });
     }
 
-    // Look up CRM customer to attach Shopify customer or address
+    // Look up CRM customer to attach Shopify customer or address, AND terms
     let shopifyCustomerIdNum: number | null = null;
     let email: string | undefined;
     let shipping_address: any | undefined;
 
-    // Payment terms pulled from CRM
-    let paymentDueLater = false;
-    let paymentTermsName: string | null = null;
-    let paymentTermsDueInDays: number | null = null;
+    // Saved terms
+    let savedPaymentDueLater = false;
+    let savedPaymentTermsName: string | null = null;
+    let savedPaymentTermsDueInDays: number | null = null;
 
     if (crmCustomerId) {
       const c = await prisma.customer.findUnique({
@@ -99,20 +138,18 @@ export async function POST(req: Request) {
           country_code: (c.country || "GB").toUpperCase(),
         };
 
-        paymentDueLater = !!c.paymentDueLater;
-        paymentTermsName = c.paymentTermsName ?? null;
-        paymentTermsDueInDays =
+        savedPaymentDueLater = !!c.paymentDueLater;
+        savedPaymentTermsName = c.paymentTermsName ?? null;
+        savedPaymentTermsDueInDays =
           typeof c.paymentTermsDueInDays === "number" ? c.paymentTermsDueInDays : null;
       }
     }
 
-    // Build Shopify Draft Order payload (REST Admin API)
-    // Only include payment_terms when the client explicitly asked (applyPaymentTerms)
-    // and the customer has Payment due later enabled in CRM.
+    // Build Shopify Draft payload
     const payload: any = {
       draft_order: {
         line_items,
-        taxes_included: false, // we send EX VAT unit prices
+        taxes_included: false, // unit prices are ex VAT
         use_customer_default_address: true,
         note: "Created from SBP CRM",
         ...(email ? { email } : {}),
@@ -121,21 +158,23 @@ export async function POST(req: Request) {
           : shipping_address
           ? { shipping_address }
           : {}),
-
-        // NEW: apply saved Payment Terms when requested + enabled.
-        ...(applyPaymentTerms && paymentDueLater
-          ? {
-              payment_terms: {
-                // If name missing for any reason, default to a safe, valid option
-                payment_terms_name: paymentTermsName || "Due on receipt",
-                ...(Number.isFinite(paymentTermsDueInDays as any)
-                  ? { due_in_days: paymentTermsDueInDays }
-                  : {}),
-              },
-            }
-          : {}),
       },
     };
+
+    // Attach payment terms ONLY for "Pay on account" flow AND if customer has them saved
+    let sentPaymentTerms: any = null;
+    if (applyPaymentTerms && savedPaymentDueLater && savedPaymentTermsName) {
+      const canonical = canonicalizeTerms(savedPaymentTermsName, savedPaymentTermsDueInDays);
+      if (canonical) {
+        // For "Due on receipt" / "Due on fulfillment" there is no due_in_days
+        // For "Net X" we include due_in_days: X
+        payload.draft_order.payment_terms = {
+          payment_terms_name: canonical.payment_terms_name,
+          ...(typeof canonical.due_in_days === "number" ? { due_in_days: canonical.due_in_days } : {}),
+        };
+        sentPaymentTerms = payload.draft_order.payment_terms;
+      }
+    }
 
     const resp = await shopifyRest(`/draft_orders.json`, {
       method: "POST",
@@ -159,8 +198,14 @@ export async function POST(req: Request) {
       );
     }
 
+    // Echo what we sent + what Shopify says the draft now has
     return NextResponse.json(
-      { id: String(draft.id), draft_order: draft },
+      {
+        id: String(draft.id),
+        draft_order: draft,
+        sentPaymentTerms,
+        draftPaymentTerms: draft?.payment_terms || null,
+      },
       { status: 200, headers: { "Cache-Control": "no-store" } }
     );
   } catch (e: any) {
@@ -172,7 +217,6 @@ export async function POST(req: Request) {
   }
 }
 
-// Optional: block other verbs
 export async function GET() {
-  return NextResponse.json({ error: "Method Not Allowed" }, { status: 405, headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json({ error: "Method Not Allowed" }, { status: 405 });
 }
