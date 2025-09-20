@@ -323,43 +323,42 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
-  /** --- Pay on account (attach payment terms, then complete draft as payment pending) --- */
-  async function payOnAccount() {
-    if (!customer?.id) return alert("Pick a customer first.");
-    if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
-    if (!(pt.enabled && pt.name)) return alert("Customer has no payment terms enabled.");
+ /** --- Pay on account (attach payment terms, then complete draft as payment pending) --- */
+async function payOnAccount() {
+  if (!customer?.id) return alert("Pick a customer first.");
+  if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
+  if (!(pt.enabled && pt.name)) return alert("Customer has no payment terms enabled.");
 
-    try {
-      setCreating("account");
-      // create/ensure draft with payment_terms attached
-      const { id, sentPaymentTerms, draftPaymentTerms } = await ensureDraft({
-        recreate: false,
-        applyPaymentTerms: true,
-      });
-      if (!id) throw new Error("Could not create draft order.");
+  try {
+    setCreating("account");
+    // create/ensure draft with payment_terms attached
+    const { id, sentPaymentTerms, draftPaymentTerms } = await ensureDraft({
+      recreate: false,
+      applyPaymentTerms: true,
+    });
+    if (!id) throw new Error("Could not create draft order.");
 
-      // surface what happened for quick inspection
-      setAccountDebug({ sent: sentPaymentTerms, draft: draftPaymentTerms });
+    // surface what happened for quick inspection
+    setAccountDebug({ sent: sentPaymentTerms, draft: draftPaymentTerms });
 
-      // complete the draft as unpaid (payment pending)
-      const r = await fetch("/api/shopify/draft-orders/complete?payment_pending=true", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ draftId: id }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j?.error || `Complete draft failed: ${r.status}`);
+    // complete the draft as unpaid (payment pending)
+    const r = await fetch("/api/shopify/draft-orders/complete?payment_pending=true", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ draftId: id }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j?.error || `Complete draft failed: ${r.status}`);
 
-      alert("Order placed on account successfully.");
-      // Optionally redirect to order page if the API returns the order id
-    } catch (err: any) {
-      console.error(err);
-      alert(err?.message || "Pay on account failed");
-    } finally {
-      setCreating(false);
-    }
+    // success → go back to the customer profile and show a small banner
+    window.location.assign(`/customers/${encodeURIComponent(customer.id)}?placed=account`);
+  } catch (err: any) {
+    console.error(err);
+    alert(err?.message || "Pay on account failed");
+  } finally {
+    setCreating(false);
   }
-
+}
   // --- UI blocks ---
   function CustomerBlock() {
     if (!customer) {
