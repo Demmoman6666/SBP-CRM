@@ -178,7 +178,6 @@ const TERMS: Array<{ value: string; label: string; dueInDays?: number | null }> 
   { value: "Net 45", label: "Net 45 days", dueInDays: 45 },
   { value: "Net 60", label: "Net 60 days", dueInDays: 60 },
   { value: "Net 90", label: "Net 90 days", dueInDays: 90 },
-  // Fixed date exists in Shopify but needs a date value; we’ll skip here for now.
 ];
 
 /* ---------- Helpers for rendering terms nicely ---------- */
@@ -301,7 +300,8 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
           paymentTermsDueInDays: null,
         },
       });
-      return;
+      // show success banner
+      redirect(`/customers/${customer.id}?saved=1`);
     }
 
     // Enabled: persist the chosen term; default to "Due on receipt" if not provided
@@ -317,8 +317,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       "Within 45 days": 45,
       "Within 60 days": 60,
       "Within 90 days": 90,
-      "Fixed date": null, // leave null; date is set per-order in Shopify UI
-      // Net variants (if you use these labels)
+      "Fixed date": null,
       "Net 7": 7,
       "Net 15": 15,
       "Net 30": 30,
@@ -327,7 +326,6 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       "Net 90": 90,
     };
 
-    // Try exact match, then try to parse "Within X days"/"Net X"
     let dueDays: number | null | undefined = daysMap[nameRaw];
     if (typeof dueDays === "undefined") {
       const within = nameRaw.match(/within\s+(\d+)\s*days?/i);
@@ -345,6 +343,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
         paymentTermsDueInDays: dueDays,
       },
     });
+
+    // show success banner
+    redirect(`/customers/${customer.id}?saved=1`);
   }
 
   // ---------- Server Action: create Stripe Payment Link from a Shopify draft ----------
@@ -422,6 +423,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       ? (customer as any).paymentTermsDueInDays
       : null;
 
+  // Was a save just performed?
+  const saveSuccess = (Array.isArray(searchParams?.saved) ? searchParams?.saved[0] : searchParams?.saved) === "1";
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       {/* Header / identity */}
@@ -486,6 +490,35 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 
       {/* Payment Terms / Price lists */}
       <section className="card">
+        {/* success banner */}
+        {saveSuccess && (
+          <div
+            id="save-ok"
+            className="small"
+            style={{
+              marginBottom: 10,
+              padding: "8px 10px",
+              borderRadius: 8,
+              background: "#e8f9ee",
+              color: "#0f5132",
+              border: "1px solid #a3e1bd",
+              fontWeight: 600,
+            }}
+            role="status"
+            aria-live="polite"
+          >
+            Save successful
+          </div>
+        )}
+        {saveSuccess && (
+          <script
+            dangerouslySetInnerHTML={{
+              __html:
+                "setTimeout(function(){var n=document.getElementById('save-ok'); if(n){ n.style.transition='opacity .3s'; n.style.opacity='0'; setTimeout(function(){ n.remove(); }, 350);}}, 3000);",
+            }}
+          />
+        )}
+
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ margin: 0 }}>Payment Terms / Price lists</h3>
         </div>
@@ -509,10 +542,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                 </label>
 
                 {/* Terms select (hidden/disabled when not enabled) */}
-                <div
-                  id="pt-wrap"
-                  style={{ display: paymentDueLater ? "block" : "none" }}
-                >
+                <div id="pt-wrap" style={{ display: paymentDueLater ? "block" : "none" }}>
                   <select
                     id="pt-select"
                     name="paymentTermsName"
@@ -520,18 +550,20 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                     disabled={!paymentDueLater}
                     style={{ minWidth: 180 }}
                   >
-                    {TERMS.map(t => (
-                      <option key={t.value} value={t.value}>{t.label}</option>
+                    {TERMS.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
                     ))}
                   </select>
                 </div>
 
-                {/* (Optional) hidden carries due days; server calculates anyway */}
+                {/* Optional hidden field; server calculates anyway */}
                 <input
                   type="hidden"
                   name="paymentTermsDueInDays"
                   defaultValue={
-                    TERMS.find(t => t.value === (paymentTermsName || "Due on receipt"))?.dueInDays ?? ""
+                    TERMS.find((t) => t.value === (paymentTermsName || "Due on receipt"))?.dueInDays ?? ""
                   }
                 />
               </div>
@@ -540,7 +572,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                 Current: {paymentDueLater ? displayTerms(paymentTermsName, paymentTermsDueInDays) : "—"}
               </div>
 
-              {/* Tiny inline script to toggle the select visibility without a client component */}
+              {/* Toggle select visibility inline (no client component) */}
               <script
                 dangerouslySetInnerHTML={{
                   __html: `
@@ -567,7 +599,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
               />
 
               <div className="row" style={{ marginTop: 10, justifyContent: "flex-end" }}>
-                <button className="btn" type="submit">Save</button>
+                <button className="btn" type="submit">
+                  Save
+                </button>
               </div>
             </form>
           </div>
@@ -578,7 +612,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
             <div className="small" style={{ marginTop: 6 }}>
               <div className="muted">No price lists assigned yet.</div>
               <div className="row" style={{ gap: 8, marginTop: 8 }}>
-                <a className="btn" href={`/customers/${customer.id}/price-lists`}>Manage</a>
+                <a className="btn" href={`/customers/${customer.id}/price-lists`}>
+                  Manage
+                </a>
               </div>
             </div>
             <p className="mini muted" style={{ marginTop: 6 }}>
@@ -594,17 +630,19 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
           <h3 style={{ margin: 0 }}>Orders / Drafts</h3>
           <div className="row" style={{ gap: 8 }}>
             <Link href={`/customers/${customer.id}?tab=orders`} className={`btn ${view === "orders" ? "primary" : ""}`}>
-              Orders ({orders.length})
+              Orders ({ordersCount})
             </Link>
             <Link href={`/customers/${customer.id}?tab=drafts`} className={`btn ${view === "drafts" ? "primary" : ""}`}>
-              Drafts ({drafts.length})
+              Drafts ({draftsCount})
             </Link>
           </div>
         </div>
 
         {view === "orders" ? (
           orders.length === 0 ? (
-            <p className="small muted" style={{ marginTop: 8 }}>No orders yet.</p>
+            <p className="small muted" style={{ marginTop: 8 }}>
+              No orders yet.
+            </p>
           ) : (
             <div style={{ marginTop: 10, overflowX: "auto" }}>
               <div
@@ -641,13 +679,19 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                     <div key={o.id} style={{ display: "contents" }}>
                       <div className="small">{created}</div>
                       <div className="nowrap">{name}</div>
-                      <div><span className="badge">{prettyFinancial(st?.financial_status)}</span></div>
-                      <div><span className="badge">{prettyFulfillment(st?.fulfillment_status)}</span></div>
+                      <div>
+                        <span className="badge">{prettyFinancial(st?.financial_status)}</span>
+                      </div>
+                      <div>
+                        <span className="badge">{prettyFulfillment(st?.fulfillment_status)}</span>
+                      </div>
                       <div>{money(o.subtotal, currency)}</div>
                       <div>{money(o.taxes, currency)}</div>
                       <div style={{ fontWeight: 600 }}>{money(o.total, currency)}</div>
                       <div>
-                        <Link className="btn" href={`/orders/${o.id}`}>View</Link>
+                        <Link className="btn" href={`/orders/${o.id}`}>
+                          View
+                        </Link>
                       </div>
                     </div>
                   );
@@ -656,7 +700,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
             </div>
           )
         ) : drafts.length === 0 ? (
-          <p className="small muted" style={{ marginTop: 8 }}>No draft orders for this customer.</p>
+          <p className="small muted" style={{ marginTop: 8 }}>
+            No draft orders for this customer.
+          </p>
         ) : (
           <div style={{ marginTop: 10, overflowX: "auto" }}>
             <div
@@ -688,13 +734,19 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                   <div key={d.id} style={{ display: "contents" }}>
                     <div className="small">{fmtDate(d.created_at)}</div>
                     <div>#{d.id}</div>
-                    <div><span className="badge">—</span></div>
-                    <div><span className="badge">—</span></div>
+                    <div>
+                      <span className="badge">—</span>
+                    </div>
+                    <div>
+                      <span className="badge">—</span>
+                    </div>
                     <div>{money(subtotal, currency)}</div>
                     <div>{money(taxes, currency)}</div>
                     <div style={{ fontWeight: 600 }}>{money(total, currency)}</div>
                     <div className="row" style={{ gap: 6 }}>
-                      <a className="btn" href={adminUrl} target="_blank" rel="noreferrer">View in Shopify</a>
+                      <a className="btn" href={adminUrl} target="_blank" rel="noreferrer">
+                        View in Shopify
+                      </a>
                       <form action={createPaymentLinkAction}>
                         <input type="hidden" name="draftId" value={String(d.id)} />
                         <button className="primary" type="submit" disabled={!shopifyCustomerId}>
@@ -714,7 +766,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       <section className="card">
         <h3 style={{ margin: 0 }}>Call log</h3>
         {calls.length === 0 ? (
-          <p className="small muted" style={{ marginTop: 8 }}>No calls yet.</p>
+          <p className="small muted" style={{ marginTop: 8 }}>
+            No calls yet.
+          </p>
         ) : (
           <div style={{ marginTop: 10, overflowX: "auto" }}>
             <div
@@ -736,7 +790,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                   <div className="small">{c.outcome || "—"}</div>
                   <div className="small">{(c.notes && c.notes.trim()) ? c.notes.slice(0, 160) : "—"}</div>
                   <div>
-                    <Link className="btn" href={`/calls/${c.id}`}>View</Link>
+                    <Link className="btn" href={`/calls/${c.id}`}>
+                      View
+                    </Link>
                   </div>
                 </div>
               ))}
@@ -749,7 +805,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
       <section className="card">
         <h3 style={{ margin: 0 }}>Notes</h3>
         {notes.length === 0 ? (
-          <p className="small muted" style={{ marginTop: 8 }}>No notes yet.</p>
+          <p className="small muted" style={{ marginTop: 8 }}>
+            No notes yet.
+          </p>
         ) : (
           <div style={{ marginTop: 10, overflowX: "auto" }}>
             <div
@@ -769,7 +827,9 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
                   <div className="small">{fmtDate(n.createdAt)}</div>
                   <div className="small">{(n.body && n.body.trim()) ? n.body.slice(0, 200) : "—"}</div>
                   <div>
-                    <Link className="btn" href={`/notes/${n.id}`}>View</Link>
+                    <Link className="btn" href={`/notes/${n.id}`}>
+                      View
+                    </Link>
                   </div>
                 </div>
               ))}
