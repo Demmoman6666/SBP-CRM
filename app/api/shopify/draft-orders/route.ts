@@ -46,9 +46,12 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const crmCustomerId: string | undefined = body.customerId ?? body.crmCustomerId ?? body.customer_id;
 
+    // NEW: only apply payment terms if the client asked us to (e.g., Pay on account)
+    const applyPaymentTerms: boolean = !!body.applyPaymentTerms;
+
     const line_items = pickLines(body);
     if (!line_items.length) {
-      return NextResponse.json({ error: "At least one line item is required" }, { status: 400 });
+      return NextResponse.json({ error: "At least one line item is required" }, { status: 400, headers: { "Cache-Control": "no-store" } });
     }
 
     // Look up CRM customer to attach Shopify customer or address
@@ -56,7 +59,7 @@ export async function POST(req: Request) {
     let email: string | undefined;
     let shipping_address: any | undefined;
 
-    // 🔽 NEW: pull saved payment terms fields as well
+    // Payment terms pulled from CRM
     let paymentDueLater = false;
     let paymentTermsName: string | null = null;
     let paymentTermsDueInDays: number | null = null;
@@ -76,7 +79,6 @@ export async function POST(req: Request) {
           postCode: true,
           country: true,
 
-          // ⬇️ NEW
           paymentDueLater: true,
           paymentTermsName: true,
           paymentTermsDueInDays: true,
@@ -97,7 +99,6 @@ export async function POST(req: Request) {
           country_code: (c.country || "GB").toUpperCase(),
         };
 
-        // ⬇️ NEW
         paymentDueLater = !!c.paymentDueLater;
         paymentTermsName = c.paymentTermsName ?? null;
         paymentTermsDueInDays =
@@ -106,6 +107,8 @@ export async function POST(req: Request) {
     }
 
     // Build Shopify Draft Order payload (REST Admin API)
+    // Only include payment_terms when the client explicitly asked (applyPaymentTerms)
+    // and the customer has Payment due later enabled in CRM.
     const payload: any = {
       draft_order: {
         line_items,
@@ -119,11 +122,12 @@ export async function POST(req: Request) {
           ? { shipping_address }
           : {}),
 
-        // ⬇️ NEW: apply saved Payment Terms when enabled
-        ...(paymentDueLater && paymentTermsName
+        // NEW: apply saved Payment Terms when requested + enabled.
+        ...(applyPaymentTerms && paymentDueLater
           ? {
               payment_terms: {
-                payment_terms_name: paymentTermsName,
+                // If name missing for any reason, default to a safe, valid option
+                payment_terms_name: paymentTermsName || "Due on receipt",
                 ...(Number.isFinite(paymentTermsDueInDays as any)
                   ? { due_in_days: paymentTermsDueInDays }
                   : {}),
@@ -140,23 +144,35 @@ export async function POST(req: Request) {
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      return NextResponse.json({ error: `Shopify draft create failed: ${resp.status} ${text}` }, { status: 400 });
+      return NextResponse.json(
+        { error: `Shopify draft create failed: ${resp.status} ${text}` },
+        { status: 400, headers: { "Cache-Control": "no-store" } }
+      );
     }
 
     const json = await resp.json().catch(() => ({}));
     const draft = json?.draft_order || null;
     if (!draft?.id) {
-      return NextResponse.json({ error: "Draft created but response did not include an id", raw: json }, { status: 500 });
+      return NextResponse.json(
+        { error: "Draft created but response did not include an id", raw: json },
+        { status: 500, headers: { "Cache-Control": "no-store" } }
+      );
     }
 
-    return NextResponse.json({ id: String(draft.id), draft_order: draft }, { status: 200 });
+    return NextResponse.json(
+      { id: String(draft.id), draft_order: draft },
+      { status: 200, headers: { "Cache-Control": "no-store" } }
+    );
   } catch (e: any) {
     console.error("Create draft error:", e);
-    return NextResponse.json({ error: e?.message || "Server error" }, { status: 500 });
+    return NextResponse.json(
+      { error: e?.message || "Server error" },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
+    );
   }
 }
 
 // Optional: block other verbs
 export async function GET() {
-  return NextResponse.json({ error: "Method Not Allowed" }, { status: 405 });
+  return NextResponse.json({ error: "Method Not Allowed" }, { status: 405, headers: { "Cache-Control": "no-store" } });
 }
