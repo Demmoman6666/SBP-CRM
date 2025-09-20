@@ -2,36 +2,72 @@
 import { NextResponse } from "next/server";
 import { shopifyRest } from "@/lib/shopify";
 
-// Robustly turn any Shopify id (GID or numeric) into a number
-function toNumericId(v: any): number | null {
+// Parse incoming ids, preserving whether it's a Product or Variant GID/ID
+function parseId(v: any): { type: "Product" | "ProductVariant" | "Unknown"; id: number } | null {
   if (v == null) return null;
-  if (typeof v === "number" && Number.isFinite(v)) return v;
   const s = String(v);
-  const m = s.match(/(\d+)(?!.*\d)/); // last run of digits
-  return m ? Number(m[1]) : null;
+  const m = s.match(/gid:\/\/shopify\/(ProductVariant|Product)\/(\d+)/i);
+  if (m) return { type: m[1] as any, id: Number(m[2]) };
+  const lastDigits = s.match(/(\d+)(?!.*\d)/)?.[1];
+  if (!lastDigits) return null;
+  // We don't know if those digits are product or variant; treat as Unknown (we'll expand products we detect below)
+  return { type: "Unknown", id: Number(lastDigits) };
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const rawIds: any[] = Array.isArray(body?.ids) ? body.ids : [];
-    const variantIds = rawIds.map(toNumericId).filter((n): n is number => Number.isFinite(n));
+    const url = new URL(req.url);
+    const debug = url.searchParams.get("debug") === "1";
 
-    if (variantIds.length === 0) {
-      return NextResponse.json({ stock: {} }, { status: 200 });
+    const body = await req.json().catch(() => ({}));
+    const raw = Array.isArray(body?.ids) ? body.ids : [];
+
+    const parsed = raw.map(parseId).filter(Boolean) as Array<{ type: string; id: number }>;
+    const explicitProductIds = parsed.filter(x => x.type === "Product").map(x => x.id);
+    let variantIds = parsed.filter(x => x.type === "ProductVariant" || x.type === "Unknown").map(x => x.id);
+
+    // If any Product IDs were provided, expand them to Variant IDs first
+    if (explicitProductIds.length) {
+      const size = 50;
+      for (let i = 0; i < explicitProductIds.length; i += size) {
+        const slice = explicitProductIds.slice(i, i + size);
+        const res = await shopifyRest(
+          `/products.json?ids=${slice.join(",")}&fields=id,variants`,
+          { method: "GET" }
+        );
+        if (!res.ok) continue;
+        const json = await res.json().catch(() => ({}));
+        const products: any[] = Array.isArray(json?.products) ? json.products : [];
+        for (const p of products) {
+          for (const v of p?.variants ?? []) {
+            const vid = Number(v?.id);
+            if (Number.isFinite(vid)) variantIds.push(vid);
+          }
+        }
+      }
     }
 
-    // First call: get inventory_item_id for each variant, and also grab inventory_quantity as a fallback
-    // (Works with products scope. inventory_quantity is a single total across locations.)
-    const variantToItem: Record<number, number> = {};
-    const variantFallbackQty: Record<number, number> = {};
+    // De-dupe & ensure numeric
+    variantIds = Array.from(new Set(variantIds.filter(Number.isFinite)));
+
+    if (variantIds.length === 0) {
+      return NextResponse.json(
+        { stock: {}, _source: "none", _diagnostics: { reason: "No variant IDs resolved from input" } },
+        { status: 200, headers: { "Cache-Control": "no-store" } }
+      );
+    }
 
     const size = 50;
+    const variantToItem: Record<number, number> = {};
+    const variantFallbackQty: Record<number, number | null> = {}; // null = unknown (field absent)
+    let levelsWorked = false;
+    let levelsForbidden = false;
+
+    // 1) Map Variant → Inventory Item, and capture variants.inventory_quantity as a fallback
     for (let i = 0; i < variantIds.length; i += size) {
       const slice = variantIds.slice(i, i + size);
-      const qs = encodeURIComponent(slice.join(","));
       const res = await shopifyRest(
-        `/variants.json?ids=${qs}&fields=id,inventory_item_id,inventory_quantity`,
+        `/variants.json?ids=${slice.join(",")}&fields=id,inventory_item_id,inventory_quantity`,
         { method: "GET" }
       );
       if (!res.ok) continue;
@@ -41,83 +77,84 @@ export async function POST(req: Request) {
       for (const v of variants) {
         const vid = Number(v?.id);
         const itemId = Number(v?.inventory_item_id);
+        if (Number.isFinite(vid) && Number.isFinite(itemId)) variantToItem[vid] = itemId;
+
+        // inventory_quantity may be missing on newer API versions → record null (unknown)
         if (Number.isFinite(vid)) {
-          if (Number.isFinite(itemId)) variantToItem[vid] = itemId;
-          // Store the variant-level total as a fallback (works without read_inventory)
-          const iq = Number(v?.inventory_quantity);
-          if (Number.isFinite(iq)) variantFallbackQty[vid] = iq;
+          const hasField = typeof v?.inventory_quantity !== "undefined";
+          variantFallbackQty[vid] = hasField && Number.isFinite(Number(v.inventory_quantity))
+            ? Number(v.inventory_quantity)
+            : null;
         }
       }
     }
 
-    // If we couldn’t map any inventory items, just return the variant-level totals (if any)
     const itemIds = Object.values(variantToItem);
-    if (itemIds.length === 0) {
-      // Build response using fallback quantities (if missing, treat as 0)
-      const out: Record<string, number> = {};
-      for (const vid of variantIds) {
-        const qty = Number.isFinite(variantFallbackQty[vid]) ? variantFallbackQty[vid] : 0;
-        out[String(vid)] = Number(qty);
-      }
-      return NextResponse.json({ stock: out, _source: "variants.inventory_quantity" }, { status: 200 });
-    }
-
-    // Second call (preferred): Inventory Levels across locations (requires read_inventory).
-    // If this 403s or fails, we’ll still return the variant fallback totals.
     const totalsByItem: Record<number, number> = {};
-    let levelsWorked = false;
 
-    for (let i = 0; i < itemIds.length; i += size) {
-      const slice = itemIds.slice(i, i + size);
-      const qs = encodeURIComponent(slice.join(","));
-      const res = await shopifyRest(
-        `/inventory_levels.json?inventory_item_ids=${qs}`,
-        { method: "GET" }
-      );
-
-      if (!res.ok) {
-        // If forbidden (likely missing read_inventory), stop trying levels.
-        if (res.status === 401 || res.status === 403) {
-          levelsWorked = false;
-          break;
+    // 2) Preferred: inventory levels across locations (requires read_inventory)
+    if (itemIds.length) {
+      for (let i = 0; i < itemIds.length; i += size) {
+        const slice = itemIds.slice(i, i + size);
+        const res = await shopifyRest(
+          `/inventory_levels.json?inventory_item_ids=${slice.join(",")}`,
+          { method: "GET" }
+        );
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 403) {
+            levelsForbidden = true;
+            break;
+          }
+          continue;
         }
-        continue;
-      }
-
-      levelsWorked = true;
-      const json = await res.json().catch(() => ({}));
-      const levels: any[] = Array.isArray(json?.inventory_levels) ? json.inventory_levels : [];
-      for (const lvl of levels) {
-        const iid = Number(lvl?.inventory_item_id);
-        const available = Number(lvl?.available);
-        if (!Number.isFinite(iid) || !Number.isFinite(available)) continue;
-        totalsByItem[iid] = (totalsByItem[iid] ?? 0) + available;
+        levelsWorked = true;
+        const json = await res.json().catch(() => ({}));
+        const levels: any[] = Array.isArray(json?.inventory_levels) ? json.inventory_levels : [];
+        for (const lvl of levels) {
+          const iid = Number(lvl?.inventory_item_id);
+          const available = Number(lvl?.available);
+          if (!Number.isFinite(iid) || !Number.isFinite(available)) continue;
+          totalsByItem[iid] = (totalsByItem[iid] ?? 0) + available;
+        }
       }
     }
 
-    // Map back to variant ids. Prefer levels if we got them; otherwise fallback totals.
-    const out: Record<string, number> = {};
+    // 3) Build output
+    const out: Record<string, number | null> = {};
     for (const vid of variantIds) {
       const iid = variantToItem[vid];
-      let qty: number | undefined;
 
       if (levelsWorked && Number.isFinite(iid)) {
-        qty = totalsByItem[iid] ?? 0;
+        out[String(vid)] = totalsByItem[iid] ?? 0; // levels → 0 if no row came back
       } else {
-        qty = Number.isFinite(variantFallbackQty[vid]) ? variantFallbackQty[vid] : 0;
+        // Honest fallback: use variants.inventory_quantity if present; else null (unknown)
+        if (Object.prototype.hasOwnProperty.call(variantFallbackQty, vid)) {
+          out[String(vid)] = variantFallbackQty[vid]; // number or null
+        } else {
+          out[String(vid)] = null;
+        }
       }
-
-      out[String(vid)] = Number(qty);
     }
 
     return NextResponse.json(
-      { stock: out, _source: levelsWorked ? "inventory_levels" : "variants.inventory_quantity" },
-      { status: 200 }
+      {
+        stock: out,
+        _source: levelsWorked ? "inventory_levels" : "variants.inventory_quantity (fallback)",
+        _diagnostics: {
+          input: { rawCount: raw.length, parsed: parsed.length },
+          expandedFromProducts: explicitProductIds.length,
+          resolvedVariantIds: variantIds.length,
+          mappedItems: itemIds.length,
+          levelsWorked,
+          levelsForbidden, // true → token is missing read_inventory scope
+        },
+      },
+      { status: 200, headers: { "Cache-Control": "no-store" } }
     );
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message || "Failed to fetch variant stock", stock: {} },
-      { status: 500 }
+      { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
 }
