@@ -75,14 +75,15 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
         if (!r.ok) return;
         const j = await r.json().catch(() => ({}));
         if (abort) return;
+        // Expecting { enabled, name, dueInDays } from the API
         setPt({
           enabled: !!j?.enabled,
           name: j?.name ?? null,
-          dueInDays:
-            typeof j?.dueInDays === "number" ? (j.dueInDays as number) : null,
+          dueInDays: typeof j?.dueInDays === "number" ? (j.dueInDays as number) : null,
         });
       } catch {
-        /* ignore */
+        if (abort) return;
+        setPt({ enabled: false, name: null, dueInDays: null });
       }
     }
     if (customer?.id) hydrateTerms(customer.id);
@@ -183,7 +184,9 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
   }, [cart]);
 
   // --- draft creation (normalizes payload on server) ---
-  async function ensureDraft({ recreate = false, applyPaymentTerms = false }: { recreate?: boolean; applyPaymentTerms?: boolean } = {}) {
+  async function ensureDraft(
+    { recreate = false, applyPaymentTerms = false }: { recreate?: boolean; applyPaymentTerms?: boolean } = {}
+  ) {
     if (!customer?.id) throw new Error("Select a customer first.");
     if (simpleLines.length === 0) throw new Error("Add at least one line item to the cart.");
     setCreating("draft");
@@ -312,7 +315,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
       if (!r.ok) throw new Error(j?.error || `Complete draft failed: ${r.status}`);
 
       alert("Order placed on account successfully.");
-      // you could redirect to the order page if you have the id in j
+      // Optionally redirect to order page if the API returns the order id
     } catch (err: any) {
       console.error(err);
       alert(err?.message || "Pay on account failed");
@@ -510,12 +513,32 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
             className="btn"
             type="button"
             onClick={payOnAccount}
-            disabled={!canPayOnAccount}
+            disabled={
+              !(
+                !!customer &&
+                pt.enabled &&
+                !!pt.name &&
+                Object.values(cart).length > 0 &&
+                creating === false
+              )
+            }
             title={
-              canPayOnAccount
-                ? "Create order on account"
+              !!customer && pt.enabled && !!pt.name
+                ? Object.values(cart).length > 0
+                  ? "Create order on account"
+                  : "Add at least one item"
                 : "Enable payment terms on the customer to use Pay on account"
             }
+            style={{
+              opacity:
+                !!customer && pt.enabled && !!pt.name && Object.values(cart).length > 0 && creating === false
+                  ? 1
+                  : 0.5,
+              cursor:
+                !!customer && pt.enabled && !!pt.name && Object.values(cart).length > 0 && creating === false
+                  ? "pointer"
+                  : "not-allowed",
+            }}
           >
             {creating === "account" ? "Placing on account…" : "Pay on account"}
           </button>
