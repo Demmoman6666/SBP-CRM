@@ -31,34 +31,48 @@ function parseQtyForm(form: FormData) {
 /** Find Stripe Checkout Session id (cs_...) recorded on the Shopify order note/attributes */
 function extractStripeSessionIdFromShopify(order: any): string | null {
   const note: string = String(order?.note || "");
-  const m = note.match(/(cs_(?:test|live)_[A-Za-z0-9]+)/);
-  if (m?.[1]) return m[1];
-  const attrs: Array<{ name?: string; value?: string }> = order?.note_attributes || [];
+  // try an explicit attribute first
+  const attrs: Array<{ name?: string; value?: string }> = Array.isArray(order?.note_attributes)
+    ? order.note_attributes
+    : [];
   for (const a of attrs) {
-    const mm = String(a?.value || "").match(/(cs_(?:test|live)_[A-Za-z0-9]+)/);
-    if (mm?.[1]) return mm[1];
+    const key = String(a?.name || "").toLowerCase();
+    const val = String(a?.value || "");
+    if (key === "stripe_checkout_session_id" && val.startsWith("cs_")) return val;
+  }
+  // then fall back to free-text pattern anywhere in note/attrs
+  const m1 = note.match(/(cs_(?:test|live)_[A-Za-z0-9]+)/);
+  if (m1?.[1]) return m1[1];
+  for (const a of attrs) {
+    const m2 = String(a?.value || "").match(/(cs_(?:test|live)_[A-Za-z0-9]+)/);
+    if (m2?.[1]) return m2[1];
   }
   return null;
 }
 
 /** Pick a Shopify parent transaction (sale/capture) to attach the refund to */
-function pickParentTransactionId(transactions: any[]): string | null {
-  if (!Array.isArray(transactions)) return null;
+function pickParentTransactionId(transactions: any[]): { id: string | null; gateway: string | null } {
+  if (!Array.isArray(transactions)) return { id: null, gateway: null };
   const candidates = transactions.filter(
     (t) =>
       t &&
       (t.kind === "sale" || t.kind === "capture") &&
       (t.status === "success" || t.status === "completed")
   );
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return { id: null, gateway: null };
   const last = candidates[candidates.length - 1];
-  return String(last.id);
+  return { id: String(last.id), gateway: String(last.gateway || "") };
 }
 
 /* ---------------- main handler ---------------- */
 
 export async function POST(req: Request, ctx: { params: { id: string } }) {
   try {
+    const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
+    if (!stripeSecret) {
+      return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY env var" }, { status: 500 });
+    }
+
     const orderId = ctx.params.id;
 
     // Accept forms (current UI) and JSON (future)
@@ -77,8 +91,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
     } else {
       const form = await req.formData();
       qtyMap = parseQtyForm(form);
-      const r = form.get("reason");
-      reason = r ? String(r) : undefined;
+      reason = String(form.get("reason") || "") || undefined;
     }
 
     if (qtyMap.size === 0) {
@@ -102,9 +115,8 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
       if (!q) continue;
       const max = Math.max(0, Number(li.quantity || 0));
       if (q > max) {
-        const label = li.productTitle || li.variantTitle || li.id;
         return NextResponse.json(
-          { error: `Refund qty for line "${label}" exceeds purchased qty.` },
+          { error: `Refund qty for line "${li.productTitle || li.variantTitle || li.id}" exceeds purchased qty.` },
           { status: 400 }
         );
       }
@@ -124,6 +136,24 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
 
     const shopifyOrderId = crmOrder.shopifyOrderId;
 
+    // 0) Fetch Shopify order & transactions first (we need gateway and currency)
+    const shopOrderRes = await shopifyRest(`/orders/${shopifyOrderId}.json`, { method: "GET" });
+    if (!shopOrderRes.ok) {
+      const text = await shopOrderRes.text().catch(() => "");
+      return NextResponse.json({ error: `Fetch Shopify order failed: ${shopOrderRes.status} ${text}` }, { status: 502 });
+    }
+    const shopOrderJson = await shopOrderRes.json();
+    const shopOrder = shopOrderJson?.order;
+    const shopCurrency = String(shopOrder?.currency || "GBP").toUpperCase();
+
+    const txRes = await shopifyRest(`/orders/${shopifyOrderId}/transactions.json`, { method: "GET" });
+    const txJson = txRes.ok ? await txRes.json() : { transactions: [] };
+    const { id: parentTxnId, gateway: lastGateway } = pickParentTransactionId(txJson?.transactions || []);
+
+    // Decide path: Stripe refund vs Credit note
+    const sessionId = extractStripeSessionIdFromShopify(shopOrder);
+    const isStripeOrder = !!sessionId || (lastGateway && lastGateway.toLowerCase().includes("stripe"));
+
     // 1) Ask Shopify to CALCULATE the refund (VAT/discounts correct)
     const calcRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds/calculate.json`, {
       method: "POST",
@@ -136,10 +166,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
     });
     if (!calcRes.ok) {
       const text = await calcRes.text().catch(() => "");
-      return NextResponse.json(
-        { error: `Shopify calculate failed: ${calcRes.status} ${text}` },
-        { status: 502 }
-      );
+      return NextResponse.json({ error: `Shopify calculate failed: ${calcRes.status} ${text}` }, { status: 502 });
     }
     const calcJson = await calcRes.json();
     const calcRefund = calcJson?.refund || calcJson;
@@ -159,72 +186,19 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
       return NextResponse.json({ error: "Calculated refund is £0.00" }, { status: 400 });
     }
 
-    // Fetch Shopify order for currency AND transactions (and possibly a Stripe session)
-    const shopOrderRes = await shopifyRest(`/orders/${shopifyOrderId}.json`, { method: "GET" });
-    if (!shopOrderRes.ok) {
-      const text = await shopOrderRes.text().catch(() => "");
-      return NextResponse.json(
-        { error: `Fetch Shopify order failed: ${shopOrderRes.status} ${text}` },
-        { status: 502 }
-      );
-    }
-    const shopOrderJson = await shopOrderRes.json();
-    const shopOrder = shopOrderJson?.order || {};
-    const shopCurrency = String(shopOrder?.currency || "GBP").toUpperCase();
-
-    // Load transactions to see if a parent payment exists
-    const txRes = await shopifyRest(`/orders/${shopifyOrderId}/transactions.json`, { method: "GET" });
-    let parentId: string | null = null;
-    if (txRes.ok) {
-      const txJson = await txRes.json();
-      parentId = pickParentTransactionId(txJson?.transactions || []);
-    }
-
-    // Decide Stripe vs Credit Note
-    const sessionId = extractStripeSessionIdFromShopify(shopOrder);
-
-    // Helper to create a CREDIT NOTE on Shopify (no parent transaction)
-    async function createShopifyCreditNote() {
-      const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
-        method: "POST",
-        body: JSON.stringify({
-          refund: {
-            note: reason || undefined,
-            notify: true,
-            refund_line_items,
-            transactions: [
-              {
-                amount: calcAmount.toFixed(2),
-                kind: "refund",
-                gateway: "store-credit", // credit note; no parent_id
-                currency: shopCurrency,
-              },
-            ],
-          },
-        }),
-      });
-      if (!createRes.ok) {
-        const text = await createRes.text().catch(() => "");
-        return NextResponse.json(
-          { error: `Shopify refund create failed: ${createRes.status} ${text}` },
-          { status: 502 }
-        );
-      }
-      return null;
-    }
-
-    if (sessionId && parentId) {
-      // Stripe-backed refund + Shopify refund attached to the parent transaction
-      const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
-      if (!stripeSecret) {
-        return NextResponse.json(
-          { error: "Stripe session found on order but STRIPE_SECRET_KEY is not configured." },
-          { status: 500 }
-        );
-      }
-
-      // Refund on Stripe
+    // 2) If Stripe order & we have a parent transaction → refund via Stripe
+    if (isStripeOrder && parentTxnId) {
       const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
+
+      // Prefer Session from note/attrs (that’s how your Checkout flow works)
+      if (!sessionId) {
+        // Safety: if there’s no session id we could bail to credit-note, but you asked to refund Stripe when paid by Stripe.
+        return NextResponse.json(
+          { error: "Stripe session id not found on this order; cannot perform Stripe refund." },
+          { status: 400 }
+        );
+      }
+
       const session = await stripe.checkout.sessions.retrieve(sessionId);
       const pi = session.payment_intent;
       const paymentIntentId =
@@ -232,6 +206,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
       if (!paymentIntentId) {
         return NextResponse.json({ error: "Stripe payment intent not found for this order" }, { status: 400 });
       }
+
       const stripeAmount = Math.round(calcAmount * 100);
       await stripe.refunds.create({
         payment_intent: paymentIntentId,
@@ -244,7 +219,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
         },
       });
 
-      // Create Shopify refund attached to that parent (Shopify infers gateway)
+      // 3) Create Shopify refund record, attaching parent transaction (gateway: stripe)
       const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
         method: "POST",
         body: JSON.stringify({
@@ -254,40 +229,47 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
             refund_line_items,
             transactions: [
               {
-                parent_id: Number(parentId),
+                parent_id: Number(parentTxnId),
                 amount: calcAmount.toFixed(2),
                 kind: "refund",
+                gateway: "stripe",
                 currency: shopCurrency,
               },
             ],
           },
         }),
       });
-
       if (!createRes.ok) {
         const text = await createRes.text().catch(() => "");
-        const body = `${text}` || "";
-        // 🔁 if Shopify complains about missing/invalid parent, retry as CREDIT NOTE
-        if (
-          createRes.status === 422 &&
-          /Unable to find parent transaction/i.test(body)
-        ) {
-          const fallbackErr = await createShopifyCreditNote();
-          if (fallbackErr) return fallbackErr;
-        } else {
-          return NextResponse.json(
-            { error: `Shopify refund create failed: ${createRes.status} ${text}` },
-            { status: 502 }
-          );
-        }
+        return NextResponse.json({ error: `Shopify refund create failed: ${createRes.status} ${text}` }, { status: 502 });
       }
     } else {
-      // CREDIT NOTE path (no parent payment to attach to)
-      const err = await createShopifyCreditNote();
-      if (err) return err;
+      // 2b) CREDIT NOTE path (orders placed on account): use store-credit gateway & NO parent_id
+      const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
+        method: "POST",
+        body: JSON.stringify({
+          refund: {
+            note: reason || "Credit note issued (on account).",
+            notify: false, // usually for credit notes you may not want to notify; set true if you do
+            refund_line_items,
+            transactions: [
+              {
+                amount: calcAmount.toFixed(2),
+                kind: "refund",
+                gateway: "store-credit", // <-- important: no parent_id required
+                currency: shopCurrency,
+              },
+            ],
+          },
+        }),
+      });
+      if (!createRes.ok) {
+        const text = await createRes.text().catch(() => "");
+        return NextResponse.json({ error: `Shopify refund create failed: ${createRes.status} ${text}` }, { status: 502 });
+      }
     }
 
-    // Refresh CRM copy from Shopify
+    // 4) Refresh CRM copy from Shopify
     try {
       const freshOrderRes = await shopifyRest(`/orders/${shopifyOrderId}.json`, { method: "GET" });
       if (freshOrderRes.ok) {
@@ -298,7 +280,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
       /* ignore */
     }
 
-    // Redirect back to the order page
+    // 5) Redirect back to the order page
     const back = new URL(req.url);
     back.pathname = back.pathname.replace(/\/api\/orders\/[^/]+\/refund$/, `/orders/${crmOrder.id}`);
     back.search = `?refunded=1`;
