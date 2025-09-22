@@ -171,104 +171,105 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
     const shopOrderJson = await shopOrderRes.json();
     const shopCurrency = String(shopOrderJson?.order?.currency || "GBP").toUpperCase();
 
-    // 2) Attempt Stripe refund (only if there is a Checkout Session id)
+    // 2) Decide: Stripe-backed refund vs credit note
     const sessionId = extractStripeSessionIdFromShopify(shopOrderJson?.order);
-    let didStripeRefund = false;
+
     if (sessionId) {
+      // Stripe-backed refund + Shopify refund attached to the parent transaction
       const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
       if (!stripeSecret) {
-        // If we found a session but don't have a key, fail clearly
         return NextResponse.json(
           { error: "Stripe session found on order but STRIPE_SECRET_KEY is not configured." },
           { status: 500 }
         );
       }
 
-      try {
-        const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
-        const pi = session.payment_intent;
-        const paymentIntentId =
-          typeof pi === "string" ? pi : (pi && "id" in (pi as any) ? (pi as any).id : null);
-        if (!paymentIntentId) {
-          return NextResponse.json({ error: "Stripe payment intent not found for this order" }, { status: 400 });
-        }
+      // Do Stripe refund
+      const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      const pi = session.payment_intent;
+      const paymentIntentId =
+        typeof pi === "string" ? pi : (pi && "id" in (pi as any) ? (pi as any).id : null);
+      if (!paymentIntentId) {
+        return NextResponse.json({ error: "Stripe payment intent not found for this order" }, { status: 400 });
+      }
+      const stripeAmount = Math.round(calcAmount * 100);
+      await stripe.refunds.create({
+        payment_intent: paymentIntentId,
+        amount: stripeAmount,
+        reason: "requested_by_customer",
+        metadata: {
+          crmOrderId: crmOrder.id,
+          shopifyOrderId: String(shopifyOrderId),
+          crmReason: reason || "",
+        },
+      });
 
-        const stripeAmount = Math.round(calcAmount * 100);
-        await stripe.refunds.create({
-          payment_intent: paymentIntentId,
-          amount: stripeAmount,
-          reason: "requested_by_customer",
-          metadata: {
-            crmOrderId: crmOrder.id,
-            shopifyOrderId: String(shopifyOrderId),
-            crmReason: reason || "",
-          },
-        });
-        didStripeRefund = true;
-      } catch (err: any) {
+      // Find a parent transaction to attach to in Shopify
+      const txRes = await shopifyRest(`/orders/${shopifyOrderId}/transactions.json`, { method: "GET" });
+      let parentId: string | null = null;
+      if (txRes.ok) {
+        const txJson = await txRes.json();
+        parentId = pickParentTransactionId(txJson?.transactions || []);
+      }
+      if (!parentId) {
         return NextResponse.json(
-          { error: `Stripe refund failed: ${err?.message || "Unknown error"}` },
+          { error: "Stripe refunded, but no Shopify parent transaction was found to attach the refund to." },
           { status: 502 }
         );
       }
-    }
-    // else: Pay-on-account flow — no Stripe refund, proceed to Shopify-only refund record.
 
-    // 3) Create the Shopify refund record
-    // If there is a parent transaction, attach refund to it; otherwise use a manual transaction.
-    const txRes = await shopifyRest(`/orders/${shopifyOrderId}/transactions.json`, { method: "GET" });
-    let parentId: string | null = null;
-    if (txRes.ok) {
-      const txJson = await txRes.json();
-      parentId = pickParentTransactionId(txJson?.transactions || []);
-    }
-
-    const refundPayload: any = {
-      refund: {
-        note: reason || undefined,
-        notify: true,
-        refund_line_items,
-      },
-    };
-
-    // When we have a Stripe charge and a parent transaction, tie it to that;
-    // otherwise create a manual refund transaction so Shopify records the value.
-    if (parentId) {
-      refundPayload.refund.transactions = [
-        {
-          parent_id: Number(parentId),
-          amount: calcAmount.toFixed(2),
-          kind: "refund",
-          gateway: didStripeRefund ? "stripe" : "manual",
-          currency: shopCurrency, // UPPERCASE (e.g., "GBP")
-        },
-      ];
+      // Create Shopify refund attached to the parent (Shopify infers gateway)
+      const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
+        method: "POST",
+        body: JSON.stringify({
+          refund: {
+            note: reason || undefined,
+            notify: true,
+            refund_line_items,
+            transactions: [
+              {
+                parent_id: Number(parentId),
+                amount: calcAmount.toFixed(2),
+                kind: "refund",
+                // gateway omitted on purpose; Shopify infers it from parent_id
+                currency: shopCurrency,
+              },
+            ],
+          },
+        }),
+      });
+      if (!createRes.ok) {
+        const text = await createRes.text().catch(() => "");
+        return NextResponse.json({ error: `Shopify refund create failed: ${createRes.status} ${text}` }, { status: 502 });
+      }
     } else {
-      // No parent: manual transaction (common for pay-on-account)
-      refundPayload.refund.transactions = [
-        {
-          amount: calcAmount.toFixed(2),
-          kind: "refund",
-          gateway: "manual",
-          currency: shopCurrency,
-        },
-      ];
+      // CREDIT NOTE (no payment captured): create Shopify refund with gateway store-credit
+      const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
+        method: "POST",
+        body: JSON.stringify({
+          refund: {
+            note: reason || undefined,
+            notify: true,
+            refund_line_items,
+            transactions: [
+              {
+                amount: calcAmount.toFixed(2),
+                kind: "refund",
+                gateway: "store-credit", // 👈 credit note, no parent_id required
+                currency: shopCurrency,
+              },
+            ],
+          },
+        }),
+      });
+      if (!createRes.ok) {
+        const text = await createRes.text().catch(() => "");
+        return NextResponse.json({ error: `Shopify refund create failed: ${createRes.status} ${text}` }, { status: 502 });
+      }
     }
 
-    const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
-      method: "POST",
-      body: JSON.stringify(refundPayload),
-    });
-    if (!createRes.ok) {
-      const text = await createRes.text().catch(() => "");
-      return NextResponse.json(
-        { error: `Shopify refund create failed: ${createRes.status} ${text}` },
-        { status: 502 }
-      );
-    }
-
-    // 4) Refresh CRM copy from Shopify
+    // 3) Refresh CRM copy from Shopify
     try {
       const freshOrderRes = await shopifyRest(`/orders/${shopifyOrderId}.json`, { method: "GET" });
       if (freshOrderRes.ok) {
@@ -279,14 +280,10 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
       /* ignore */
     }
 
-    // 5) Redirect back to the order page
+    // 4) Redirect back to the order page
     const back = new URL(req.url);
-    back.pathname = back.pathname.replace(
-      /\/api\/orders\/[^/]+\/refund$/,
-      `/orders/${crmOrder.id}`
-    );
-    // NB: amount in pence only if Stripe path; for consistency show decimal here:
-    back.search = `?refunded=1&amount=${calcAmount.toFixed(2)}`;
+    back.pathname = back.pathname.replace(/\/api\/orders\/[^/]+\/refund$/, `/orders/${crmOrder.id}`);
+    back.search = `?refunded=1`;
     return NextResponse.redirect(back, { status: 303 });
   } catch (err: any) {
     console.error("Refund error:", err);
