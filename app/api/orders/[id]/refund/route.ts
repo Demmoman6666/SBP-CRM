@@ -159,7 +159,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
       return NextResponse.json({ error: "Calculated refund is £0.00" }, { status: 400 });
     }
 
-    // Fetch Shopify order to: (a) get currency, (b) find Checkout Session id
+    // Fetch Shopify order for currency AND transactions (and possibly a Stripe session)
     const shopOrderRes = await shopifyRest(`/orders/${shopifyOrderId}.json`, { method: "GET" });
     if (!shopOrderRes.ok) {
       const text = await shopOrderRes.text().catch(() => "");
@@ -169,12 +169,21 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
       );
     }
     const shopOrderJson = await shopOrderRes.json();
-    const shopCurrency = String(shopOrderJson?.order?.currency || "GBP").toUpperCase();
+    const shopOrder = shopOrderJson?.order || {};
+    const shopCurrency = String(shopOrder?.currency || "GBP").toUpperCase();
 
-    // 2) Decide: Stripe-backed refund vs credit note
-    const sessionId = extractStripeSessionIdFromShopify(shopOrderJson?.order);
+    // Load transactions to see if a parent payment exists
+    const txRes = await shopifyRest(`/orders/${shopifyOrderId}/transactions.json`, { method: "GET" });
+    let parentId: string | null = null;
+    if (txRes.ok) {
+      const txJson = await txRes.json();
+      parentId = pickParentTransactionId(txJson?.transactions || []);
+    }
 
-    if (sessionId) {
+    // Decide Stripe vs Credit Note
+    const sessionId = extractStripeSessionIdFromShopify(shopOrder);
+
+    if (sessionId && parentId) {
       // Stripe-backed refund + Shopify refund attached to the parent transaction
       const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
       if (!stripeSecret) {
@@ -184,7 +193,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
         );
       }
 
-      // Do Stripe refund
+      // Refund on Stripe
       const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
       const session = await stripe.checkout.sessions.retrieve(sessionId);
       const pi = session.payment_intent;
@@ -205,21 +214,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
         },
       });
 
-      // Find a parent transaction to attach to in Shopify
-      const txRes = await shopifyRest(`/orders/${shopifyOrderId}/transactions.json`, { method: "GET" });
-      let parentId: string | null = null;
-      if (txRes.ok) {
-        const txJson = await txRes.json();
-        parentId = pickParentTransactionId(txJson?.transactions || []);
-      }
-      if (!parentId) {
-        return NextResponse.json(
-          { error: "Stripe refunded, but no Shopify parent transaction was found to attach the refund to." },
-          { status: 502 }
-        );
-      }
-
-      // Create Shopify refund attached to the parent (Shopify infers gateway)
+      // Create Shopify refund attached to that parent (Shopify infers gateway)
       const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
         method: "POST",
         body: JSON.stringify({
@@ -232,7 +227,6 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
                 parent_id: Number(parentId),
                 amount: calcAmount.toFixed(2),
                 kind: "refund",
-                // gateway omitted on purpose; Shopify infers it from parent_id
                 currency: shopCurrency,
               },
             ],
@@ -244,7 +238,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
         return NextResponse.json({ error: `Shopify refund create failed: ${createRes.status} ${text}` }, { status: 502 });
       }
     } else {
-      // CREDIT NOTE (no payment captured): create Shopify refund with gateway store-credit
+      // CREDIT NOTE path (no parent payment to attach to)
       const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
         method: "POST",
         body: JSON.stringify({
@@ -256,7 +250,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
               {
                 amount: calcAmount.toFixed(2),
                 kind: "refund",
-                gateway: "store-credit", // 👈 credit note, no parent_id required
+                gateway: "store-credit", // credit note; no parent_id
                 currency: shopCurrency,
               },
             ],
@@ -269,7 +263,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
       }
     }
 
-    // 3) Refresh CRM copy from Shopify
+    // Refresh CRM copy from Shopify
     try {
       const freshOrderRes = await shopifyRest(`/orders/${shopifyOrderId}.json`, { method: "GET" });
       if (freshOrderRes.ok) {
@@ -280,7 +274,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
       /* ignore */
     }
 
-    // 4) Redirect back to the order page
+    // Redirect back to the order page
     const back = new URL(req.url);
     back.pathname = back.pathname.replace(/\/api\/orders\/[^/]+\/refund$/, `/orders/${crmOrder.id}`);
     back.search = `?refunded=1`;
