@@ -323,7 +323,7 @@ export default function ClientNewOrder({ initialCustomer }: Props) {
     }
   }
 
- /** --- Pay on account (attach payment terms, then complete draft as payment pending) --- */
+/** --- Pay on account (attach payment terms, then complete draft as payment pending) --- */
 async function payOnAccount() {
   if (!customer?.id) return alert("Pick a customer first.");
   if (simpleLines.length === 0) return alert("Add at least one line item to the cart.");
@@ -331,26 +331,33 @@ async function payOnAccount() {
 
   try {
     setCreating("account");
-    // create/ensure draft with payment_terms attached
+
+    // 1) Create/ensure draft with payment_terms attached
     const { id, sentPaymentTerms, draftPaymentTerms } = await ensureDraft({
       recreate: false,
       applyPaymentTerms: true,
     });
     if (!id) throw new Error("Could not create draft order.");
 
-    // surface what happened for quick inspection
-    setAccountDebug({ sent: sentPaymentTerms, draft: draftPaymentTerms });
+    // (optional) surface what happened for quick inspection
+    try {
+      // @ts-ignore - only if you have setAccountDebug in scope
+      typeof setAccountDebug === "function" && setAccountDebug({ sent: sentPaymentTerms, draft: draftPaymentTerms });
+    } catch {}
 
-    // complete the draft as unpaid (payment pending)
+    // 2) Complete the draft as unpaid (payment pending) and record the term name in notes
     const r = await fetch("/api/shopify/draft-orders/complete?payment_pending=true", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ draftId: id }),
+      body: JSON.stringify({
+        draftId: id,
+        paymentTermsName: pt.name, // <-- used by the API to write a note on the order
+      }),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j?.error || `Complete draft failed: ${r.status}`);
 
-    // success → go back to the customer profile and show a small banner
+    // 3) Success → go back to the customer profile and show a small banner
     window.location.assign(`/customers/${encodeURIComponent(customer.id)}?placed=account`);
   } catch (err: any) {
     console.error(err);
