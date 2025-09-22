@@ -23,8 +23,8 @@ export async function POST(req: Request) {
         ? body.paymentTermsName.trim()
         : null;
 
-    // Shopify requires the query-string flag and NO JSON body.
-    // PUT /draft_orders/{id}/complete.json?payment_pending=true
+    // 1) Complete the draft as unpaid (payment pending).
+    //    Important: Shopify expects the flag in the query string and *no JSON body*.
     const completePath = `/draft_orders/${draftIdNum}/complete.json?payment_pending=true`;
     const resp = await shopifyRest(completePath, { method: "PUT" });
 
@@ -40,16 +40,16 @@ export async function POST(req: Request) {
     const order = json?.order ?? null;
     const orderId = order?.id ?? null;
 
-    // If we got an order back, upsert ONLY note attributes (no tags).
+    // 2) If we got an order, upsert metadata into note_attributes AND a human line into the text Notes.
     if (orderId) {
       try {
-        const existingNotes: Array<{ name?: string; value?: string }> = Array.isArray(order.note_attributes)
+        // ---- note_attributes (machine-friendly) ----
+        const existingNotesArr: Array<{ name?: string; value?: string }> = Array.isArray(order?.note_attributes)
           ? order.note_attributes
           : [];
 
-        // Build a map so we can upsert
         const notesMap = new Map<string, string>();
-        for (const n of existingNotes) {
+        for (const n of existingNotesArr) {
           const key = (n?.name || "").toString();
           if (key) notesMap.set(key, (n?.value || "").toString());
         }
@@ -60,17 +60,53 @@ export async function POST(req: Request) {
 
         const note_attributes = Array.from(notesMap.entries()).map(([name, value]) => ({ name, value }));
 
-        const upd = await shopifyRest(`/orders/${orderId}.json`, {
-          method: "PUT",
-          body: JSON.stringify({ order: { id: orderId, note_attributes } }),
-        });
+        // ---- Notes (human-friendly text) ----
+        const existingNoteText: string = typeof order?.note === "string" ? order.note : "";
+        const intro = "Created from SBP CRM";
+        const termsLine = paymentTermsName ? `Payment terms (CRM): ${paymentTermsName}` : null;
 
-        if (!upd.ok) {
-          const t = await upd.text().catch(() => "");
-          console.warn("Order note_attributes update failed:", upd.status, t);
+        // Build next note text idempotently
+        const lines: string[] = [];
+        const haveIntro = existingNoteText.includes(intro);
+        if (existingNoteText.trim()) lines.push(existingNoteText.trim());
+        if (!haveIntro) lines.push(intro);
+        if (termsLine && !existingNoteText.includes(termsLine)) lines.push(termsLine);
+
+        const note = lines.join("\n");
+
+        // Only PUT if something actually changes
+        const willChangeNote = note !== existingNoteText;
+        const willChangeAttrs =
+          JSON.stringify(
+            (existingNotesArr || []).map((n) => ({ name: n?.name || "", value: n?.value || "" })).sort((a, b) =>
+              a.name.localeCompare(b.name)
+            )
+          ) !==
+          JSON.stringify(
+            note_attributes.map((n) => ({ name: n.name, value: n.value })).sort((a, b) =>
+              a.name.localeCompare(b.name)
+            )
+          );
+
+        if (willChangeNote || willChangeAttrs) {
+          const upd = await shopifyRest(`/orders/${orderId}.json`, {
+            method: "PUT",
+            body: JSON.stringify({
+              order: {
+                id: orderId,
+                ...(willChangeNote ? { note } : {}),
+                ...(willChangeAttrs ? { note_attributes } : {}),
+              },
+            }),
+          });
+
+          if (!upd.ok) {
+            const t = await upd.text().catch(() => "");
+            console.warn("Order update (note / note_attributes) failed:", upd.status, t);
+          }
         }
       } catch (e) {
-        console.warn("Order note_attributes augmentation error:", e);
+        console.warn("Order metadata/notes augmentation error:", e);
       }
     }
 
