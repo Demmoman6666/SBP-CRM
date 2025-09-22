@@ -183,6 +183,36 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
     // Decide Stripe vs Credit Note
     const sessionId = extractStripeSessionIdFromShopify(shopOrder);
 
+    // Helper to create a CREDIT NOTE on Shopify (no parent transaction)
+    async function createShopifyCreditNote() {
+      const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
+        method: "POST",
+        body: JSON.stringify({
+          refund: {
+            note: reason || undefined,
+            notify: true,
+            refund_line_items,
+            transactions: [
+              {
+                amount: calcAmount.toFixed(2),
+                kind: "refund",
+                gateway: "store-credit", // credit note; no parent_id
+                currency: shopCurrency,
+              },
+            ],
+          },
+        }),
+      });
+      if (!createRes.ok) {
+        const text = await createRes.text().catch(() => "");
+        return NextResponse.json(
+          { error: `Shopify refund create failed: ${createRes.status} ${text}` },
+          { status: 502 }
+        );
+      }
+      return null;
+    }
+
     if (sessionId && parentId) {
       // Stripe-backed refund + Shopify refund attached to the parent transaction
       const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
@@ -233,34 +263,28 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
           },
         }),
       });
+
       if (!createRes.ok) {
         const text = await createRes.text().catch(() => "");
-        return NextResponse.json({ error: `Shopify refund create failed: ${createRes.status} ${text}` }, { status: 502 });
+        const body = `${text}` || "";
+        // 🔁 if Shopify complains about missing/invalid parent, retry as CREDIT NOTE
+        if (
+          createRes.status === 422 &&
+          /Unable to find parent transaction/i.test(body)
+        ) {
+          const fallbackErr = await createShopifyCreditNote();
+          if (fallbackErr) return fallbackErr;
+        } else {
+          return NextResponse.json(
+            { error: `Shopify refund create failed: ${createRes.status} ${text}` },
+            { status: 502 }
+          );
+        }
       }
     } else {
       // CREDIT NOTE path (no parent payment to attach to)
-      const createRes = await shopifyRest(`/orders/${shopifyOrderId}/refunds.json`, {
-        method: "POST",
-        body: JSON.stringify({
-          refund: {
-            note: reason || undefined,
-            notify: true,
-            refund_line_items,
-            transactions: [
-              {
-                amount: calcAmount.toFixed(2),
-                kind: "refund",
-                gateway: "store-credit", // credit note; no parent_id
-                currency: shopCurrency,
-              },
-            ],
-          },
-        }),
-      });
-      if (!createRes.ok) {
-        const text = await createRes.text().catch(() => "");
-        return NextResponse.json({ error: `Shopify refund create failed: ${createRes.status} ${text}` }, { status: 502 });
-      }
+      const err = await createShopifyCreditNote();
+      if (err) return err;
     }
 
     // Refresh CRM copy from Shopify
