@@ -15,8 +15,8 @@ type Product = {
 
 async function fetchShopifyProductsByVendor(vendor: string): Promise<Product[]> {
   const out: Product[] = [];
-  // Shopify REST pagination: page through 250 at a time
   let pageInfo: string | null = null;
+
   for (let i = 0; i < 10; i++) {
     const qs = new URLSearchParams({
       vendor,
@@ -46,13 +46,13 @@ async function fetchShopifyProductsByVendor(vendor: string): Promise<Product[]> 
       });
     }
 
-    // pagination via Link headers if present
     const link = r.headers.get("link") || r.headers.get("Link");
     if (!link || !/rel="next"/i.test(link)) break;
     const m = link.match(/<[^>]*[?&]page_info=([^>&]+)[^>]*>;\s*rel="next"/i);
     pageInfo = m?.[1] ?? null;
     if (!pageInfo) break;
   }
+
   return out;
 }
 
@@ -63,20 +63,19 @@ export async function POST(req: Request) {
     if (!vendor) {
       return NextResponse.json({ error: "Missing vendor (brand)" }, { status: 400 });
     }
+
     const since = body?.since ? new Date(body.since) : null;
     const until = body?.until ? new Date(body.until) : null;
     const customerIds: string[] = Array.isArray(body?.customerIds) ? body.customerIds.map(String) : [];
 
-    // 1) Catalog for this brand (so we can show “never purchased”)
+    // 1) Full brand catalog so we can show "never purchased"
     const products = await fetchShopifyProductsByVendor(vendor);
-    // Flatten to productId (not variant) for the grid; keep a variant SKU sample for context
     const productIndex = new Map<number, { title: string; sku?: string | null }>();
     for (const p of products) {
       productIndex.set(p.id, { title: p.title, sku: p.variants?.[0]?.sku ?? null });
     }
 
-    // 2) Pull purchases for that brand from CRM orders/lineItems
-    //    Assumes prisma.lineItem has: orderId, productId (Shopify), vendor, createdAt (via order), etc.
+    // 2) Purchases for that brand from CRM
     const whereOrder: any = {};
     if (since) whereOrder.createdAt = { ...(whereOrder.createdAt || {}), gte: since };
     if (until) whereOrder.createdAt = { ...(whereOrder.createdAt || {}), lte: until };
@@ -85,11 +84,12 @@ export async function POST(req: Request) {
     const lineItems = await prisma.lineItem.findMany({
       where: {
         vendor: vendor,
-        order: where: whereOrder,
+        // ✅ relation filter must be wrapped with `is`
+        order: { is: whereOrder },
       } as any,
       select: {
         orderId: true,
-        productId: true,        // Shopify product id
+        productId: true,
         quantity: true,
         order: {
           select: { customerId: true, createdAt: true },
@@ -97,22 +97,18 @@ export async function POST(req: Request) {
       },
     });
 
-    // 3) Build matrix: customer -> product -> bought?
+    // 3) Build matrix
     const customersSet = new Set<string>();
     for (const li of lineItems) if (li.order?.customerId) customersSet.add(li.order.customerId);
-
-    // if user filtered customers, include them even if they have zero purchases (to show gaps)
     for (const id of customerIds) customersSet.add(id);
 
-    // Also fetch display info for the customers in the report
     const customers = await prisma.customer.findMany({
       where: { id: { in: Array.from(customersSet) } },
       select: { id: true, salonName: true, customerName: true },
       orderBy: [{ salonName: "asc" }, { customerName: "asc" }],
     });
 
-    // Map purchases
-    const bought = new Map<string, Set<number>>(); // customerId -> set of productId
+    const bought = new Map<string, Set<number>>();
     for (const li of lineItems) {
       const cid = li.order?.customerId;
       const pid = Number(li.productId);
@@ -121,7 +117,12 @@ export async function POST(req: Request) {
       bought.get(cid)!.add(pid);
     }
 
-    const productList = Array.from(productIndex.entries()).map(([id, v]) => ({ id, title: v.title, sku: v.sku || null }));
+    const productList = Array.from(productIndex.entries()).map(([id, v]) => ({
+      id,
+      title: v.title,
+      sku: v.sku || null,
+    }));
+
     const rows = customers.map((c) => ({
       customerId: c.id,
       customerName: c.salonName || c.customerName || c.id,
@@ -140,10 +141,7 @@ export async function POST(req: Request) {
         until: until?.toISOString() || null,
         products: productList,
         customers: rows,
-        totals: {
-          productCount: productList.length,
-          customerCount: rows.length,
-        },
+        totals: { productCount: productList.length, customerCount: rows.length },
       },
       { status: 200, headers: { "Cache-Control": "no-store" } }
     );
