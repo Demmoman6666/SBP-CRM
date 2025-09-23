@@ -13,7 +13,7 @@ export default function CustomerReportsPage() {
       >
         <div className="card">
           <b>GAP Analysis</b>
-          <p className="small">Spend by customer & vendor, filterable by Sales Rep.</p>
+          <p className="small">Spend by customer &amp; vendor, filterable by Sales Rep.</p>
           <a className="primary" href="/reports/customers/gap-analysis" style={{ marginTop: 8 }}>
             Open
           </a>
@@ -23,6 +23,15 @@ export default function CustomerReportsPage() {
           <b>Customer Drop-off</b>
           <p className="small">Which accounts haven’t ordered in X days.</p>
           <a className="primary" href="/reports/customers/drop-off" style={{ marginTop: 8 }}>
+            Open
+          </a>
+        </div>
+
+        {/* NEW: GAP Analysis (By Product) */}
+        <div className="card">
+          <b>GAP Analysis (By Product)</b>
+          <p className="small">Pick a brand to see who has / hasn’t bought each product.</p>
+          <a className="primary" href="/reports/gap-products" style={{ marginTop: 8 }}>
             Open
           </a>
         </div>
