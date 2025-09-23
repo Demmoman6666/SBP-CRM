@@ -74,6 +74,7 @@ export async function POST(req: Request) {
     for (const p of products) {
       productIndex.set(p.id, { title: p.title, sku: p.variants?.[0]?.sku ?? null });
     }
+    const allowedProductIds = new Set(productIndex.keys());
 
     // 2) Build order filter (date range + selected customers)
     const whereOrder: any = {};
@@ -81,7 +82,7 @@ export async function POST(req: Request) {
     if (until) whereOrder.createdAt = { ...(whereOrder.createdAt || {}), lte: until };
     if (customerIds.length) whereOrder.customerId = { in: customerIds };
 
-    // 3) Query orders and include their lineItems filtered by vendor
+    // 3) Query orders and include their lineItems (no vendor filter at DB level)
     const orders = await prisma.order.findMany({
       where: whereOrder,
       select: {
@@ -89,27 +90,28 @@ export async function POST(req: Request) {
         customerId: true,
         createdAt: true,
         lineItems: {
-          where: { vendor: vendor as any },
           select: {
             productId: true,
-            vendor: true,
             quantity: true,
+            // include other fields if you show them in UI
           },
         },
       },
     });
 
-    // Flatten “order + lineItems” into a lineItems array we can use
+    // Flatten and filter by the vendor’s product set
     const lineItems = orders.flatMap((o) =>
-      o.lineItems.map((li) => ({
-        orderId: o.id,
-        productId: Number(li.productId),
-        quantity: Number(li.quantity || 0),
-        order: { customerId: o.customerId, createdAt: o.createdAt },
-      }))
+      o.lineItems
+        .filter((li) => li.productId != null && allowedProductIds.has(Number(li.productId)))
+        .map((li) => ({
+          orderId: o.id,
+          productId: Number(li.productId),
+          quantity: Number(li.quantity || 0),
+          order: { customerId: o.customerId, createdAt: o.createdAt },
+        }))
     );
 
-    // 4) Work out customer set to show
+    // 4) Customers to show
     const customersSet = new Set<string>();
     for (const li of lineItems) if (li.order?.customerId) customersSet.add(li.order.customerId);
     for (const id of customerIds) customersSet.add(id);
