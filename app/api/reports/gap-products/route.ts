@@ -68,36 +68,48 @@ export async function POST(req: Request) {
     const until = body?.until ? new Date(body.until) : null;
     const customerIds: string[] = Array.isArray(body?.customerIds) ? body.customerIds.map(String) : [];
 
-    // 1) Full brand catalog so we can show "never purchased"
+    // 1) Full brand catalog so we can show “never purchased”
     const products = await fetchShopifyProductsByVendor(vendor);
     const productIndex = new Map<number, { title: string; sku?: string | null }>();
     for (const p of products) {
       productIndex.set(p.id, { title: p.title, sku: p.variants?.[0]?.sku ?? null });
     }
 
-    // 2) Purchases for that brand from CRM
+    // 2) Build order filter (date range + selected customers)
     const whereOrder: any = {};
     if (since) whereOrder.createdAt = { ...(whereOrder.createdAt || {}), gte: since };
     if (until) whereOrder.createdAt = { ...(whereOrder.createdAt || {}), lte: until };
     if (customerIds.length) whereOrder.customerId = { in: customerIds };
 
-    const lineItems = await prisma.lineItem.findMany({
-      where: {
-        vendor: vendor,
-        // ✅ relation filter must be wrapped with `is`
-        order: { is: whereOrder },
-      } as any,
+    // 3) Query orders and include their lineItems filtered by vendor
+    const orders = await prisma.order.findMany({
+      where: whereOrder,
       select: {
-        orderId: true,
-        productId: true,
-        quantity: true,
-        order: {
-          select: { customerId: true, createdAt: true },
+        id: true,
+        customerId: true,
+        createdAt: true,
+        lineItems: {
+          where: { vendor: vendor as any },
+          select: {
+            productId: true,
+            vendor: true,
+            quantity: true,
+          },
         },
       },
     });
 
-    // 3) Build matrix
+    // Flatten “order + lineItems” into a lineItems array we can use
+    const lineItems = orders.flatMap((o) =>
+      o.lineItems.map((li) => ({
+        orderId: o.id,
+        productId: Number(li.productId),
+        quantity: Number(li.quantity || 0),
+        order: { customerId: o.customerId, createdAt: o.createdAt },
+      }))
+    );
+
+    // 4) Work out customer set to show
     const customersSet = new Set<string>();
     for (const li of lineItems) if (li.order?.customerId) customersSet.add(li.order.customerId);
     for (const id of customerIds) customersSet.add(id);
@@ -108,6 +120,7 @@ export async function POST(req: Request) {
       orderBy: [{ salonName: "asc" }, { customerName: "asc" }],
     });
 
+    // 5) Build bought matrix
     const bought = new Map<string, Set<number>>();
     for (const li of lineItems) {
       const cid = li.order?.customerId;
