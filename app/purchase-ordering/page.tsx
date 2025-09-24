@@ -1,205 +1,134 @@
-'use client';
+import { NextRequest, NextResponse } from "next/server";
+import { lwSession } from "@/lib/linnworks";
 
-import { useEffect, useMemo, useState } from 'react';
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-type Supplier = { id: string; name: string };
-type Location = { id: string; name: string; tag?: string | null };
-type ItemRow = {
-  sku: string;
-  title: string;
-  stockItemId?: string;
-  orderQty: number;
-  sales30?: number;
-  sales60?: number;
+type Input = {
+  skus: string[];
+  idBySku?: Record<string, string>; // optional: sku -> stockItemId
+  locationId?: string;
+  days30?: boolean;
+  days60?: boolean;
 };
 
-type SortKey = 'sku' | 'title' | 'sales30' | 'sales60';
-type SortDir = 'asc' | 'desc';
+function uniqSkus(arr: any): string[] {
+  const out = new Set<string>();
+  (Array.isArray(arr) ? arr : []).forEach((v) => {
+    const s = String(v ?? "").trim();
+    if (s) out.add(s);
+  });
+  return [...out];
+}
 
-export default function PurchaseOrderingPage() {
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [locations, setLocations] = useState<Location[]>([]);
-  const [supplierId, setSupplierId] = useState<string>('');
-  const [locationId, setLocationId] = useState<string>('');
-  const [loading, setLoading] = useState(false);
-  const [items, setItems] = useState<ItemRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>('');
+async function readJson(res: Response) {
+  const t = await res.text();
+  try { return JSON.parse(t); } catch { return t; }
+}
 
-  const [sortBy, setSortBy] = useState<SortKey>('sku');
-  const [sortDir, setSortDir] = useState<SortDir>('asc');
-  const toggleSort = (k: SortKey) => {
-    if (sortBy === k) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
-    else { setSortBy(k); setSortDir('asc'); }
-  };
+export async function POST(req: NextRequest) {
+  const payload = (await req.json().catch(() => ({}))) as Input;
+  const skus = uniqSkus(payload.skus).slice(0, 200);
+  if (!skus.length) return NextResponse.json({ ok: false, error: "No SKUs provided" }, { status: 400 });
 
-  const sorted = useMemo(() => {
-    const arr = [...items];
-    arr.sort((a, b) => {
-      const dir = sortDir === 'asc' ? 1 : -1;
-      const av = (a as any)[sortBy] ?? '';
-      const bv = (b as any)[sortBy] ?? '';
-      if (typeof av === 'number' || typeof bv === 'number') return (Number(av) - Number(bv)) * dir;
-      return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' }) * dir;
-    });
-    return arr;
-  }, [items, sortBy, sortDir]);
+  const want30 = payload.days30 !== false;
+  const want60 = payload.days60 !== false;
+  const locationId = payload.locationId || undefined;
+  const providedMap = payload.idBySku || {};
 
-  // Load dropdowns
-  useEffect(() => {
-    (async () => {
-      setError(null);
-      try {
-        const [sRes, lRes] = await Promise.all([
-          fetch('/api/lw/suppliers', { cache: 'no-store' }),
-          fetch('/api/lw/locations', { cache: 'no-store' }),
-        ]);
-        const sJson = await sRes.json().catch(() => ({ ok: false }));
-        const lJson = await lRes.json().catch(() => ({ ok: false }));
-        if (sJson?.ok) setSuppliers(sJson.suppliers ?? []);
-        if (lJson?.ok) setLocations(lJson.locations ?? []);
-      } catch (e: any) {
-        setError(String(e?.message ?? e));
-      }
-    })();
-  }, []);
+  try {
+    const { token, server } = await lwSession();
 
-  async function fetchPlan(forSupplierId: string) {
-    if (!forSupplierId) return;
-    setLoading(true);
-    setError(null);
-    setStatus('Loading items…');
-    setItems([]);
+    // Resolve IDs only for SKUs not provided by the client
+    const missing = skus.filter(s => !providedMap[s]);
+    const skuToId = new Map<string, string>(Object.entries(providedMap));
 
-    try {
-      // 1) Items (now include stockItemId)
-      const itsRes = await fetch(`/api/lw/items-by-supplier?supplierId=${encodeURIComponent(forSupplierId)}&limit=800`, { cache: 'no-store' });
-      const itsJson = await itsRes.json().catch(() => ({ ok: false }));
-      if (!itsJson?.ok) throw new Error(itsJson?.error || 'Failed to fetch items');
-
-      const baseRows: ItemRow[] = (itsJson.items as any[]).map((it: any) => ({
-        sku: it.sku,
-        title: it.title || '',
-        stockItemId: it.stockItemId,
-        orderQty: 0,
-      }));
-      if (!baseRows.length) { setStatus('No items found for this supplier.'); return; }
-
-      setItems(baseRows);
-      setStatus(`Loaded ${baseRows.length} item(s). Getting sales…`);
-
-      // 2) Sales: send idBySku so server doesn't have to resolve again
-      const idBySku: Record<string, string> = {};
-      for (const r of baseRows) if (r.stockItemId) idBySku[r.sku] = r.stockItemId;
-
-      const skus = baseRows.map(r => r.sku).filter(Boolean).slice(0, 200);
-      if (skus.length) {
-        const salesRes = await fetch('/api/lw/sales-by-sku', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ skus, idBySku, days30: true, days60: true, locationId: locationId || undefined }),
+    if (missing.length) {
+      // Try the object body shapes that some accounts require
+      const tryShapes = async (body: any) => {
+        const r = await fetch(`${server}/api/Inventory/GetStockItemIdsBySKU`, {
+          method: "POST",
+          headers: { Authorization: token, "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(body),
         });
-        const salesJson = await salesRes.json().catch(() => ({ ok: false }));
-        if (!salesJson?.ok) throw new Error(salesJson?.error || 'Failed to fetch sales');
+        return { ok: r.ok, status: r.status, data: await readJson(r) };
+      };
 
-        const bySku: Record<string, { d30?: number; d60?: number }> = salesJson.sales || {};
-        setItems(prev => prev.map(r => ({ ...r, sales30: bySku[r.sku]?.d30 ?? 0, sales60: bySku[r.sku]?.d60 ?? 0 })));
+      let idsResp = await tryShapes({ skus: missing });
+      if (!idsResp.ok || !Array.isArray(idsResp.data)) {
+        const alt = await tryShapes({ Skus: missing });
+        if (alt.ok && Array.isArray(alt.data)) idsResp = alt;
+      }
+      if (!idsResp.ok || !Array.isArray(idsResp.data)) {
+        const alt2 = await tryShapes({ SKUs: missing });
+        if (alt2.ok && Array.isArray(alt2.data)) idsResp = alt2;
       }
 
-      setStatus('Ready.');
-    } catch (e: any) {
-      setError(String(e?.message ?? e));
-      setStatus('');
-    } finally {
-      setLoading(false);
+      if (idsResp.ok && Array.isArray(idsResp.data)) {
+        for (const row of idsResp.data) {
+          const sku = row?.SKU ?? row?.Sku ?? row?.sku ?? row?.ItemNumber;
+          const id  = row?.StockItemId ?? row?.StockItemGuid ?? row?.Id ?? row?.stockItemId;
+          if (sku && id) skuToId.set(String(sku), String(id));
+        }
+      } else {
+        // Fallback per-SKU search via Stock/GetStockItemsFull
+        for (const sku of missing) {
+          const body = { keyword: sku, searchTypes: ["SKU"], entriesPerPage: 50, pageNumber: 1, dataRequirements: [] };
+          try {
+            const r = await fetch(`${server}/api/Stock/GetStockItemsFull`, {
+              method: "POST",
+              headers: { Authorization: token, "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify(body),
+            });
+            const data: any = await readJson(r);
+            const arr: any[] = Array.isArray(data) ? data : [];
+            const hit = arr.find((row) => (row?.SKU ?? row?.ItemNumber) === sku);
+            const id = hit?.Id ?? hit?.StockItemId ?? hit?.pkStockItemId;
+            if (id) skuToId.set(sku, String(id));
+          } catch {/* ignore */}
+        }
+      }
     }
+
+    // Date windows
+    const now = new Date();
+    const start60 = new Date(now); start60.setDate(now.getDate() - 60); start60.setHours(0,0,0,0);
+    const start30 = new Date(now); start30.setDate(now.getDate() - 30); start30.setHours(0,0,0,0);
+    const endISO  = now.toISOString();
+
+    // Fetch consumption & aggregate (treat negatives as sales)
+    const sales: Record<string, { d30?: number; d60?: number }> = {};
+    for (const sku of skus) {
+      const stockItemId = skuToId.get(sku);
+      if (!stockItemId) { sales[sku] = { d30: 0, d60: 0 }; continue; }
+
+      const url = new URL(`${server}/api/Stock/GetStockConsumption`);
+      url.searchParams.set("stockItemId", stockItemId);
+      url.searchParams.set("startDate", start60.toISOString());
+      url.searchParams.set("endDate", endISO);
+      if (locationId) url.searchParams.set("locationId", locationId);
+
+      const res = await fetch(url.toString(), { headers: { Authorization: token, Accept: "application/json" } });
+      const data: any = await readJson(res);
+      const arr: any[] = Array.isArray(data) ? data : [];
+
+      const sumFrom = (from: Date) =>
+        arr.reduce((acc, r) => {
+          const d = new Date(r?.Date ?? r?.date ?? 0);
+          const qRaw = Number(r?.Quantity ?? r?.Qty ?? r?.StockQuantity ?? 0) || 0;
+          // If consumption uses negative deltas for stock-out, count the magnitude of negatives as sales:
+          const qSold = qRaw < 0 ? -qRaw : qRaw;
+          return d >= from ? acc + qSold : acc;
+        }, 0);
+
+      sales[sku] = {
+        d60: want60 ? sumFrom(start60) : undefined,
+        d30: want30 ? sumFrom(start30) : undefined,
+      };
+    }
+
+    return NextResponse.json({ ok: true, sales });
+  } catch (err: any) {
+    return NextResponse.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
   }
-
-  // Auto-fetch when supplier (or location) changes
-  useEffect(() => { if (supplierId) fetchPlan(supplierId); }, [supplierId, locationId]);
-
-  const hasRows = items.length > 0;
-  const Caret = ({ k }: { k: SortKey }) => sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
-
-  return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Purchase Ordering</h1>
-        <span className="text-sm text-gray-500">Forecast demand &amp; create POs</span>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-        <label className="flex flex-col text-sm">
-          Horizon (days)
-          <input type="number" defaultValue={14} className="border rounded p-2" />
-        </label>
-        <label className="flex flex-col text-sm">
-          Lookback (days)
-          <input type="number" defaultValue={60} className="border rounded p-2" />
-        </label>
-        <label className="flex flex-col text-sm">
-          Location
-          <select className="border rounded p-2" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
-            <option value="">All</option>
-            {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-          </select>
-        </label>
-        <label className="flex flex-col text-sm">
-          Supplier
-          <select className="border rounded p-2" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
-            <option value="">All</option>
-            {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </label>
-      </div>
-
-      <div className="flex items-center gap-3">
-        <button className="px-3 py-2 rounded bg-black text-white disabled:opacity-50" disabled={!supplierId || loading} onClick={() => fetchPlan(supplierId)}>
-          {loading ? 'Loading…' : 'Generate plan'}
-        </button>
-        {!!status && <span className="text-xs text-gray-600">{status}</span>}
-      </div>
-
-      {error && <div className="p-3 text-sm rounded bg-red-50 text-red-700 border border-red-200">{error}</div>}
-
-      <div className="border rounded-lg overflow-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="text-left p-3"><button className="font-medium hover:underline" onClick={() => toggleSort('sku')}>SKU <Caret k="sku" /></button></th>
-              <th className="text-left p-3"><button className="font-medium hover:underline" onClick={() => toggleSort('title')}>Product <Caret k="title" /></button></th>
-              <th className="text-left p-3">Order qty</th>
-              <th className="text-right p-3"><button className="font-medium hover:underline" onClick={() => toggleSort('sales30')}>30 days sales <Caret k="sales30" /></button></th>
-              <th className="text-right p-3"><button className="font-medium hover:underline" onClick={() => toggleSort('sales60')}>60 days sales <Caret k="sales60" /></button></th>
-            </tr>
-          </thead>
-          <tbody>
-            {!hasRows && <tr><td className="p-3" colSpan={5}>Pick a supplier and click “Generate plan”…</td></tr>}
-            {sorted.map(r => (
-              <tr key={r.sku} className="border-t">
-                <td className="p-3">{r.sku}</td>
-                <td className="p-3">{r.title}</td>
-                <td className="p-3">
-                  <input
-                    type="number"
-                    className="border rounded p-2 w-28"
-                    value={r.orderQty}
-                    min={0}
-                    onChange={(e) => {
-                      const v = Number(e.target.value || 0);
-                      setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
-                    }}
-                  />
-                </td>
-                <td className="p-3 text-right">{r.sales30 ?? 0}</td>
-                <td className="p-3 text-right">{r.sales60 ?? 0}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <p className="text-xs text-gray-500">* Sales figures come from Stock → GetStockConsumption over the last 30 / 60 days (negatives treated as sales).</p>
-    </div>
-  );
 }
