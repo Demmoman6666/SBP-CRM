@@ -15,15 +15,19 @@ export async function GET(req: NextRequest) {
 
   try {
     const { token, server } = await lwSession();
+
     const items: any[] = [];
     let pageNumber = 1;
 
     while (items.length < hardLimit) {
+      // Ask LW to include supplier array on each item
       const body = {
         keyword: "",
+        loadCompositeParents: false,
+        loadVariationParents: false,
         entriesPerPage,
         pageNumber,
-        dataRequirements: ["Supplier"], // we just need suppliers for filtering
+        dataRequirements: ["Supplier"], // <- docs show this is the right flag
       };
 
       const res = await fetch(`${server}/api/Stock/GetStockItemsFull`, {
@@ -37,24 +41,26 @@ export async function GET(req: NextRequest) {
       });
 
       let page: any[] = [];
-      try { page = await res.json(); } catch { page = []; }
+      try {
+        page = await res.json();
+      } catch {
+        return NextResponse.json(
+          { ok: false, error: `Non-JSON from LW (items), status ${res.status}` },
+          { status: 502 }
+        );
+      }
+
       if (!Array.isArray(page) || page.length === 0) break;
 
       for (const it of page) {
-        const sups: any[] = Array.isArray(it?.Suppliers) ? it.Suppliers : [];
-        // 🔧 normalise supplier id(s) on each item
-        const hasSupplier = sups.some((s) => {
+        const suppliers: any[] = Array.isArray(it?.Suppliers) ? it.Suppliers : [];
+        const matches = suppliers.some((s) => {
           const sid =
-            s?.SupplierId ??
-            s?.SupplierID ??
-            s?.fkSupplierId ??
-            s?.pkSupplierId ??
-            s?.Id ??
-            null;
+            s?.SupplierID ?? s?.SupplierId ?? s?.fkSupplierId ?? s?.pkSupplierId ?? s?.Id ?? null;
           return sid && String(sid).toLowerCase() === supplierId.toLowerCase();
         });
 
-        if (hasSupplier) {
+        if (matches) {
           items.push({
             stockItemId: it?.StockItemId ?? it?.pkStockItemId ?? it?.Id ?? null,
             sku:
@@ -68,11 +74,13 @@ export async function GET(req: NextRequest) {
         }
       }
 
+      // no more pages
       if (page.length < entriesPerPage) break;
       pageNumber += 1;
-      if (pageNumber > 25) break; // safety
+      if (pageNumber > 50) break; // safety
     }
 
+    // de-dupe by SKU
     const uniq = new Map<string, any>();
     items.forEach((x) => { if (x?.sku) uniq.set(x.sku, x); });
 
@@ -82,6 +90,9 @@ export async function GET(req: NextRequest) {
       items: Array.from(uniq.values()),
     });
   } catch (err: any) {
-    return NextResponse.json({ ok: false, error: String(err?.message ?? err) }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: String(err?.message ?? err) },
+      { status: 500 }
+    );
   }
 }
