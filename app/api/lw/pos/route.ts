@@ -2,19 +2,22 @@ import { NextResponse } from "next/server";
 import { getLW } from "@/lib/linnworks";
 export const dynamic = "force-dynamic";
 
-// body: { supplierId, locationId, currency, deliveryDateISO, lines: [{ stockItemId, qty, unitCost }] }
 export async function POST(req: Request) {
   const { supplierId, locationId, currency, deliveryDateISO, lines } = await req.json();
-  const { token, host } = await getLW();
+  const { token, base } = await getLW();
 
-  const init = await fetch(`https://${host}/api/PurchaseOrder/Create_PurchaseOrder_Initial`, {
+  const initRes = await fetch(`${base}/api/PurchaseOrder/Create_PurchaseOrder_Initial`, {
     method: "POST",
     headers: { Authorization: token, "Content-Type": "application/json" },
     body: JSON.stringify({ supplierId, locationId, currency, deliveryDate: deliveryDateISO }),
-  }).then(r => r.json());
+  });
+  const initTxt = await initRes.text();
+  if (!initRes.ok) return NextResponse.json({ ok:false, error:"Create PO init failed", status:initRes.status, body:initTxt }, { status: 500 });
+
+  const init = JSON.parse(initTxt); // { pkPurchaseId, ... }
 
   for (const line of lines) {
-    await fetch(`https://${host}/api/PurchaseOrder/Add_PurchaseOrderItem`, {
+    const addRes = await fetch(`${base}/api/PurchaseOrder/Add_PurchaseOrderItem`, {
       method: "POST",
       headers: { Authorization: token, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -26,7 +29,11 @@ export async function POST(req: Request) {
         },
       }),
     });
+    if (!addRes.ok) {
+      const t = await addRes.text();
+      return NextResponse.json({ ok:false, error:"Add PO line failed", status:addRes.status, body:t }, { status: 500 });
+    }
   }
 
-  return NextResponse.json({ purchaseId: init.pkPurchaseId, count: lines.length });
+  return NextResponse.json({ ok:true, purchaseId: init.pkPurchaseId, count: lines.length });
 }
