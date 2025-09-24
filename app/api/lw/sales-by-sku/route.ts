@@ -12,12 +12,12 @@ type Input = {
 };
 
 function uniqSkus(arr: any): string[] {
-  const set = new Set<string>();
-  (Array.isArray(arr) ? arr : []).forEach((s) => {
-    const v = String(s ?? "").trim();
-    if (v) set.add(v);
+  const out = new Set<string>();
+  (Array.isArray(arr) ? arr : []).forEach((v) => {
+    const s = String(v ?? "").trim();
+    if (s) out.add(s);
   });
-  return [...set];
+  return [...out];
 }
 
 async function readJson(res: Response) {
@@ -26,42 +26,89 @@ async function readJson(res: Response) {
 }
 
 export async function POST(req: NextRequest) {
+  const payload = (await req.json().catch(() => ({}))) as Input;
+  const skus = uniqSkus(payload.skus).slice(0, 200); // safety cap
+  if (!skus.length) return NextResponse.json({ ok: false, error: "No SKUs provided" }, { status: 400 });
+
+  const want30 = payload.days30 !== false;
+  const want60 = payload.days60 !== false;
+  const locationId = payload.locationId || undefined;
+
   try {
-    const body = (await req.json().catch(() => ({}))) as Input;
-    const skus = uniqSkus(body.skus).slice(0, 200); // safety cap
-    if (!skus.length) return NextResponse.json({ ok: false, error: "No SKUs provided" }, { status: 400 });
-
-    const want30 = body.days30 !== false;
-    const want60 = body.days60 !== false;
-    const locationId = body.locationId || undefined;
-
     const { token, server } = await lwSession();
 
-    // --- 1) SKUs -> stockItemIds (try array body, then { skus } body)
-    async function getIds(payload: any) {
-      const res = await fetch(`${server}/api/Inventory/GetStockItemIdsBySKU`, {
+    // --- 1) Resolve stockItemIds (robust)
+    async function tryIds(body: any) {
+      const r = await fetch(`${server}/api/Inventory/GetStockItemIdsBySKU`, {
         method: "POST",
         headers: { Authorization: token, "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(body),
       });
-      return { ok: res.ok, data: await readJson(res), status: res.status };
+      const data = await readJson(r);
+      return { ok: r.ok, status: r.status, data };
     }
 
-    let ids = await getIds(skus);
-    if (!ids.ok || !Array.isArray(ids.data)) {
-      // retry alternative shape
-      const retry = await getIds({ skus });
-      if (retry.ok && Array.isArray(retry.data)) ids = retry;
-    }
-    if (!Array.isArray(ids.data)) {
-      return NextResponse.json({ ok: false, error: "GetStockItemIdsBySKU failed", status: ids.status, body: ids.data }, { status: 502 });
+    // Try object bodies (accounts that reject arrays will accept one of these)
+    let idsResp =
+      await tryIds({ skus }) ||
+      await tryIds({ Skus: skus }) ||
+      await tryIds({ SKUs: skus });
+
+    // If the first call returned something falsy (shouldn't), ensure we have an object
+    if (!idsResp) idsResp = { ok: false, status: 0, data: null };
+
+    // Normalise any of these shapes to an array of rows
+    function rowsFromIds(data: any): any[] | null {
+      if (Array.isArray(data)) return data;
+      if (Array.isArray(data?.Data)) return data.Data;
+      if (Array.isArray(data?.items)) return data.items;
+      return null;
     }
 
+    let rows = rowsFromIds(idsResp.data);
+
+    // Fallback: if ids couldn’t be read, search each SKU via Stock/GetStockItemsFull
     const skuToId = new Map<string, string>();
-    for (const row of ids.data) {
-      const sku = row?.SKU ?? row?.Sku ?? row?.sku ?? row?.ItemNumber;
-      const id  = row?.StockItemId ?? row?.StockItemGuid ?? row?.Id ?? row?.stockItemId;
-      if (sku && id) skuToId.set(String(sku), String(id));
+    if (rows && idsResp.ok) {
+      for (const row of rows) {
+        const sku = row?.SKU ?? row?.Sku ?? row?.sku ?? row?.ItemNumber;
+        const id  = row?.StockItemId ?? row?.StockItemGuid ?? row?.Id ?? row?.stockItemId;
+        if (sku && id) skuToId.set(String(sku), String(id));
+      }
+    } else {
+      // Per-SKU fallback (concurrency limited)
+      const concurrency = 6;
+      let i = 0;
+      async function worker() {
+        while (i < skus.length) {
+          const idx = i++;
+          const sku = skus[idx];
+          // Use GetStockItemsFull keyword search with searchTypes ["SKU"]
+          const body = {
+            keyword: sku,
+            searchTypes: ["SKU"],
+            entriesPerPage: 50,
+            pageNumber: 1,
+            dataRequirements: [], // minimal
+          };
+          try {
+            const r = await fetch(`${server}/api/Stock/GetStockItemsFull`, {
+              method: "POST",
+              headers: { Authorization: token, "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify(body),
+            });
+            const data: any = await readJson(r);
+            const arr: any[] = Array.isArray(data) ? data : [];
+            // exact SKU match
+            const hit = arr.find((row) => (row?.SKU ?? row?.ItemNumber) === sku);
+            const id = hit?.Id ?? hit?.StockItemId ?? hit?.pkStockItemId;
+            if (id) skuToId.set(sku, String(id));
+          } catch {
+            // ignore; leave missing
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(concurrency, skus.length) }, worker));
     }
 
     // --- 2) Date windows
@@ -70,7 +117,7 @@ export async function POST(req: NextRequest) {
     const start30 = new Date(now); start30.setDate(now.getDate() - 30); start30.setHours(0,0,0,0);
     const endISO  = now.toISOString();
 
-    // --- 3) For each sku: Stock/GetStockConsumption (60d), derive 30d
+    // --- 3) Fetch consumption and aggregate
     const sales: Record<string, { d30?: number; d60?: number }> = {};
     for (const sku of skus) {
       const stockItemId = skuToId.get(sku);
@@ -84,19 +131,18 @@ export async function POST(req: NextRequest) {
 
       const res = await fetch(url.toString(), { headers: { Authorization: token, Accept: "application/json" } });
       const data: any = await readJson(res);
-      const rows: any[] = Array.isArray(data) ? data : [];
+      const arr: any[] = Array.isArray(data) ? data : [];
 
-      // field names vary; prefer explicit "Quantity"/"Qty"/"StockQuantity"
-      const sum = (from: Date) =>
-        rows.reduce((acc, r) => {
+      const sumFrom = (from: Date) =>
+        arr.reduce((acc, r) => {
           const d = new Date(r?.Date ?? r?.date ?? 0);
           const q = Number(r?.Quantity ?? r?.Qty ?? r?.StockQuantity ?? 0) || 0;
           return d >= from ? acc + q : acc;
         }, 0);
 
       sales[sku] = {
-        d60: want60 ? sum(start60) : undefined,
-        d30: want30 ? sum(start30) : undefined,
+        d60: want60 ? sumFrom(start60) : undefined,
+        d30: want30 ? sumFrom(start30) : undefined,
       };
     }
 
