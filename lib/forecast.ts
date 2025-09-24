@@ -1,14 +1,14 @@
 export type DemandInputs = {
-  avgDaily: number; // from processed orders
-  dailyStdDev?: number; // optional
+  avgDaily: number;
+  dailyStdDev?: number;
   leadTimeDays: number;
-  reviewDays: number;   // your PO cadence, e.g. 7
-  bufferDays: number;   // UI slider
-  serviceLevelZ: number; // 1.28=90%, 1.64=95%, 2.05=98%
-  horizonDays: number;  // how far forward you want coverage
+  reviewDays: number;
+  bufferDays: number;
+  serviceZ: number;
+  horizonDays: number;
   onHand: number;
-  inOrderBook: number; // open sales
-  due: number;         // on POs
+  inOrderBook: number;
+  due: number;
   packSize?: number;
   moq?: number;
 };
@@ -17,8 +17,8 @@ export function suggestQty(x: DemandInputs) {
   const L = x.leadTimeDays + x.bufferDays;
   const R = x.reviewDays;
   const SS = x.dailyStdDev
-    ? x.serviceLevelZ * x.dailyStdDev * Math.sqrt(L + R)
-    : 0.3 * x.avgDaily * (L + R); // fallback heuristic
+    ? x.serviceZ * x.dailyStdDev * Math.sqrt(L + R)
+    : 0.3 * x.avgDaily * (L + R);
   const ROP = x.avgDaily * (L + R) + SS;
   const target = ROP + x.avgDaily * x.horizonDays;
   const netPos = x.onHand - x.inOrderBook + x.due;
