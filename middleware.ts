@@ -62,6 +62,8 @@ const PUBLIC_PATHS = [
   "/robots.txt",
   "/site.webmanifest",
   "/logo.svg",
+  "/purchase-ordering",
+
 ];
 
 /** Any /public file extensions you want to serve without auth */
