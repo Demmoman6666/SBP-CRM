@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lwSession } from "@/lib/linnworks";
-.
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
