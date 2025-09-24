@@ -172,28 +172,21 @@ model Customer {
   shopifyLastSyncedAt  DateTime?
 
   // --- NEW: Payment terms (applied to Shopify draft orders) ---
-  // If true, CRM should send a payment_terms block to Shopify when creating drafts
-  paymentDueLater      Boolean   @default(false)
-  // Matches Shopify payment term name, e.g. "Net 30", "Due on receipt", etc.
-  paymentTermsName     String?
-  // Optional: number of days (e.g. 30 for "Net 30"); not required for "Due on receipt"
+  paymentDueLater       Boolean  @default(false)
+  paymentTermsName      String?
   paymentTermsDueInDays Int?
 
   // Orders relationship
   orders               Order[]
 
   // ---------------- Route Planning ----------------
-  /// Toggle to include this salon in the 4-week route plan
   routePlanEnabled     Boolean     @default(false)
-  /// Weeks in the 4-week cycle to visit (values 1..4)
   routeWeeks           Int[]       @default([])
-  /// Days of week to visit (Mon–Fri)
   routeDays            RouteDay[]  @default([])
 
   @@index([customerEmailAddress])
   @@index([salesRep])
   @@index([stage])
-  // Helpful for planner queries by rep
   @@index([routePlanEnabled, salesRep])
 }
 
@@ -245,10 +238,8 @@ model Brand {
   name             String   @unique
   createdAt        DateTime @default(now())
 
-  // Toggle in Global Settings to show in Call Log competitor list
   visibleInCallLog Boolean  @default(false)
 
-  // back-relation for CallLogCompetitorBrand.brand
   competitorLinks  CallLogCompetitorBrand[]
 }
 
@@ -271,7 +262,6 @@ model CallLog {
   outcome              String?
   staff                String?
 
-  // stage captured at the time of the call
   stage                CustomerStage?
 
   followUpRequired     Boolean   @default(false)
@@ -282,13 +272,11 @@ model CallLog {
   durationMinutes      Int?
   appointmentBooked    Boolean?  @default(false)
 
-  // GEO (captured by the form; required at UI level)
   latitude             Float?
   longitude            Float?
   accuracyM            Float?
   geoCollectedAt       DateTime?
 
-  // links chosen during the call
   stockedBrandLinks    CallLogStockedBrand[]
   competitorBrandLinks CallLogCompetitorBrand[]
 
@@ -303,13 +291,10 @@ model StockedBrand {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  // Toggle in Global Settings to show in Call Log stocked list
   visibleInCallLog Boolean  @default(false)
 
-  // back-relation for CallLogStockedBrand.brand
   callLinks        CallLogStockedBrand[]
 
-  // back-relation for Target.vendor
   targets          Target[]  @relation("TargetVendor")
 }
 
@@ -352,7 +337,6 @@ model OrderLineItem {
   orderId           String
   order             Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  // Shopify identifiers
   shopifyLineItemId String?  @unique
   productId         String?
   productTitle      String?
@@ -360,7 +344,6 @@ model OrderLineItem {
   variantTitle      String?
   sku               String?
 
-  // captured from Shopify line_items[].vendor
   productVendor     String?
 
   quantity          Int      @default(1)
@@ -627,7 +610,9 @@ model PurchasePlan {
   supplierId    String?
   supplier      LwSupplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
 
+  // relations
   lines         PurchasePlanLine[]
+  poSyncs       PurchaseOrderSync[]   // <— back-relation added
 
   @@index([status, createdAt])
   @@index([locationId])
