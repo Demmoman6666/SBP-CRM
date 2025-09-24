@@ -3,12 +3,9 @@ type LWSession = { token: string; base: string; fetchedAt: number };
 let cache: LWSession | null = null;
 
 function toBase(server: string) {
-  const s = server?.trim();
-  if (!s) return "";
-  // If server already has protocol, keep it; otherwise prefix https://
+  const s = (server || "").trim();
   const withProto = /^https?:\/\//i.test(s) ? s : `https://${s}`;
-  // Strip trailing slashes
-  return withProto.replace(/\/+$/, "");
+  return withProto.replace(/\/+$/, ""); // strip trailing slash
 }
 
 export async function getLW(): Promise<LWSession> {
@@ -33,5 +30,11 @@ export async function getLW(): Promise<LWSession> {
   }
 
   cache = { token: json.Token, base: toBase(json.Server), fetchedAt: now };
-  return cache!;
+  return cache;
+}
+
+// ✅ Compat wrapper for routes that expect { token, server }
+export async function lwSession(): Promise<{ token: string; server: string; base: string }> {
+  const s = await getLW();
+  return { token: s.token, server: s.base, base: s.base };
 }
