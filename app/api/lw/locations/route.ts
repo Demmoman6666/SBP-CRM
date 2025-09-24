@@ -9,12 +9,22 @@ export async function GET() {
       headers: { Authorization: token },
       cache: "no-store",
     });
-    const txt = await r.text();
+
+    const text = await r.text();
     if (!r.ok) {
-      return NextResponse.json({ error: "LW locations failed", status: r.status, body: txt }, { status: 500 });
+      return NextResponse.json({ ok: false, error: "LW GetStockLocations failed", status: r.status, body: text }, { status: 500 });
     }
-    return NextResponse.json({ locations: JSON.parse(txt) });
+
+    const raw = JSON.parse(text);
+    const arr = Array.isArray(raw) ? raw : Array.isArray(raw?.Data) ? raw.Data : [];
+    const locations = arr.map((s: any) => ({
+      LocationId: s.LocationId ?? s.Id ?? s.locationId ?? s.pkStockLocationId ?? s.pkStockLocationID,
+      LocationName: s.LocationName ?? s.Name ?? s.locationName ?? s.Title ?? "Unknown",
+      IsDefault: Boolean(s.IsDefault ?? s.Default ?? s.isDefault ?? false),
+    })).filter((x: any) => x.LocationId);
+
+    return NextResponse.json({ ok: true, locations });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "LW locations error" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: e?.message || "LW locations error" }, { status: 500 });
   }
 }
