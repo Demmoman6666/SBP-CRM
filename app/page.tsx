@@ -8,10 +8,14 @@ export default async function Home() {
   const role = me?.role ?? null;
 
   // Decide which tiles to show (adjust if you want stricter gating)
-  const canSeeSalesHub   = true;              // everyone
-  const canSeeReports    = true;              // everyone (set to role !== "VIEWER" if you want)
-  const canSeeMarketing  = true;              // tweak to roles if needed
-  const canSeeEducation  = true;              // tweak to roles if needed
+  const canSeeSalesHub = true;              // everyone
+  const canSeeReports = true;               // everyone (set to role !== "VIEWER" if you want)
+  const canSeeMarketing = true;             // tweak to roles if needed
+  const canSeeEducation = true;             // tweak to roles if needed
+
+  // NEW: Purchase Ordering tile (leave open to all for now; tighten if needed)
+  // e.g. restrict with: const canSeePurchaseOrdering = role === "ADMIN" || role === "MANAGER";
+  const canSeePurchaseOrdering = true;
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -32,6 +36,14 @@ export default async function Home() {
           <Link href="/reports" className="action-tile">
             <div className="action-title">Reporting</div>
             <div className="action-sub">Call &amp; customer reporting</div>
+          </Link>
+        )}
+
+        {/* NEW: Purchase Ordering */}
+        {canSeePurchaseOrdering && (
+          <Link href="/purchase-ordering" className="action-tile">
+            <div className="action-title">Purchase Ordering</div>
+            <div className="action-sub">Forecast demand &amp; create POs</div>
           </Link>
         )}
 
