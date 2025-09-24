@@ -3,57 +3,106 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+type VendorObj = { id: string; name: string };
+
 export default function GapByProductPage() {
-  const [vendors, setVendors] = useState<string[]>([]);
-  const [loadingVendors, setLoadingVendors] = useState(false);
+  // vendor dropdown state
+  const [vendors, setVendors] = useState<VendorObj[]>([]);
+  const [loadingVendors, setLoadingVendors] = useState<boolean>(true);
+  const [vendorsError, setVendorsError] = useState<string | null>(null);
 
   // form state
   const [vendor, setVendor] = useState<string>("");
   const [since, setSince] = useState<string>("");
   const [until, setUntil] = useState<string>("");
 
-  // results
-  const [running, setRunning] = useState(false);
+  // report state
+  const [running, setRunning] = useState<boolean>(false);
   const [rows, setRows] = useState<any[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // load vendors safely
   useEffect(() => {
-    let stale = false;
+    let alive = true;
     (async () => {
+      setLoadingVendors(true);
+      setVendorsError(null);
       try {
-        setLoadingVendors(true);
-        const r = await fetch("/api/vendors", { cache: "no-store" });
-        const j = await r.json().catch(() => ({}));
-        if (stale) return;
-        if (r.ok && Array.isArray(j?.vendors)) {
-          setVendors(j.vendors);
-        } else {
-          // graceful fallback – leave vendors empty, user can still type (if we ever add a free-text input again)
-          console.warn("Vendors fetch failed:", j?.error || r.status);
+        const r = await fetch("/api/vendors", {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+
+        // Accept both shapes:
+        // 1) { vendors: [{id,name}], names: string[] }
+        // 2) string[]
+        let list: VendorObj[] = [];
+        if (Array.isArray(j)) {
+          list = j
+            .filter((s) => typeof s === "string" && s.trim())
+            .map((name: string) => ({ id: name, name }));
+        } else if (j && Array.isArray(j.vendors)) {
+          list = j.vendors
+            .map((v: any) => ({
+              id: String(v?.id ?? v?.name ?? "").trim(),
+              name: String(v?.name ?? v?.id ?? "").trim(),
+            }))
+            .filter((v: VendorObj) => v.id && v.name);
+        } else if (j && Array.isArray(j.names)) {
+          list = j.names
+            .filter((s: any) => typeof s === "string" && s.trim())
+            .map((name: string) => ({ id: name, name }));
         }
+
+        // dedupe + sort
+        const seen = new Set<string>();
+        const cleaned: VendorObj[] = [];
+        for (const v of list) {
+          const key = v.name.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          cleaned.push(v);
+        }
+        cleaned.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+
+        if (!alive) return;
+        setVendors(cleaned);
+      } catch (e: any) {
+        if (!alive) return;
+        setVendorsError(e?.message || "Failed to load vendors");
+        setVendors([]);
       } finally {
-        if (!stale) setLoadingVendors(false);
+        if (alive) setLoadingVendors(false);
       }
     })();
     return () => {
-      stale = true;
+      alive = false;
     };
   }, []);
 
   async function runReport() {
+    setRunning(true);
     setError(null);
     setRows(null);
-    setRunning(true);
     try {
-      const payload = { vendor: vendor || null, since: since || null, until: until || null };
-      const r = await fetch("/api/reports/gap-products", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(payload),
+      if (!vendor) throw new Error("Pick a brand (vendor) first.");
+
+      const params = new URLSearchParams();
+      params.set("vendor", vendor);
+      if (since) params.set("since", since);
+      if (until) params.set("until", until);
+
+      const r = await fetch(`/api/reports/gap-products?${params.toString()}`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
       });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j?.error || `Report failed: ${r.status}`);
-      setRows(Array.isArray(j?.rows) ? j.rows : []);
+      if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+
+      const data: any[] = Array.isArray(j?.rows) ? j.rows : Array.isArray(j) ? j : [];
+      setRows(data);
     } catch (e: any) {
       setError(e?.message || "Report failed");
     } finally {
@@ -61,107 +110,106 @@ export default function GapByProductPage() {
     }
   }
 
+  const canRun = useMemo(() => !!vendor && !running, [vendor, running]);
+
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ margin: 0 }}>GAP Analysis (By Product)</h1>
-        <a className="btn" href="/reports/customers">Back</a>
-      </div>
+      <section className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h1 style={{ margin: 0 }}>GAP Analysis (By Product)</h1>
+          <a className="btn" href="/reports/customers">Back</a>
+        </div>
+      </section>
 
-      <section className="card" style={{ maxWidth: 720 }}>
+      <section className="card">
         <label>Brand (vendor)</label>
-        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+        {loadingVendors ? (
+          <div className="small muted" style={{ marginTop: 6 }}>Loading brands…</div>
+        ) : vendorsError ? (
+          <div className="small" style={{ marginTop: 6, color: "#a30000" }}>
+            {vendorsError}
+          </div>
+        ) : (
           <select
             value={vendor}
             onChange={(e) => setVendor(e.target.value)}
-            disabled={loadingVendors}
-            style={{ flex: 1, minHeight: 40 }}
-            aria-label="Select brand/vendor"
+            style={{ width: "100%", marginTop: 6 }}
           >
-            <option value="">{loadingVendors ? "Loading vendors…" : "— Select a vendor —"}</option>
+            <option value="">— Select a brand —</option>
             {vendors.map((v) => (
-              <option key={v} value={v}>
-                {v}
+              <option key={v.id} value={v.name}>
+                {v.name}
               </option>
             ))}
           </select>
-          {vendor && (
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setVendor("")}
-              title="Clear vendor"
-            >
-              Clear
-            </button>
-          )}
+        )}
+
+        <div className="grid grid-2" style={{ gap: 10, marginTop: 10 }}>
+          <div>
+            <label>Since</label>
+            <input
+              type="date"
+              value={since}
+              onChange={(e) => setSince(e.target.value)}
+              placeholder="dd/mm/yyyy"
+            />
+          </div>
+          <div>
+            <label>Until</label>
+            <input
+              type="date"
+              value={until}
+              onChange={(e) => setUntil(e.target.value)}
+              placeholder="dd/mm/yyyy"
+            />
+          </div>
         </div>
 
-        <div style={{ height: 10 }} />
-
-        <label>Since</label>
-        <input
-          type="date"
-          value={since}
-          onChange={(e) => setSince(e.target.value)}
-          placeholder="dd/mm/yyyy"
-        />
-
-        <label style={{ marginTop: 8 }}>Until</label>
-        <input
-          type="date"
-          value={until}
-          onChange={(e) => setUntil(e.target.value)}
-          placeholder="dd/mm/yyyy"
-        />
-
-        <div className="row" style={{ marginTop: 12, gap: 8 }}>
-          <button className="primary" onClick={runReport} disabled={running || !vendor}>
+        <div className="row" style={{ marginTop: 10 }}>
+          <button className="primary" disabled={!canRun} onClick={runReport}>
             {running ? "Running…" : "Run report"}
           </button>
-          {!vendor && (
-            <span className="small muted">Pick a brand to enable the report.</span>
-          )}
         </div>
 
-        <p className="mini muted" style={{ marginTop: 8 }}>
-          Run the report to see results.
-        </p>
+        {!rows && !error && (
+          <p className="small muted" style={{ marginTop: 10 }}>
+            Run the report to see results.
+          </p>
+        )}
+        {error && (
+          <p className="small" style={{ marginTop: 10, color: "#a30000" }}>
+            {error}
+          </p>
+        )}
       </section>
 
-      {error && (
-        <section className="card" style={{ color: "#842029", background: "#f8d7da", borderColor: "#f5c2c7" }}>
-          <b>Error</b>
-          <div className="small" style={{ marginTop: 6 }}>{error}</div>
-        </section>
-      )}
-
-      {rows && (
-        <section className="card" style={{ overflowX: "auto" }}>
-          {rows.length === 0 ? (
-            <div className="small muted">No results.</div>
-          ) : (
+      {Array.isArray(rows) && rows.length > 0 && (
+        <section className="card">
+          <b>Results</b>
+          <div style={{ marginTop: 10, overflowX: "auto" }}>
             <table className="small" style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
+                  <th style={{ textAlign: "left", padding: "6px" }}>Customer</th>
                   <th style={{ textAlign: "left", padding: "6px" }}>Product</th>
                   <th style={{ textAlign: "left", padding: "6px" }}>SKU</th>
-                  <th style={{ textAlign: "right", padding: "6px" }}>Customers Bought</th>
-                  <th style={{ textAlign: "right", padding: "6px" }}>Customers Missing</th>
+                  <th style={{ textAlign: "right", padding: "6px" }}>Last Ordered</th>
+                  <th style={{ textAlign: "right", padding: "6px" }}>Qty Bought</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r, i) => (
+                {rows.map((r: any, i: number) => (
                   <tr key={i} style={{ borderTop: "1px solid #eee" }}>
-                    <td style={{ padding: "6px" }}>{r.title || "—"}</td>
-                    <td style={{ padding: "6px" }}>{r.sku || "—"}</td>
-                    <td style={{ padding: "6px", textAlign: "right" }}>{r.boughtCount ?? 0}</td>
-                    <td style={{ padding: "6px", textAlign: "right" }}>{r.missingCount ?? 0}</td>
+                    <td style={{ padding: "6px" }}>{r.customerName ?? "—"}</td>
+                    <td style={{ padding: "6px" }}>{r.productTitle ?? "—"}</td>
+                    <td style={{ padding: "6px" }}>{r.sku ?? "—"}</td>
+                    <td style={{ padding: "6px", textAlign: "right" }}>{r.lastOrdered ?? "—"}</td>
+                    <td style={{ padding: "6px", textAlign: "right" }}>{r.qty ?? 0}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
+          </div>
         </section>
       )}
     </div>
