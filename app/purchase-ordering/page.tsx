@@ -23,32 +23,9 @@ export default function PurchaseOrderingPage() {
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<ItemRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>('');
 
-  // sorting
-  const [sortBy, setSortBy] = useState<SortKey>('sku');
+  const [sortKey, setSortKey] = useState<SortKey>('sku');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
-  function toggleSort(k: SortKey) {
-    if (sortBy === k) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    else {
-      setSortBy(k);
-      setSortDir('asc');
-    }
-  }
-  const sortedItems = useMemo(() => {
-    const arr = [...items];
-    arr.sort((a, b) => {
-      const dir = sortDir === 'asc' ? 1 : -1;
-      const av = (a as any)[sortBy] ?? '';
-      const bv = (b as any)[sortBy] ?? '';
-      if (typeof av === 'number' || typeof bv === 'number') {
-        return (Number(av) - Number(bv)) * dir;
-      }
-      // string compare
-      return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' }) * dir;
-    });
-    return arr;
-  }, [items, sortBy, sortDir]);
 
   // Load dropdowns
   useEffect(() => {
@@ -70,62 +47,84 @@ export default function PurchaseOrderingPage() {
     })();
   }, []);
 
+  function toggleSort(k: SortKey) {
+    setSortKey(prev => (prev === k ? prev : k));
+    setSortDir(prev => (sortKey === k ? (prev === 'asc' ? 'desc' : 'asc') : 'asc'));
+  }
+
+  const sorted = useMemo(() => {
+    const arr = [...items];
+    arr.sort((a, b) => {
+      const va = ((): number | string => {
+        switch (sortKey) {
+          case 'sku': return a.sku || '';
+          case 'title': return a.title || '';
+          case 'sales30': return a.sales30 ?? -Infinity;
+          case 'sales60': return a.sales60 ?? -Infinity;
+        }
+      })();
+      const vb = ((): number | string => {
+        switch (sortKey) {
+          case 'sku': return b.sku || '';
+          case 'title': return b.title || '';
+          case 'sales30': return b.sales30 ?? -Infinity;
+          case 'sales60': return b.sales60 ?? -Infinity;
+        }
+      })();
+
+      if (typeof va === 'string' && typeof vb === 'string') {
+        return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+      }
+      const na = Number(va), nb = Number(vb);
+      return sortDir === 'asc' ? na - nb : nb - na;
+    });
+    return arr;
+  }, [items, sortKey, sortDir]);
+
   async function fetchPlan(forSupplierId: string) {
     if (!forSupplierId) return;
     setLoading(true);
     setError(null);
-    setStatus('Loading items…');
     setItems([]);
 
     try {
-      // Items for this supplier
-      const itsRes = await fetch(
-        `/api/lw/items-by-supplier?supplierId=${encodeURIComponent(forSupplierId)}&limit=800`,
-        { cache: 'no-store' }
-      );
+      // 1) Get items for this supplier
+      const itsRes = await fetch(`/api/lw/items-by-supplier?supplierId=${encodeURIComponent(forSupplierId)}&limit=600`, {
+        cache: 'no-store',
+      });
       const itsJson = await itsRes.json().catch(() => ({ ok: false }));
       if (!itsJson?.ok) throw new Error(itsJson?.error || 'Failed to fetch items');
 
-      const baseRows: ItemRow[] = (itsJson.items as any[]).map((it: any) => ({
+      const baseRows: ItemRow[] = (itsJson.items as any[]).map(it => ({
         sku: it.sku,
         title: it.title || '',
         orderQty: 0,
       }));
 
-      if (!baseRows.length) {
-        setStatus('No items found for this supplier.');
-        setItems([]);
-        return;
-      }
-
       setItems(baseRows);
-      setStatus(`Loaded ${baseRows.length} item(s). Getting sales…`);
 
-      // Sales: 30/60 days
-      const skus = baseRows.map((r) => r.sku).filter(Boolean).slice(0, 400);
+      // 2) Sales: 30/60 days via Stock/GetStockConsumption (server route)
+      const skus = baseRows.map(r => r.sku).filter(Boolean).slice(0, 200);
       if (skus.length) {
         const salesRes = await fetch('/api/lw/sales-by-sku', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ skus, days30: true, days60: true }),
+          body: JSON.stringify({ skus, days30: true, days60: true, locationId: locationId || undefined }),
         });
         const salesJson = await salesRes.json().catch(() => ({ ok: false }));
         if (!salesJson?.ok) throw new Error(salesJson?.error || 'Failed to fetch sales');
 
         const bySku: Record<string, { d30?: number; d60?: number }> = salesJson.sales || {};
-        setItems((prev) =>
-          prev.map((r) => ({
+        setItems(prev =>
+          prev.map(r => ({
             ...r,
             sales30: bySku[r.sku]?.d30 ?? 0,
             sales60: bySku[r.sku]?.d60 ?? 0,
-          }))
+          })),
         );
       }
-
-      setStatus('Ready.');
     } catch (e: any) {
       setError(String(e?.message ?? e));
-      setStatus('');
     } finally {
       setLoading(false);
     }
@@ -134,12 +133,9 @@ export default function PurchaseOrderingPage() {
   // Auto-fetch when supplier changes
   useEffect(() => {
     if (supplierId) fetchPlan(supplierId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supplierId]);
+  }, [supplierId, locationId]);
 
   const hasRows = items.length > 0;
-  const SortCarat = ({ k }: { k: SortKey }) =>
-    sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
 
   return (
     <div className="p-6 space-y-6">
@@ -167,10 +163,8 @@ export default function PurchaseOrderingPage() {
             onChange={(e) => setLocationId(e.target.value)}
           >
             <option value="">All</option>
-            {locations.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name}
-              </option>
+            {locations.map(l => (
+              <option key={l.id} value={l.id}>{l.name}</option>
             ))}
           </select>
         </label>
@@ -183,24 +177,21 @@ export default function PurchaseOrderingPage() {
             onChange={(e) => setSupplierId(e.target.value)}
           >
             <option value="">All</option>
-            {suppliers.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
+            {suppliers.map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
         </label>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex gap-2">
         <button
           className="px-3 py-2 rounded bg-black text-white disabled:opacity-50"
           disabled={!supplierId || loading}
           onClick={() => fetchPlan(supplierId)}
         >
-          {loading ? 'Loading…' : 'Generate plan'}
+          {loading ? "Loading…" : "Generate plan"}
         </button>
-        {!!status && <span className="text-xs text-gray-600">{status}</span>}
       </div>
 
       {error && (
@@ -213,39 +204,27 @@ export default function PurchaseOrderingPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              <th className="text-left p-3">
-                <button className="font-medium hover:underline" onClick={() => toggleSort('sku')}>
-                  SKU <SortCarat k="sku" />
-                </button>
+              <th className="text-left p-3 cursor-pointer select-none" onClick={() => toggleSort('sku')}>
+                SKU {sortKey === 'sku' ? (sortDir === 'asc' ? '▲' : '▼') : ''}
               </th>
-              <th className="text-left p-3">
-                <button className="font-medium hover:underline" onClick={() => toggleSort('title')}>
-                  Product <SortCarat k="title" />
-                </button>
+              <th className="text-left p-3 cursor-pointer select-none" onClick={() => toggleSort('title')}>
+                Product {sortKey === 'title' ? (sortDir === 'asc' ? '▲' : '▼') : ''}
               </th>
               <th className="text-left p-3">Order qty</th>
-              <th className="text-right p-3">
-                <button className="font-medium hover:underline" onClick={() => toggleSort('sales30')}>
-                  30 days sales <SortCarat k="sales30" />
-                </button>
+              <th className="text-right p-3 cursor-pointer select-none" onClick={() => toggleSort('sales30')}>
+                30 days sales {sortKey === 'sales30' ? (sortDir === 'asc' ? '▲' : '▼') : ''}
               </th>
-              <th className="text-right p-3">
-                <button className="font-medium hover:underline" onClick={() => toggleSort('sales60')}>
-                  60 days sales <SortCarat k="sales60" />
-                </button>
+              <th className="text-right p-3 cursor-pointer select-none" onClick={() => toggleSort('sales60')}>
+                60 days sales {sortKey === 'sales60' ? (sortDir === 'asc' ? '▲' : '▼') : ''}
               </th>
             </tr>
           </thead>
           <tbody>
             {!hasRows && (
-              <tr>
-                <td className="p-3" colSpan={5}>
-                  Pick a supplier and click “Generate plan”…
-                </td>
-              </tr>
+              <tr><td className="p-3" colSpan={5}>Pick a supplier and click “Generate plan”…</td></tr>
             )}
-            {sortedItems.map((r) => (
-              <tr key={r.sku} className="border-t">
+            {sorted.map((r) => (
+              <tr key={r.sku}>
                 <td className="p-3">{r.sku}</td>
                 <td className="p-3">{r.title}</td>
                 <td className="p-3">
@@ -256,7 +235,7 @@ export default function PurchaseOrderingPage() {
                     min={0}
                     onChange={(e) => {
                       const v = Number(e.target.value || 0);
-                      setItems((prev) => prev.map((x) => (x.sku === r.sku ? { ...x, orderQty: v } : x)));
+                      setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
                     }}
                   />
                 </td>
@@ -269,7 +248,7 @@ export default function PurchaseOrderingPage() {
       </div>
 
       <p className="text-xs text-gray-500">
-        * Sales figures come from Processed Orders (exact SKU match) over the last 30 / 60 days.
+        * Sales figures come from Stock → GetStockConsumption (exact SKU match) over the last 30 / 60 days.
       </p>
     </div>
   );
