@@ -1,161 +1,133 @@
-import { NextResponse } from 'next/server';
-import { lwSession } from '@/lib/linnworks';
+import { NextRequest, NextResponse } from "next/server";
+import { lwSession } from "@/lib/linnworks";
 
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-type Body = { skus: string[]; days30?: boolean; days60?: boolean };
+type Input = {
+  skus: string[];
+  locationId?: string;      // optional
+  days30?: boolean;
+  days60?: boolean;
+};
 
-function isoDaysAgo(days: number) {
-  const to = new Date();
-  const from = new Date(to.getTime() - days * 86400000);
-  return { from: from.toISOString(), to: to.toISOString() };
-}
-
-async function readJsonSafe(res: Response) {
-  const txt = await res.text();
-  try { return JSON.parse(txt); } catch { return null; }
-}
-
-export async function POST(req: Request) {
-  let body: Body | null = null;
-  try { body = await req.json(); } catch {}
-  if (!body || !Array.isArray(body.skus) || body.skus.length === 0) {
-    return NextResponse.json({ ok: false, error: 'Body must include skus[]' }, { status: 400 });
+// helper: parse -> always array of safe strings
+function uniqSkus(arr: any): string[] {
+  const s = Array.isArray(arr) ? arr : [];
+  const out = new Set<string>();
+  for (const v of s) {
+    const t = String(v || "").trim();
+    if (t) out.add(t);
   }
+  return [...out];
+}
 
-  const want30 = body.days30 !== false;
-  const want60 = body.days60 !== false;
-
+export async function POST(req: NextRequest) {
   try {
+    const payload = (await req.json().catch(() => ({}))) as Input;
+    const want30 = payload.days30 !== false; // default true
+    const want60 = payload.days60 !== false; // default true
+    const locationId = payload.locationId || undefined;
+
+    const inputSkus = uniqSkus(payload.skus).slice(0, 200); // keep well under rate limits
+    if (!inputSkus.length) {
+      return NextResponse.json({ ok: false, error: "No SKUs provided" }, { status: 400 });
+    }
+
     const { token, server } = await lwSession();
 
-    async function countViaPaged(sku: string, days: number) {
-      const { from, to } = isoDaysAgo(days);
-      const params = new URLSearchParams({
-        from,
-        to,
-        dateType: 'PROCESSED',
-        searchField: 'SKU',
-        exactMatch: 'true',
-        searchTerm: sku,
-        pageNum: '1',
-        numEntriesPerPage: '200',
+    // 1) SKUs -> stockItemIds
+    const idsRes = await fetch(`${server}/api/Inventory/GetStockItemIdsBySKU`, {
+      method: "POST",
+      headers: {
+        Authorization: token,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(inputSkus),
+    });
+    const idsText = await idsRes.text();
+    if (!idsRes.ok) {
+      return NextResponse.json({ ok: false, error: `GetStockItemIdsBySKU failed: ${idsRes.status}`, body: idsText }, { status: 502 });
+    }
+    const idsJson: any = JSON.parse(idsText || "[]");
+
+    // Normalise response -> { sku -> stockItemId }
+    const skuToId = new Map<string, string>();
+    if (Array.isArray(idsJson)) {
+      for (const row of idsJson) {
+        const sku = row?.SKU ?? row?.Sku ?? row?.sku ?? row?.ItemNumber ?? row?.itemNumber;
+        const id = row?.StockItemId ?? row?.Id ?? row?.stockItemId ?? row?.StockItemGuid;
+        if (sku && id) skuToId.set(String(sku), String(id));
+      }
+    }
+
+    // 2) Build date ranges
+    const now = new Date();
+    const toIso = (d: Date) => d.toISOString();
+    const end60 = toIso(now);
+    const start60Date = new Date(now);
+    start60Date.setDate(now.getDate() - 60);
+    start60Date.setHours(0, 0, 0, 0);
+    const start60 = toIso(start60Date);
+
+    const start30Date = new Date(now);
+    start30Date.setDate(now.getDate() - 30);
+    start30Date.setHours(0, 0, 0, 0);
+
+    // 3) For each item: GetStockConsumption (60d), then derive 30d
+    //    GET /api/Stock/GetStockConsumption?stockItemId=&locationId=&startDate=&endDate=
+    //    Response: [{ Date, StockQuantity, ... }]
+    const sales: Record<string, { d30?: number; d60?: number }> = {};
+    for (const sku of inputSkus) {
+      const stockItemId = skuToId.get(sku);
+      if (!stockItemId) {
+        sales[sku] = { d30: 0, d60: 0 };
+        continue;
+      }
+
+      const url = new URL(`${server}/api/Stock/GetStockConsumption`);
+      url.searchParams.set("stockItemId", stockItemId);
+      url.searchParams.set("startDate", start60);
+      url.searchParams.set("endDate", end60);
+      if (locationId) url.searchParams.set("locationId", locationId);
+
+      const cRes = await fetch(url.toString(), {
+        method: "GET",
+        headers: { Authorization: token, Accept: "application/json" },
       });
-
-      let page = 1;
-      let total = 0;
-
-      while (true) {
-        params.set('pageNum', String(page));
-        const res = await fetch(`${server}/api/ProcessedOrders/SearchProcessedOrdersPaged?${params}`, {
-          method: 'POST',
-          headers: { Authorization: token, Accept: 'application/json' },
-          cache: 'no-store',
-        });
-
-        const data: any = await readJsonSafe(res);
-        const rows: any[] = data?.Data || data?.Rows || [];
-
-        for (const r of rows) {
-          if (Array.isArray(r?.Items)) {
-            for (const it of r.Items) {
-              const s = it?.SKU ?? it?.Sku ?? it?.ItemNumber;
-              if (s === sku) total += Number(it?.Qty ?? it?.Quantity ?? 0);
-            }
-          } else {
-            // some shapes flatten
-            total += Number(r?.Qty ?? r?.Quantity ?? 0);
-          }
-        }
-
-        const perPage = Number(data?.EntriesPerPage ?? data?.PageSize ?? 200);
-        const totalCount = Number(data?.TotalResults ?? data?.TotalCount ?? rows.length);
-        if (!perPage || page * perPage >= totalCount) break;
-        page += 1;
-        if (page > 30) break; // safety
+      const cText = await cRes.text();
+      if (!cRes.ok) {
+        // keep going, but record error for this sku
+        sales[sku] = { d30: 0, d60: 0 };
+        continue;
       }
 
-      return total;
-    }
-
-    // fallback that tries the body-based search if paged endpoint isn’t available
-    async function countViaBodySearch(sku: string, days: number) {
-      const { from, to } = isoDaysAgo(days);
-      let page = 1;
-      let total = 0;
-
-      while (true) {
-        const reqBody = {
-          request: {
-            DateField: 'processed',
-            FromDate: from,
-            ToDate: to,
-            ResultsPerPage: 200,
-            PageNumber: page,
-            SearchFilters: [{ SearchField: 'ItemIdentifier', SearchTerm: sku }],
-          },
-        };
-
-        const res = await fetch(`${server}/api/ProcessedOrders/SearchProcessedOrders`, {
-          method: 'POST',
-          headers: { Authorization: token, 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify(reqBody),
-          cache: 'no-store',
-        });
-
-        const data: any = await readJsonSafe(res);
-        const rows: any[] = data?.Data || data?.Rows || [];
-
-        for (const r of rows) {
-          if (Array.isArray(r?.Items)) {
-            for (const it of r.Items) {
-              const s = it?.SKU ?? it?.Sku ?? it?.ItemNumber;
-              if (s === sku) total += Number(it?.Qty ?? it?.Quantity ?? 0);
-            }
-          } else {
-            total += Number(r?.Qty ?? r?.Quantity ?? 0);
-          }
-        }
-
-        const perPage = Number(data?.ResultsPerPage ?? data?.PageSize ?? 200);
-        const totalCount = Number(data?.TotalResults ?? data?.TotalCount ?? rows.length);
-        if (!perPage || page * perPage >= totalCount) break;
-        page += 1;
-        if (page > 30) break;
-      }
-
-      return total;
-    }
-
-    async function countSku(sku: string, days: number) {
+      let rows: any[] = [];
       try {
-        return await countViaPaged(sku, days);
+        const j = JSON.parse(cText);
+        rows = Array.isArray(j) ? j : [];
       } catch {
-        return await countViaBodySearch(sku, days);
+        rows = [];
       }
+
+      // sum 60d
+      const sum60 = rows.reduce((acc, r) => acc + (Number(r?.StockQuantity ?? 0) || 0), 0);
+
+      // sum last 30d from the same array (Date is ISO)
+      const sum30 = rows.reduce((acc, r) => {
+        const d = new Date(r?.Date ?? 0);
+        return d >= start30Date ? acc + (Number(r?.StockQuantity ?? 0) || 0) : acc;
+      }, 0);
+
+      sales[sku] = {
+        d60: want60 ? sum60 : undefined,
+        d30: want30 ? sum30 : undefined,
+      };
     }
 
-    const skus = body.skus.slice(0, 500);
-    const out: Record<string, { d30?: number; d60?: number }> = {};
-    const concurrency = 8;
-    let idx = 0;
-
-    async function worker() {
-      while (idx < skus.length) {
-        const i = idx++;
-        const sku = skus[i];
-        const rec: any = {};
-        if (want30) rec.d30 = await countSku(sku, 30);
-        if (want60) rec.d60 = await countSku(sku, 60);
-        out[sku] = rec;
-      }
-    }
-
-    await Promise.all(Array.from({ length: Math.min(concurrency, skus.length) }, worker));
-
-    return NextResponse.json({ ok: true, sales: out });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || 'sales-by-sku error' }, { status: 500 });
+    return NextResponse.json({ ok: true, sales });
+  } catch (err: any) {
+    return NextResponse.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
   }
 }
