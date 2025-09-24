@@ -1,0 +1,54 @@
+'use client';
+
+import Link from 'next/link';
+export const dynamic = 'force-dynamic';
+
+export default function PurchaseOrderingPage() {
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Purchase Ordering</h1>
+        <Link href="/" className="text-sm underline">Back to Home</Link>
+      </div>
+
+      {/* Header controls (wire up later) */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <label className="flex flex-col text-sm">
+          Horizon (days)
+          <input type="number" defaultValue={14} className="border rounded p-2" />
+        </label>
+        <label className="flex flex-col text-sm">
+          Lookback (days)
+          <input type="number" defaultValue={60} className="border rounded p-2" />
+        </label>
+        <label className="flex flex-col text-sm">
+          Location
+          <select className="border rounded p-2"><option>All</option></select>
+        </label>
+        <label className="flex flex-col text-sm">
+          Supplier
+          <select className="border rounded p-2"><option>All</option></select>
+        </label>
+      </div>
+
+      {/* Table placeholder */}
+      <div className="border rounded-lg overflow-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="text-left p-3">SKU</th>
+              <th className="text-right p-3">On Hand</th>
+              <th className="text-right p-3">Due</th>
+              <th className="text-right p-3">Avg/day</th>
+              <th className="text-right p-3">Suggested</th>
+              <th className="text-right p-3">Add</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td className="p-3" colSpan={6}>Connect to API and render rows…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
