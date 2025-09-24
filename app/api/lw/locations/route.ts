@@ -1,27 +1,33 @@
 import { NextResponse } from "next/server";
-import { getLW } from "@/lib/linnworks";
+import { lwSession } from "@/lib/linnworks";
+
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const { token, base } = await getLW();
-    const r = await fetch(`${base}/api/Inventory/GetStockLocations`, {
-      headers: { Authorization: token, Accept: "application/json" },
+    const { token, server } = await lwSession();
+    const res = await fetch(`${server}/api/Inventory/GetStockLocations`, {
+      headers: { Authorization: token },
       cache: "no-store",
     });
-    const text = await r.text();
-    if (!r.ok) return NextResponse.json({ ok:false, error:"LW GetStockLocations failed", status:r.status, body:text }, { status: 500 });
 
-    const raw = JSON.parse(text);
-    const arr = Array.isArray(raw) ? raw : Array.isArray(raw?.Data) ? raw.Data : [];
-    const locations = arr.map((s: any) => ({
-      LocationId: s.LocationId ?? s.Id ?? s.pkStockLocationId ?? s.pkStockLocationID,
-      LocationName: s.LocationName ?? s.Name ?? s.Title ?? "Unknown",
-      IsDefault: Boolean(s.IsDefault ?? s.Default ?? false),
-    })).filter((x: any) => x.LocationId);
+    // Gracefully handle non-200s / non-JSON
+    let raw: any = [];
+    try { raw = await res.json(); } catch { raw = []; }
 
-    return NextResponse.json({ ok:true, locations });
-  } catch (e: any) {
-    return NextResponse.json({ ok:false, error: e?.message || "LW locations error" }, { status: 500 });
+    const locations = (Array.isArray(raw) ? raw : []).map((l: any) => ({
+      id:
+        l?.StockLocationId ??
+        l?.pkStockLocationId ??
+        l?.LocationId ??
+        l?.Id ??
+        null,
+      name: l?.LocationName ?? l?.Name ?? l?.Title ?? "Unknown",
+      tag: l?.LocationTag ?? l?.Tag ?? null,
+    })).filter(x => x.id);
+
+    return NextResponse.json({ ok: true, locations });
+  } catch (err: any) {
+    return NextResponse.json({ ok: false, error: String(err?.message ?? err) }, { status: 500 });
   }
 }
