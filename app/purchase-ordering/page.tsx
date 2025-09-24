@@ -12,15 +12,43 @@ type ItemRow = {
   sales60?: number;
 };
 
+type SortKey = 'sku' | 'title' | 'sales30' | 'sales60';
+type SortDir = 'asc' | 'desc';
+
 export default function PurchaseOrderingPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [supplierId, setSupplierId] = useState<string>('');
-  const [locationId, setLocationId] = useState<string>(''); // reserved for later; already loads fine
+  const [locationId, setLocationId] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<ItemRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
+
+  // sorting
+  const [sortBy, setSortBy] = useState<SortKey>('sku');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  function toggleSort(k: SortKey) {
+    if (sortBy === k) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else {
+      setSortBy(k);
+      setSortDir('asc');
+    }
+  }
+  const sortedItems = useMemo(() => {
+    const arr = [...items];
+    arr.sort((a, b) => {
+      const dir = sortDir === 'asc' ? 1 : -1;
+      const av = (a as any)[sortBy] ?? '';
+      const bv = (b as any)[sortBy] ?? '';
+      if (typeof av === 'number' || typeof bv === 'number') {
+        return (Number(av) - Number(bv)) * dir;
+      }
+      // string compare
+      return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' }) * dir;
+    });
+    return arr;
+  }, [items, sortBy, sortDir]);
 
   // Load dropdowns
   useEffect(() => {
@@ -50,7 +78,7 @@ export default function PurchaseOrderingPage() {
     setItems([]);
 
     try {
-      // 1) Items for this supplier (robust server-side filter + fallback)
+      // Items for this supplier
       const itsRes = await fetch(
         `/api/lw/items-by-supplier?supplierId=${encodeURIComponent(forSupplierId)}&limit=800`,
         { cache: 'no-store' }
@@ -73,8 +101,8 @@ export default function PurchaseOrderingPage() {
       setItems(baseRows);
       setStatus(`Loaded ${baseRows.length} item(s). Getting sales…`);
 
-      // 2) Sales: 30/60 days
-      const skus = baseRows.map(r => r.sku).filter(Boolean).slice(0, 400); // keep it sane
+      // Sales: 30/60 days
+      const skus = baseRows.map((r) => r.sku).filter(Boolean).slice(0, 400);
       if (skus.length) {
         const salesRes = await fetch('/api/lw/sales-by-sku', {
           method: 'POST',
@@ -85,17 +113,16 @@ export default function PurchaseOrderingPage() {
         if (!salesJson?.ok) throw new Error(salesJson?.error || 'Failed to fetch sales');
 
         const bySku: Record<string, { d30?: number; d60?: number }> = salesJson.sales || {};
-        setItems(prev =>
-          prev.map(r => ({
+        setItems((prev) =>
+          prev.map((r) => ({
             ...r,
             sales30: bySku[r.sku]?.d30 ?? 0,
             sales60: bySku[r.sku]?.d60 ?? 0,
           }))
         );
-        setStatus(`Ready. ${baseRows.length} item(s).`);
-      } else {
-        setStatus(`Ready. ${baseRows.length} item(s).`);
       }
+
+      setStatus('Ready.');
     } catch (e: any) {
       setError(String(e?.message ?? e));
       setStatus('');
@@ -107,9 +134,12 @@ export default function PurchaseOrderingPage() {
   // Auto-fetch when supplier changes
   useEffect(() => {
     if (supplierId) fetchPlan(supplierId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supplierId]);
 
   const hasRows = items.length > 0;
+  const SortCarat = ({ k }: { k: SortKey }) =>
+    sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
 
   return (
     <div className="p-6 space-y-6">
@@ -137,8 +167,10 @@ export default function PurchaseOrderingPage() {
             onChange={(e) => setLocationId(e.target.value)}
           >
             <option value="">All</option>
-            {locations.map(l => (
-              <option key={l.id} value={l.id}>{l.name}</option>
+            {locations.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
             ))}
           </select>
         </label>
@@ -151,8 +183,10 @@ export default function PurchaseOrderingPage() {
             onChange={(e) => setSupplierId(e.target.value)}
           >
             <option value="">All</option>
-            {suppliers.map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
+            {suppliers.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
             ))}
           </select>
         </label>
@@ -164,12 +198,9 @@ export default function PurchaseOrderingPage() {
           disabled={!supplierId || loading}
           onClick={() => fetchPlan(supplierId)}
         >
-          {loading ? "Loading…" : "Generate plan"}
+          {loading ? 'Loading…' : 'Generate plan'}
         </button>
-
-        {!!status && (
-          <span className="text-xs text-gray-600">{status}</span>
-        )}
+        {!!status && <span className="text-xs text-gray-600">{status}</span>}
       </div>
 
       {error && (
@@ -182,19 +213,39 @@ export default function PurchaseOrderingPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              <th className="text-left p-3">SKU</th>
-              <th className="text-left p-3">Product</th>
+              <th className="text-left p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('sku')}>
+                  SKU <SortCarat k="sku" />
+                </button>
+              </th>
+              <th className="text-left p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('title')}>
+                  Product <SortCarat k="title" />
+                </button>
+              </th>
               <th className="text-left p-3">Order qty</th>
-              <th className="text-right p-3">30 days sales</th>
-              <th className="text-right p-3">60 days sales</th>
+              <th className="text-right p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('sales30')}>
+                  30 days sales <SortCarat k="sales30" />
+                </button>
+              </th>
+              <th className="text-right p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('sales60')}>
+                  60 days sales <SortCarat k="sales60" />
+                </button>
+              </th>
             </tr>
           </thead>
           <tbody>
             {!hasRows && (
-              <tr><td className="p-3" colSpan={5}>Pick a supplier and click “Generate plan”…</td></tr>
+              <tr>
+                <td className="p-3" colSpan={5}>
+                  Pick a supplier and click “Generate plan”…
+                </td>
+              </tr>
             )}
-            {items.map((r) => (
-              <tr key={r.sku}>
+            {sortedItems.map((r) => (
+              <tr key={r.sku} className="border-t">
                 <td className="p-3">{r.sku}</td>
                 <td className="p-3">{r.title}</td>
                 <td className="p-3">
@@ -205,7 +256,7 @@ export default function PurchaseOrderingPage() {
                     min={0}
                     onChange={(e) => {
                       const v = Number(e.target.value || 0);
-                      setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
+                      setItems((prev) => prev.map((x) => (x.sku === r.sku ? { ...x, orderQty: v } : x)));
                     }}
                   />
                 </td>
