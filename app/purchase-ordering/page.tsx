@@ -38,15 +38,32 @@ export default function PurchaseOrderingPage() {
 
   useEffect(() => {
     (async () => {
+      setErrorMsg(null);
       try {
         const [locRes, supRes] = await Promise.all([
-          fetch('/api/lw/locations').then(r => r.json()),
-          fetch('/api/lw/suppliers').then(r => r.json()),
+          fetch('/api/lw/locations').then(r => r.json()).catch(e => ({ ok: false, error: e?.message })),
+          fetch('/api/lw/suppliers').then(r => r.json()).catch(e => ({ ok: false, error: e?.message })),
         ]);
-        setLocations(locRes.locations || []);
-        setLocationId((locRes.locations?.find((l: Location) => l.IsDefault)?.LocationId) || 'ALL');
-        setSuppliers(supRes || []);
+
+        if (!locRes?.ok) {
+          console.error('Locations error', locRes);
+          setErrorMsg(locRes?.error || 'Failed to load locations');
+          setLocations([]);
+        } else {
+          setLocations(locRes.locations || []);
+          const def = (locRes.locations || []).find((l: Location) => l.IsDefault)?.LocationId;
+          setLocationId(def || 'ALL');
+        }
+
+        if (!supRes?.ok) {
+          console.error('Suppliers error', supRes);
+          setErrorMsg(prev => prev ? prev + ' | ' + (supRes?.error || 'Failed to load suppliers') : (supRes?.error || 'Failed to load suppliers'));
+          setSuppliers([]);
+        } else {
+          setSuppliers(supRes.suppliers || []);
+        }
       } catch (e: any) {
+        console.error('Lookup load failed', e);
         setErrorMsg(e?.message || 'Failed to load lookups');
       }
     })();
@@ -57,47 +74,38 @@ export default function PurchaseOrderingPage() {
     setLoading(true);
     try {
       const skus = skuText.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
-      if (!skus.length) {
-        setErrorMsg('Enter one or more SKUs (comma or newline separated).');
-        setLoading(false);
-        return;
-      }
+      if (!skus.length) throw new Error('Enter one or more SKUs (comma or newline separated).');
 
-      // map to stockItemIds
       const idMap = await fetch('/api/lw/stock/ids-by-sku', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ skus }),
-      }).then(r => r.json()); // [{SKU, StockItemId}]
+      }).then(async r => {
+        const t = await r.text(); try { return JSON.parse(t); } catch { throw new Error('IDs-by-SKU returned non-JSON: ' + t.slice(0,200)); }
+      });
 
       const stockItemIds = (idMap || []).map((x: any) => x?.StockItemId).filter(Boolean);
       if (!stockItemIds.length) throw new Error('No matching Linnworks items for those SKUs.');
 
-      // stock + supplier context
       const full = await fetch('/api/lw/stock/full', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stockItemIds, withSuppliers: true }),
-      }).then(r => r.json()) as StockFull[];
+      }).then(async r => {
+        const t = await r.text(); try { return JSON.parse(t) as StockFull[]; } catch { throw new Error('Stock/full returned non-JSON: ' + t.slice(0,200)); }
+      });
 
-      // sales for lookback window
       const to = new Date();
       const from = new Date(to.getTime() - lookback * 24 * 3600 * 1000);
       const sales = await fetch('/api/lw/sales', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fromISO: from.toISOString(),
-          toISO: to.toISOString(),
-          skuList: skus,
-        }),
-      }).then(r => r.json());
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fromISO: from.toISOString(), toISO: to.toISOString(), skuList: skus }),
+      }).then(async r => {
+        const t = await r.text(); try { return JSON.parse(t); } catch { return { Data: [] }; }
+      });
 
-      // crude avg/day by SKU from processed orders payload
       const totalsBySku: Record<string, number> = {};
       for (const o of sales?.Data || []) {
         for (const it of o?.Items || []) {
-          const sku = it?.SKU || it?.ItemNumber || it?.ItemTitle;
+          const sku = it?.SKU ?? it?.ItemNumber ?? it?.ItemTitle;
           const qty = Number(it?.Quantity) || 0;
           if (!sku) continue;
           totalsBySku[sku] = (totalsBySku[sku] || 0) + qty;
@@ -108,14 +116,13 @@ export default function PurchaseOrderingPage() {
         avgBySku[sku] = Number(qty) / Math.max(1, lookback);
       });
 
-      // shape rows
       const out: any[] = [];
       for (const item of full) {
         const sku = item.ItemNumber;
         const level = (item.StockLevels || []).find(l => locationId === 'ALL' ? true : l.LocationId === locationId)
           || { StockLevel: 0, InOrderBook: 0, Due: 0 };
 
-        const sup = (item.Suppliers || [])[0]; // pick primary for now
+        const sup = (item.Suppliers || [])[0];
         if (supplierId !== 'ALL' && sup?.SupplierId !== supplierId) continue;
 
         const avgDaily = avgBySku[sku] ?? 0;
@@ -156,6 +163,7 @@ export default function PurchaseOrderingPage() {
 
       setRows(out);
     } catch (e: any) {
+      console.error('Plan generation failed', e);
       setErrorMsg(e?.message || 'Failed to generate plan');
     } finally {
       setLoading(false);
@@ -172,7 +180,7 @@ export default function PurchaseOrderingPage() {
   }, [rows]);
 
   async function createPOForGroup(key: string) {
-    const [supplierId, supplierName] = key.split('|');
+    const [sid, sname] = key.split('|');
     const lines = (grouped[key] || []).map(r => ({
       stockItemId: r.stockItemId,
       qty: r.suggested,
@@ -183,20 +191,18 @@ export default function PurchaseOrderingPage() {
     const currency = 'GBP';
     const deliveryDateISO = new Date(Date.now() + 7 * 86400000).toISOString();
     const resp = await fetch('/api/lw/pos', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        supplierId: supplierId === 'unknown' ? null : supplierId,
+        supplierId: sid === 'unknown' ? null : sid,
         locationId: locationId === 'ALL'
           ? (locations.find(l => l.IsDefault)?.LocationId || '')
           : locationId,
-        currency,
-        deliveryDateISO,
-        lines,
+        currency, deliveryDateISO, lines,
       }),
-    }).then(r => r.json());
+    }).then(r => r.json()).catch(e => ({ error: e?.message }));
 
-    alert(`Created PO ${resp.purchaseId} for ${supplierName} with ${resp.count} lines`);
+    if (resp?.error) alert('PO create failed: ' + resp.error);
+    else alert(`Created PO ${resp.purchaseId} for ${sname} with ${resp.count} lines`);
   }
 
   return (
@@ -229,7 +235,7 @@ export default function PurchaseOrderingPage() {
           Supplier
           <select value={supplierId} onChange={e=>setSupplierId(e.target.value)} className="border rounded p-2">
             <option value="ALL">All</option>
-            {suppliers.map((s:any) => <option key={s.Id} value={s.Id}>{s.Name}</option>)}
+            {suppliers.map((s) => <option key={s.Id} value={s.Id}>{s.Name}</option>)}
           </select>
         </label>
       </div>
@@ -238,7 +244,7 @@ export default function PurchaseOrderingPage() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
         <label className="flex flex-col text-sm md:col-span-3">
           SKUs (comma/newline separated)
-          <textarea value={skuText} onChange={e=>setSkuText(e.target.value)} rows={3} placeholder="e.g. MY-SKU-1, MY-SKU-2" className="border rounded p-2" />
+          <textarea value={skuText} onChange={e=>setSkuText(e.target.value)} rows={3} placeholder="e.g. ABC-123, DEF-456" className="border rounded p-2" />
         </label>
         <div className="flex items-end">
           <button disabled={loading} onClick={loadPlan} className="border rounded px-4 py-2 hover:bg-gray-50">
@@ -253,7 +259,7 @@ export default function PurchaseOrderingPage() {
           <div className="text-sm text-gray-500">Enter SKUs and click “Generate plan”.</div>
         )}
         {Object.entries(grouped).map(([key, items]) => {
-          const [_, supplierName] = key.split('|');
+          const [, supplierName] = key.split('|');
           const total = items.reduce((s:any, r:any)=> s + (r.extended||0), 0);
           return (
             <div key={key} className="border rounded-lg overflow-auto">
