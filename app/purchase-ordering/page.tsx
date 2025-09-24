@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 type Supplier = { id: string; name: string };
 type Location = { id: string; name: string; tag?: string | null };
@@ -16,13 +16,13 @@ export default function PurchaseOrderingPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [supplierId, setSupplierId] = useState<string>('');
-  const [locationId, setLocationId] = useState<string>('');
+  const [locationId, setLocationId] = useState<string>(''); // reserved for later; already loads fine
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<ItemRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<string>('');
 
-  // Load dropdowns (suppliers + locations)
+  // Load dropdowns
   useEffect(() => {
     (async () => {
       setError(null);
@@ -31,41 +31,16 @@ export default function PurchaseOrderingPage() {
           fetch('/api/lw/suppliers', { cache: 'no-store' }),
           fetch('/api/lw/locations', { cache: 'no-store' }),
         ]);
+        const sJson = await sRes.json().catch(() => ({ ok: false }));
+        const lJson = await lRes.json().catch(() => ({ ok: false }));
 
-        const sJson = await sRes.json().catch(() => ({ ok: false, error: 'suppliers non-JSON' }));
-        const lJson = await lRes.json().catch(() => ({ ok: false, error: 'locations non-JSON' }));
-
-        if (sJson?.ok && Array.isArray(sJson.suppliers)) {
-          setSuppliers(sJson.suppliers);
-        } else if (!sJson?.ok) {
-          setError((prev) => (prev ? prev + ' | ' : '') + (sJson?.error || 'Failed to load suppliers'));
-        }
-
-        if (lJson?.ok && Array.isArray(lJson.locations)) {
-          setLocations(lJson.locations);
-          // Optional: preselect default location if one exists
-          const def = lJson.locations.find((l: Location) => (l as any).isDefault || (l as any).IsDefault)?.id;
-          if (def) setLocationId(def);
-        } else if (!lJson?.ok) {
-          setError((prev) => (prev ? prev + ' | ' : '') + (lJson?.error || 'Failed to load locations'));
-        }
+        if (sJson?.ok) setSuppliers(sJson.suppliers ?? []);
+        if (lJson?.ok) setLocations(lJson.locations ?? []);
       } catch (e: any) {
         setError(String(e?.message ?? e));
       }
     })();
   }, []);
-
-  // Clear table when supplier changes
-  useEffect(() => {
-    setItems([]);
-    setError(null);
-    setStatus(null);
-    if (supplierId) {
-      // Auto-fetch on change; the button can be used to re-run.
-      fetchPlan(supplierId);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supplierId]);
 
   async function fetchPlan(forSupplierId: string) {
     if (!forSupplierId) return;
@@ -75,58 +50,64 @@ export default function PurchaseOrderingPage() {
     setItems([]);
 
     try {
-      // Items for this supplier
+      // 1) Items for this supplier (robust server-side filter + fallback)
       const itsRes = await fetch(
         `/api/lw/items-by-supplier?supplierId=${encodeURIComponent(forSupplierId)}&limit=800`,
         { cache: 'no-store' }
       );
-      const itsJson = await itsRes.json().catch(() => ({ ok: false, error: 'Items endpoint returned non-JSON' }));
+      const itsJson = await itsRes.json().catch(() => ({ ok: false }));
       if (!itsJson?.ok) throw new Error(itsJson?.error || 'Failed to fetch items');
 
-      const baseRows: ItemRow[] = (itsJson.items as any[]).map((it) => ({
+      const baseRows: ItemRow[] = (itsJson.items as any[]).map((it: any) => ({
         sku: it.sku,
         title: it.title || '',
         orderQty: 0,
       }));
 
-      if (baseRows.length === 0) {
-        setItems([]);
+      if (!baseRows.length) {
         setStatus('No items found for this supplier.');
+        setItems([]);
         return;
       }
 
       setItems(baseRows);
-      setStatus(`Loaded ${baseRows.length} items. Loading sales…`);
+      setStatus(`Loaded ${baseRows.length} item(s). Getting sales…`);
 
-      // Sales: 30/60 days
-      const skus = baseRows.map((r) => r.sku).filter(Boolean).slice(0, 400); // safety cap
+      // 2) Sales: 30/60 days
+      const skus = baseRows.map(r => r.sku).filter(Boolean).slice(0, 400); // keep it sane
       if (skus.length) {
         const salesRes = await fetch('/api/lw/sales-by-sku', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ skus, days30: true, days60: true }),
         });
-        const salesJson = await salesRes.json().catch(() => ({ ok: false, error: 'Sales endpoint returned non-JSON' }));
+        const salesJson = await salesRes.json().catch(() => ({ ok: false }));
         if (!salesJson?.ok) throw new Error(salesJson?.error || 'Failed to fetch sales');
 
         const bySku: Record<string, { d30?: number; d60?: number }> = salesJson.sales || {};
-        setItems((prev) =>
-          prev.map((r) => ({
+        setItems(prev =>
+          prev.map(r => ({
             ...r,
             sales30: bySku[r.sku]?.d30 ?? 0,
             sales60: bySku[r.sku]?.d60 ?? 0,
           }))
         );
+        setStatus(`Ready. ${baseRows.length} item(s).`);
+      } else {
+        setStatus(`Ready. ${baseRows.length} item(s).`);
       }
-
-      setStatus('Done.');
     } catch (e: any) {
       setError(String(e?.message ?? e));
-      setStatus(null);
+      setStatus('');
     } finally {
       setLoading(false);
     }
   }
+
+  // Auto-fetch when supplier changes
+  useEffect(() => {
+    if (supplierId) fetchPlan(supplierId);
+  }, [supplierId]);
 
   const hasRows = items.length > 0;
 
@@ -156,10 +137,8 @@ export default function PurchaseOrderingPage() {
             onChange={(e) => setLocationId(e.target.value)}
           >
             <option value="">All</option>
-            {locations.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name}
-              </option>
+            {locations.map(l => (
+              <option key={l.id} value={l.id}>{l.name}</option>
             ))}
           </select>
         </label>
@@ -172,10 +151,8 @@ export default function PurchaseOrderingPage() {
             onChange={(e) => setSupplierId(e.target.value)}
           >
             <option value="">All</option>
-            {suppliers.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
+            {suppliers.map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
         </label>
@@ -187,9 +164,12 @@ export default function PurchaseOrderingPage() {
           disabled={!supplierId || loading}
           onClick={() => fetchPlan(supplierId)}
         >
-          {loading ? 'Loading…' : 'Generate plan'}
+          {loading ? "Loading…" : "Generate plan"}
         </button>
-        {status && <span className="text-sm text-gray-600">{status}</span>}
+
+        {!!status && (
+          <span className="text-xs text-gray-600">{status}</span>
+        )}
       </div>
 
       {error && (
@@ -211,14 +191,10 @@ export default function PurchaseOrderingPage() {
           </thead>
           <tbody>
             {!hasRows && (
-              <tr>
-                <td className="p-3" colSpan={5}>
-                  Pick a supplier and click “Generate plan”…
-                </td>
-              </tr>
+              <tr><td className="p-3" colSpan={5}>Pick a supplier and click “Generate plan”…</td></tr>
             )}
             {items.map((r) => (
-              <tr key={r.sku} className="border-t">
+              <tr key={r.sku}>
                 <td className="p-3">{r.sku}</td>
                 <td className="p-3">{r.title}</td>
                 <td className="p-3">
@@ -229,7 +205,7 @@ export default function PurchaseOrderingPage() {
                     min={0}
                     onChange={(e) => {
                       const v = Number(e.target.value || 0);
-                      setItems((prev) => prev.map((x) => (x.sku === r.sku ? { ...x, orderQty: v } : x)));
+                      setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
                     }}
                   />
                 </td>
