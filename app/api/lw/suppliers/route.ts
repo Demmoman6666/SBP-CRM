@@ -9,12 +9,21 @@ export async function GET() {
       headers: { Authorization: token },
       cache: "no-store",
     });
-    const txt = await r.text();
+
+    const text = await r.text();
     if (!r.ok) {
-      return NextResponse.json({ error: "LW suppliers failed", status: r.status, body: txt }, { status: 500 });
+      return NextResponse.json({ ok: false, error: "LW GetSuppliers failed", status: r.status, body: text }, { status: 500 });
     }
-    return NextResponse.json(JSON.parse(txt));
+
+    const raw = JSON.parse(text);
+    const arr = Array.isArray(raw) ? raw : Array.isArray(raw?.Data) ? raw.Data : [];
+    const suppliers = arr.map((s: any) => ({
+      Id: s.Id ?? s.id ?? s.SupplierId ?? s.pkSupplierId ?? s.pkSupplierID,
+      Name: s.Name ?? s.name ?? s.SupplierName ?? s.supplierName ?? "Unknown",
+    })).filter((x: any) => x.Id);
+
+    return NextResponse.json({ ok: true, suppliers });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "LW suppliers error" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: e?.message || "LW suppliers error" }, { status: 500 });
   }
 }
