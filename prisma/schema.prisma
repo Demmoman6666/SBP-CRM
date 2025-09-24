@@ -219,7 +219,7 @@ model Visit {
 model Note {
   id          String    @id @default(cuid())
   customerId  String
-  customer    Customer  @relation(fields: [customerId], references: [id], references: [id], onDelete: Cascade)
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   text        String
   staff       String?
