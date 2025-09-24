@@ -5,165 +5,231 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 type Input = {
-  skus: string[];
-  days30?: boolean;
-  days60?: boolean;
-  debug?: boolean;
+  skus: string[];                 // SKUs shown in your table (stock SKUs)
+  locationName?: string | null;   // human name from Locations dropdown (e.g., "Warehouse")
+  days30?: boolean;               // default true
+  days60?: boolean;               // default true
+  debug?: boolean;                // optional: include notes on which script/columns were used
 };
 
-function uniqSkus(arr: any): string[] {
-  const out = new Set<string>();
-  (Array.isArray(arr) ? arr : []).forEach(v => { const s = String(v ?? "").trim(); if (s) out.add(s); });
-  return [...out];
-}
-function normSku(x: unknown) { return String(x ?? "").trim().toUpperCase(); }
-function rangeISO(days: number) {
+/* ---------- small helpers ---------- */
+
+const NORM = (s: any) => String(s ?? "").trim().toUpperCase();
+const uniq = (arr: any[]) => [...new Set((Array.isArray(arr) ? arr : []).map(v => String(v ?? "").trim()).filter(Boolean))];
+
+function agoISO(days: number) {
   const to = new Date();
   const from = new Date(to.getTime() - days * 86400000);
   return { from: from.toISOString(), to: to.toISOString() };
 }
-async function asJson(res: Response) { const t = await res.text(); try { return JSON.parse(t); } catch { return t; } }
 
-function lineNet(it: any) {
-  const shipped = Number(it?.QtyShipped ?? it?.QuantityShipped ?? it?.Qty ?? it?.Quantity ?? 0) || 0;
-  const returned = Number(it?.QtyReturned ?? it?.ReturnQty ?? 0) || 0;
-  const raw = Number(it?.Qty ?? it?.Quantity ?? 0) || 0; // negative line = return
-  return Math.max(0, shipped || (raw > 0 ? raw : 0)) - (returned + (raw < 0 ? -raw : 0));
+async function readJson(r: Response) {
+  const t = await r.text();
+  try { return JSON.parse(t); } catch { return t; }
 }
 
-/** Strategy A: ProcessedOrders/SearchProcessedOrdersPaged via query params. */
-async function poPaged(server: string, token: string, sku: string, days: number, dateType: "SHIPPED" | "PROCESSED") {
-  const { from, to } = rangeISO(days);
-  const qp = new URLSearchParams({
-    from, to, dateType, searchField: "SKU", exactMatch: "true", searchTerm: sku, pageNum: "1", numEntriesPerPage: "200",
-  });
-
-  let page = 1, total = 0;
-  while (true) {
-    qp.set("pageNum", String(page));
-    const resp = await fetch(`${server}/api/ProcessedOrders/SearchProcessedOrdersPaged?${qp}`, {
-      method: "POST", headers: { Authorization: token, Accept: "application/json" }, cache: "no-store",
-    });
-    const data: any = await asJson(resp);
-    const rows: any[] = data?.Data || data?.Rows || [];
-    for (const ord of rows) {
-      const items: any[] = Array.isArray(ord?.Items) ? ord.Items : [];
-      for (const it of items) {
-        const code = it?.SKU ?? it?.Sku ?? it?.ItemNumber ?? it?.SKUCode;
-        if (normSku(code) !== normSku(sku)) continue;
-        total += lineNet(it);
-      }
-    }
-    const per = Number(data?.EntriesPerPage ?? data?.PageSize ?? 200);
-    const count = Number(data?.TotalResults ?? data?.TotalCount ?? rows.length);
-    if (!per || page * per >= count) break;
-    if (++page > 40) break;
-  }
-  return total;
-}
-
-/** Strategy B: ProcessedOrders/SearchProcessedOrders (body) with SearchFilters: ItemIdentifier. */
-async function poBody(server: string, token: string, sku: string, days: number, dateType: "processed" | "shipped") {
-  const { from, to } = rangeISO(days);
-  let page = 1, total = 0;
-  while (true) {
-    const reqBody = {
-      request: {
-        DateField: dateType, FromDate: from, ToDate: to,
-        ResultsPerPage: 200, PageNumber: page,
-        SearchFilters: [{ SearchField: "ItemIdentifier", SearchTerm: sku, ExactMatch: true }],
-      },
-    };
-    const resp = await fetch(`${server}/api/ProcessedOrders/SearchProcessedOrders`, {
+/** Execute a Query Data script with paging. */
+async function execQD(
+  server: string,
+  token: string,
+  scriptId: number,
+  parameters: any[],
+  pageSize = 1000,
+  maxPages = 15
+) {
+  let page = 1;
+  const all: any[] = [];
+  while (page <= maxPages) {
+    const body =
+      `scriptId=${scriptId}` +
+      `&parameters=${encodeURIComponent(JSON.stringify(parameters))}` +
+      `&entriesPerPage=${pageSize}&pageNumber=${page}`;
+    const res = await fetch(`${server}/api/Dashboards/ExecuteCustomPagedScript`, {
       method: "POST",
-      headers: { Authorization: token, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(reqBody),
+      headers: {
+        Authorization: token,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body,
       cache: "no-store",
     });
-    const data: any = await asJson(resp);
-    const rows: any[] = data?.Data || data?.Rows || [];
-    for (const ord of rows) {
-      const items: any[] = Array.isArray(ord?.Items) ? ord.Items : [];
-      for (const it of items) {
-        const code = it?.SKU ?? it?.Sku ?? it?.ItemNumber ?? it?.SKUCode;
-        if (normSku(code) !== normSku(sku)) continue;
-        total += lineNet(it);
-      }
-    }
-    const per = Number(data?.ResultsPerPage ?? data?.PageSize ?? 200);
-    const count = Number(data?.TotalResults ?? data?.TotalCount ?? rows.length);
-    if (!per || page * per >= count) break;
-    if (++page > 40) break;
+    const data: any = await readJson(res);
+    const rows: any[] = Array.isArray(data?.Data) ? data.Data : Array.isArray(data?.Rows) ? data.Rows : [];
+    all.push(...rows);
+    if (!rows.length || rows.length < pageSize) break;
+    page += 1;
   }
-  return total;
+  return all;
 }
 
+/** Pick likely SKU field from a QD row. (varies by tenant/script) */
+function pickSku(row: any): string | undefined {
+  return (
+    row?.StockItemSKU ??
+    row?.SKU ??
+    row?.Sku ??
+    row?.ItemNumber ??
+    row?.SKUCode ??
+    row?.ChannelSKU ??
+    row?.StockItemSku ??
+    undefined
+  );
+}
+
+/** Pick likely quantity field from a QD row. */
+function pickQty(row: any): number {
+  const n =
+    row?.UnitsSold ??
+    row?.DespatchedQty ??
+    row?.SoldQty ??
+    row?.QtyProcessed ??
+    row?.Quantity ??
+    row?.Qty ??
+    row?.ShippedQty ??
+    0;
+  const v = Number(n);
+  return Number.isFinite(v) ? v : 0;
+}
+
+/** Pick likely location name from a QD row (when script 53 is used). */
+function pickLoc(row: any): string | undefined {
+  return (
+    row?.LocationName ??
+    row?.StockLocation ??
+    row?.Location ??
+    row?.Warehouse ??
+    undefined
+  );
+}
+
+/* ---------- main handler ---------- */
+
 export async function POST(req: NextRequest) {
-  const body = (await req.json().catch(() => ({}))) as Input;
-  const skus = uniqSkus(body.skus).slice(0, 400);
+  const payload = (await req.json().catch(() => ({}))) as Input;
+  const skus = uniq(payload.skus).slice(0, 800); // safety cap
   if (!skus.length) return NextResponse.json({ ok: false, error: "No SKUs provided" }, { status: 400 });
 
-  const want30 = body.days30 !== false;
-  const want60 = body.days60 !== false;
-  const debug = !!body.debug;
+  const want30 = payload.days30 !== false;
+  const want60 = payload.days60 !== false;
+  const wantDebug = !!payload.debug;
+  const locationName = (payload.locationName || "").trim() || null;
 
   try {
     const { token, server } = await lwSession();
 
-    const sales: Record<string, { d30?: number; d60?: number }> = {};
-    const dbg: Record<string, { d30?: string; d60?: string }> = {};
+    const out: Record<string, { d30?: number; d60?: number }> = {};
+    for (const s of skus) out[s] = { d30: want30 ? 0 : undefined, d60: want60 ? 0 : undefined };
 
-    await Promise.all(
-      skus.map(async (sku) => {
-        const rec: { d30?: number; d60?: number } = {};
-        const trace: { d30?: string; d60?: string } = {};
+    const dbg: any = { used: "", notes: [] as string[], cols30: [] as string[], cols60: [] as string[] };
 
-        // 60d
-        if (want60) {
-          let v = await poPaged(server, token, sku, 60, "SHIPPED");
-          if (v > 0) { rec.d60 = v; trace.d60 = "paged:SHIPPED"; }
-          if (!rec.d60) {
-            v = await poPaged(server, token, sku, 60, "PROCESSED");
-            if (v > 0) { rec.d60 = v; trace.d60 = "paged:PROCESSED"; }
-          }
-          if (!rec.d60) {
-            v = await poBody(server, token, sku, 60, "shipped");
-            if (v > 0) { rec.d60 = v; trace.d60 = "body:shipped"; }
-          }
-          if (!rec.d60) {
-            v = await poBody(server, token, sku, 60, "processed");
-            rec.d60 = v; trace.d60 = "body:processed";
-          }
+    // Standard date parameter name variants used by QD
+    const dateParamSets = (fromISO: string, toISO: string) => ([
+      [{ Type: "DateTime", Name: "fromDate",  Value: fromISO }, { Type: "DateTime", Name: "toDate",  Value: toISO }],
+      [{ Type: "DateTime", Name: "startDate", Value: fromISO }, { Type: "DateTime", Name: "endDate", Value: toISO }],
+      [{ Type: "DateTime", Name: "dateFrom",  Value: fromISO }, { Type: "DateTime", Name: "dateTo",  Value: toISO }],
+    ]);
+
+    // Optional location param name variants for script 53
+    const withLoc = (pars: any[]) =>
+      !locationName
+        ? [pars]
+        : [
+            [...pars, { Type: "Select", Name: "locationName",  Value: locationName }],
+            [...pars, { Type: "Select", Name: "Location",      Value: locationName }],
+            [...pars, { Type: "Select", Name: "StockLocation", Value: locationName }],
+          ];
+
+    async function fetchWindow(days: number) {
+      const { from, to } = agoISO(days);
+
+      // Try script 53 (location-aware) with each date param variant (and each location param name if provided)
+      for (const base of dateParamSets(from, to)) {
+        for (const pars of withLoc(base)) {
+          const rows = await execQD(server, token, 53, pars);
+          if (rows.length) return { script: 53, rows, pars };
+        }
+      }
+
+      // Fallback to script 47 (granular, no location filter)
+      for (const base of dateParamSets(from, to)) {
+        const rows = await execQD(server, token, 47, base);
+        if (rows.length) return { script: 47, rows, pars: base };
+      }
+
+      return { script: 0, rows: [] as any[], pars: [] as any[] };
+    }
+
+    // 60-day pull
+    let rows60: any[] = [];
+    if (want60) {
+      const r60 = await fetchWindow(60);
+      rows60 = r60.rows;
+      if (wantDebug) {
+        dbg.notes.push(`60d: script ${r60.script} rows=${rows60.length}`);
+        dbg.cols60 = rows60[0] ? Object.keys(rows60[0]) : [];
+      }
+      if (!rows60.length) dbg.notes.push("60d: no Query Data rows");
+    }
+
+    // 30-day pull
+    let rows30: any[] = [];
+    if (want30) {
+      const r30 = await fetchWindow(30);
+      rows30 = r30.rows;
+      if (wantDebug) {
+        dbg.notes.push(`30d: script ${r30.script} rows=${rows30.length}`);
+        dbg.cols30 = rows30[0] ? Object.keys(rows30[0]) : [];
+      }
+      if (!rows30.length) dbg.notes.push("30d: no Query Data rows");
+    }
+
+    // Aggregate by SKU (and location filter when provided & present in rows)
+    const want = new Set(skus.map(NORM));
+
+    function sumRows(rows: any[]) {
+      const sums: Record<string, number> = {};
+      for (const s of skus) sums[s] = 0;
+
+      for (const r of rows) {
+        const sku = pickSku(r);
+        if (!sku || !want.has(NORM(sku))) continue;
+
+        if (locationName) {
+          const loc = pickLoc(r);
+          if (loc && NORM(loc) !== NORM(locationName)) continue;
         }
 
-        // 30d
-        if (want30) {
-          let v = await poPaged(server, token, sku, 30, "SHIPPED");
-          if (v > 0) { rec.d30 = v; trace.d30 = "paged:SHIPPED"; }
-          if (!rec.d30) {
-            v = await poPaged(server, token, sku, 30, "PROCESSED");
-            if (v > 0) { rec.d30 = v; trace.d30 = "paged:PROCESSED"; }
-          }
-          if (!rec.d30) {
-            v = await poBody(server, token, sku, 30, "shipped");
-            if (v > 0) { rec.d30 = v; trace.d30 = "body:shipped"; }
-          }
-          if (!rec.d30) {
-            v = await poBody(server, token, sku, 30, "processed");
-            rec.d30 = v; trace.d30 = "body:processed";
-          }
-        }
+        sums[sku] += pickQty(r);
+      }
+      return sums;
+    }
 
-        sales[sku] = rec;
-        if (debug) dbg[sku] = trace;
-      })
-    );
+    if (want60 && rows60.length) {
+      const s60 = sumRows(rows60);
+      for (const k of Object.keys(s60)) out[k].d60 = s60[k] ?? 0;
+    }
+    if (want30 && rows30.length) {
+      const s30 = sumRows(rows30);
+      for (const k of Object.keys(s30)) out[k].d30 = s30[k] ?? 0;
+    }
 
-    return NextResponse.json({ ok: true, source: "ProcessedOrders", sales, ...(debug ? { debug: dbg } : {}) });
+    // If both windows produced zero rows, surface a clear message.
+    const hadAny = (want60 && rows60.length) || (want30 && rows30.length);
+    if (!hadAny) {
+      return NextResponse.json({
+        ok: false,
+        error: "No Query Data rows returned. Ensure your Linnworks app has access to Query Data (Dashboards) and that scripts #53/#47 exist for your account.",
+        hint: "If needed I can add a tiny /api/lw/qdebug to list available scripts & columns.",
+      }, { status: 404 });
+    }
+
+    if (wantDebug) dbg.used = "QueryData";
+    return NextResponse.json({ ok: true, source: "QueryData", sales: out, ...(wantDebug ? { debug: dbg } : {}) });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
   }
 }
 
-// ensure module mode
+// keep file as a module even if tree-shaken
 export {};
