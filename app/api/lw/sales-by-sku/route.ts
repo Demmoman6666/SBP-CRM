@@ -6,6 +6,7 @@ export const runtime = "nodejs";
 
 type Input = {
   skus: string[];
+  idBySku?: Record<string, string>; // optional: sku -> stockItemId
   locationId?: string;
   days30?: boolean;
   days60?: boolean;
@@ -27,70 +28,52 @@ async function readJson(res: Response) {
 
 export async function POST(req: NextRequest) {
   const payload = (await req.json().catch(() => ({}))) as Input;
-  const skus = uniqSkus(payload.skus).slice(0, 200); // safety cap
+  const skus = uniqSkus(payload.skus).slice(0, 200);
   if (!skus.length) return NextResponse.json({ ok: false, error: "No SKUs provided" }, { status: 400 });
 
   const want30 = payload.days30 !== false;
   const want60 = payload.days60 !== false;
   const locationId = payload.locationId || undefined;
+  const providedMap = payload.idBySku || {};
 
   try {
     const { token, server } = await lwSession();
 
-    // --- 1) Resolve stockItemIds (robust)
-    async function tryIds(body: any) {
-      const r = await fetch(`${server}/api/Inventory/GetStockItemIdsBySKU`, {
-        method: "POST",
-        headers: { Authorization: token, "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await readJson(r);
-      return { ok: r.ok, status: r.status, data };
-    }
+    // Resolve IDs only for SKUs not provided by the client
+    const missing = skus.filter(s => !providedMap[s]);
+    const skuToId = new Map<string, string>(Object.entries(providedMap));
 
-    // Try object bodies (accounts that reject arrays will accept one of these)
-    let idsResp =
-      await tryIds({ skus }) ||
-      await tryIds({ Skus: skus }) ||
-      await tryIds({ SKUs: skus });
+    if (missing.length) {
+      // Try the object body shapes that some accounts require
+      const tryShapes = async (body: any) => {
+        const r = await fetch(`${server}/api/Inventory/GetStockItemIdsBySKU`, {
+          method: "POST",
+          headers: { Authorization: token, "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(body),
+        });
+        return { ok: r.ok, status: r.status, data: await readJson(r) };
+      };
 
-    // If the first call returned something falsy (shouldn't), ensure we have an object
-    if (!idsResp) idsResp = { ok: false, status: 0, data: null };
-
-    // Normalise any of these shapes to an array of rows
-    function rowsFromIds(data: any): any[] | null {
-      if (Array.isArray(data)) return data;
-      if (Array.isArray(data?.Data)) return data.Data;
-      if (Array.isArray(data?.items)) return data.items;
-      return null;
-    }
-
-    let rows = rowsFromIds(idsResp.data);
-
-    // Fallback: if ids couldn’t be read, search each SKU via Stock/GetStockItemsFull
-    const skuToId = new Map<string, string>();
-    if (rows && idsResp.ok) {
-      for (const row of rows) {
-        const sku = row?.SKU ?? row?.Sku ?? row?.sku ?? row?.ItemNumber;
-        const id  = row?.StockItemId ?? row?.StockItemGuid ?? row?.Id ?? row?.stockItemId;
-        if (sku && id) skuToId.set(String(sku), String(id));
+      let idsResp = await tryShapes({ skus: missing });
+      if (!idsResp.ok || !Array.isArray(idsResp.data)) {
+        const alt = await tryShapes({ Skus: missing });
+        if (alt.ok && Array.isArray(alt.data)) idsResp = alt;
       }
-    } else {
-      // Per-SKU fallback (concurrency limited)
-      const concurrency = 6;
-      let i = 0;
-      async function worker() {
-        while (i < skus.length) {
-          const idx = i++;
-          const sku = skus[idx];
-          // Use GetStockItemsFull keyword search with searchTypes ["SKU"]
-          const body = {
-            keyword: sku,
-            searchTypes: ["SKU"],
-            entriesPerPage: 50,
-            pageNumber: 1,
-            dataRequirements: [], // minimal
-          };
+      if (!idsResp.ok || !Array.isArray(idsResp.data)) {
+        const alt2 = await tryShapes({ SKUs: missing });
+        if (alt2.ok && Array.isArray(alt2.data)) idsResp = alt2;
+      }
+
+      if (idsResp.ok && Array.isArray(idsResp.data)) {
+        for (const row of idsResp.data) {
+          const sku = row?.SKU ?? row?.Sku ?? row?.sku ?? row?.ItemNumber;
+          const id  = row?.StockItemId ?? row?.StockItemGuid ?? row?.Id ?? row?.stockItemId;
+          if (sku && id) skuToId.set(String(sku), String(id));
+        }
+      } else {
+        // Fallback per-SKU search via Stock/GetStockItemsFull
+        for (const sku of missing) {
+          const body = { keyword: sku, searchTypes: ["SKU"], entriesPerPage: 50, pageNumber: 1, dataRequirements: [] };
           try {
             const r = await fetch(`${server}/api/Stock/GetStockItemsFull`, {
               method: "POST",
@@ -99,25 +82,21 @@ export async function POST(req: NextRequest) {
             });
             const data: any = await readJson(r);
             const arr: any[] = Array.isArray(data) ? data : [];
-            // exact SKU match
             const hit = arr.find((row) => (row?.SKU ?? row?.ItemNumber) === sku);
             const id = hit?.Id ?? hit?.StockItemId ?? hit?.pkStockItemId;
             if (id) skuToId.set(sku, String(id));
-          } catch {
-            // ignore; leave missing
-          }
+          } catch {/* ignore */}
         }
       }
-      await Promise.all(Array.from({ length: Math.min(concurrency, skus.length) }, worker));
     }
 
-    // --- 2) Date windows
+    // Date windows
     const now = new Date();
     const start60 = new Date(now); start60.setDate(now.getDate() - 60); start60.setHours(0,0,0,0);
     const start30 = new Date(now); start30.setDate(now.getDate() - 30); start30.setHours(0,0,0,0);
     const endISO  = now.toISOString();
 
-    // --- 3) Fetch consumption and aggregate
+    // Fetch consumption & aggregate (treat negatives as sales)
     const sales: Record<string, { d30?: number; d60?: number }> = {};
     for (const sku of skus) {
       const stockItemId = skuToId.get(sku);
@@ -136,8 +115,10 @@ export async function POST(req: NextRequest) {
       const sumFrom = (from: Date) =>
         arr.reduce((acc, r) => {
           const d = new Date(r?.Date ?? r?.date ?? 0);
-          const q = Number(r?.Quantity ?? r?.Qty ?? r?.StockQuantity ?? 0) || 0;
-          return d >= from ? acc + q : acc;
+          const qRaw = Number(r?.Quantity ?? r?.Qty ?? r?.StockQuantity ?? 0) || 0;
+          // If consumption uses negative deltas for stock-out, count the magnitude of negatives as sales:
+          const qSold = qRaw < 0 ? -qRaw : qRaw;
+          return d >= from ? acc + qSold : acc;
         }, 0);
 
       sales[sku] = {
