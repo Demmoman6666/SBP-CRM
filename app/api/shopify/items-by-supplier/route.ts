@@ -5,9 +5,9 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * NOTE: This schema treats Money as a SCALAR (no subfields).
- * So we fetch `price` and `inventoryItem { unitCost }` directly,
- * then parse them as numbers in code.
+ * Your schema specifics:
+ * - variant.price -> Money (SCALAR)  ✅ no sub-selections
+ * - inventoryItem.unitCost -> MoneyV2 (OBJECT)  ✅ needs { amount ... }
  */
 const QUERY = /* GraphQL */ `
   query ProductsByVendor($query: String!, $cursor: String) {
@@ -28,7 +28,7 @@ const QUERY = /* GraphQL */ `
                 inventoryQuantity
                 price
                 inventoryItem {
-                  unitCost
+                  unitCost { amount }
                 }
               }
             }
@@ -42,8 +42,7 @@ const QUERY = /* GraphQL */ `
 
 function cleanTitle(productTitle: string, variantTitle?: string | null) {
   const vt = (variantTitle || "").trim();
-  // Drop "Default Title" and only append variant title if meaningful.
-  if (!vt || /^default title$/i.test(vt)) return productTitle || "";
+  if (!vt || /^default title$/i.test(vt)) return (productTitle || "").trim();
   return `${productTitle} — ${vt}`.replace(/\s*[–—-]\s*Default Title\s*$/i, "").trim();
 }
 
@@ -65,7 +64,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Keep it simple & compatible: active products by vendor
+    // Active products by vendor
     const query = `vendor:"${vendor.replace(/"/g, '\\"')}" status:active`;
 
     const items: Array<{
@@ -73,8 +72,8 @@ export async function GET(req: NextRequest) {
       title: string;
       productTitle: string;
       variantId: string | null;
-      priceAmount: number;     // parsed from scalar Money
-      costAmount: number;      // parsed from scalar Money
+      priceAmount: number;     // scalar Money parsed to number
+      costAmount: number;      // MoneyV2.amount parsed to number
       inventoryQuantity: number;
     }> = [];
 
@@ -95,11 +94,11 @@ export async function GET(req: NextRequest) {
           const sku = String(v?.sku || "").trim();
           if (!sku) continue;
 
-          // Money is scalar in your schema — parse to number safely
+          // price is a scalar Money in your shop
           const priceAmount = Number(v?.price ?? 0) || 0;
-          const costAmount = Number(v?.inventoryItem?.unitCost ?? 0) || 0;
+          // unitCost is MoneyV2 -> { amount }
+          const costAmount = Number(v?.inventoryItem?.unitCost?.amount ?? 0) || 0;
 
-          // Use variant.inventoryQuantity for total stock
           const inventoryQuantity =
             typeof v?.inventoryQuantity === "number" ? v.inventoryQuantity : 0;
 
