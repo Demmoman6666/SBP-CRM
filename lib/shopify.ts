@@ -78,6 +78,12 @@ export async function shopifyGraphql<T = any>(query: string, variables?: Record<
 /* ➕ Alias export to satisfy imports that use `shopifyGraphQL` (capital QL) */
 export { shopifyGraphql as shopifyGraphQL };
 
+/** ✅ Minimal helper used by API routes to fail fast if env is missing */
+export function requireShopifyEnv() {
+  if (!SHOP_DOMAIN) throw new Error("Missing SHOPIFY_SHOP_DOMAIN");
+  if (!SHOP_ADMIN_TOKEN) throw new Error("Missing SHOPIFY_ADMIN_ACCESS_TOKEN");
+}
+
 /** ───────────────── HMAC ───────────────── */
 function verifyWithSecret(secret: string, rawBytes: Buffer, hmacHeader: string) {
   if (!secret) return false;
