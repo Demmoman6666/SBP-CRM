@@ -18,6 +18,9 @@ type ItemRow = {
   sales30?: number;
   sales60?: number;
 
+  // NEW: out-of-stock days for the look-back window
+  oosDays?: number;
+
   avgDaily?: number;
   forecastQty?: number;
   suggestedQty?: number;
@@ -106,7 +109,7 @@ export default function PurchaseOrderingPage() {
     })();
   }, []);
 
-  // fetch items + sales for a supplier
+  // fetch items + sales (+ oos-days) for a supplier
   async function fetchPlan(forSupplierId: string) {
     if (!forSupplierId) { setError('Please choose a supplier'); return; }
     setLoading(true);
@@ -141,9 +144,9 @@ export default function PurchaseOrderingPage() {
       setItems(baseRows);
       setStatus(`Loaded ${baseRows.length} item(s). Getting sales…`);
 
-      // Sales (30/60) — include ALL orders by default (exclude drafts)
       const skus = baseRows.map(r => r.sku).filter(Boolean).slice(0, 800);
       if (skus.length) {
+        // Sales (30/60) — all non-draft orders
         const salesRes = await fetch('/api/shopify/sales-by-sku', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -152,8 +155,6 @@ export default function PurchaseOrderingPage() {
             locationId: locationId || undefined,
             days30: true,
             days60: true,
-
-            // include all order states; exclude drafts (server should honor these flags)
             source: 'orders',
             includeAllStatuses: true,
             excludeDrafts: true,
@@ -162,12 +163,24 @@ export default function PurchaseOrderingPage() {
         const salesJson = await salesRes.json().catch(() => ({ ok: false }));
         if (!salesJson?.ok) throw new Error(salesJson?.error || 'Failed to fetch sales');
 
-        const bySku: Record<string, { d30?: number; d60?: number }> = salesJson.sales || {};
-        const merged = baseRows.map(r => ({
+        let merged = baseRows.map(r => ({
           ...r,
-          sales30: bySku[r.sku]?.d30 ?? 0,
-          sales60: bySku[r.sku]?.d60 ?? 0,
+          sales30: salesJson.sales?.[r.sku]?.d30 ?? 0,
+          sales60: salesJson.sales?.[r.sku]?.d60 ?? 0,
         }));
+
+        // NEW: OOS days (optional; ignore if endpoint absent)
+        try {
+          const oosRes = await fetch('/api/shopify/oos-days-by-sku', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ skus, days: lookbackDays, locationId: locationId || undefined }),
+          });
+          const oosJson = await oosRes.json().catch(() => ({ ok: false }));
+          if (oosJson?.ok && oosJson.days) {
+            merged = merged.map(r => ({ ...r, oosDays: Number(oosJson.days[r.sku] ?? 0) }));
+          }
+        } catch { /* no-op */ }
 
         setItems(recalcDerived(merged, lookbackDays, daysOfStock));
         setStatus(`ShopifyOrders (all orders)`);
@@ -204,6 +217,12 @@ export default function PurchaseOrderingPage() {
 
   const hasRows = items.length > 0;
   const grandTotal = useMemo(() => items.reduce((acc, r) => acc + (Number(r.costAmount ?? 0) * Number(r.orderQty ?? 0)), 0), [items]);
+
+  // NEW: total OOS days across listed SKUs (simple sum)
+  const totalOOSDays = useMemo(
+    () => items.reduce((acc, r) => acc + Number(r.oosDays ?? 0), 0),
+    [items]
+  );
 
   function applySuggestedAll() {
     setItems(prev => prev.map(r => ({ ...r, orderQty: Math.max(0, Math.ceil(r.suggestedQty ?? 0)) })));
@@ -290,6 +309,9 @@ export default function PurchaseOrderingPage() {
                     60d sales <Caret k="sales60" />
                   </button>
                 </th>
+                {/* NEW COLUMN */}
+                <th className="ta-center">Days OOS</th>
+
                 <th className="ta-center">Avg/day</th>
                 <th className="ta-center">Forecast</th>
                 <th className="ta-center">
@@ -304,7 +326,7 @@ export default function PurchaseOrderingPage() {
 
             <tbody>
               {!hasRows && (
-                <tr><td className="empty" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
+                <tr><td className="empty" colSpan={12}>Pick a supplier and click “Generate plan”…</td></tr>
               )}
 
               {sorted.map((r, idx) => {
@@ -318,6 +340,7 @@ export default function PurchaseOrderingPage() {
                     <td className="ta-center">{gbp(costNum)}</td>
                     <td className="ta-center">{r.sales30 ?? 0}</td>
                     <td className="ta-center">{r.sales60 ?? 0}</td>
+                    <td className="ta-center">{r.oosDays ?? 0}</td>
                     <td className="ta-center">{(r.avgDaily ?? 0).toFixed(2)}</td>
                     <td className="ta-center">{Math.ceil(r.forecastQty ?? 0)}</td>
                     <td className="ta-center">{r.suggestedQty ?? 0}</td>
@@ -343,16 +366,19 @@ export default function PurchaseOrderingPage() {
           {hasRows && (
             <div className="po-table-foot">
               <div className="note">
-                Sales use all Shopify <em>Orders</em> (paid & unpaid; fulfilled, partially fulfilled, and unfulfilled).
-                Draft orders are excluded.
+                Sales use all Shopify <em>Orders</em> (paid & unpaid; any fulfillment state). Draft orders are excluded.
+                Days OOS shows how many days each SKU was out of stock within the {lookbackDays}-day look-back window.
               </div>
-              <div className="total">Grand total: {gbp(grandTotal)}</div>
+              <div className="total">
+                Total OOS days (sum across SKUs): {totalOOSDays}
+                &nbsp;&nbsp;|&nbsp;&nbsp; Grand total: {gbp(grandTotal)}
+              </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Scoped styles (unchanged look, plus full-width bleed) */}
+      {/* Styles unchanged, with numeric columns centered + full-bleed table */}
       <style jsx>{`
         .po-wrap { padding: 24px; max-width: 1200px; margin: 0 auto; }
         .po-card { border: 1px solid #e5e7eb; background: #fff; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
@@ -375,28 +401,16 @@ export default function PurchaseOrderingPage() {
 
         .po-error { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:10px 12px; border-radius:8px; font-size:14px; }
 
-        /* FULL-WIDTH (bleed) container so the table spans the viewport */
-        .po-bleed {
-          position: relative;
-          left: 50%;
-          right: 50%;
-          margin-left: -50vw;
-          margin-right: -50vw;
-          width: 100vw;
-          padding: 0 24px; /* keeps same side gutters */
-        }
-
+        .po-bleed { position: relative; left: 50%; right: 50%; margin-left: -50vw; margin-right: -50vw; width: 100vw; padding: 0 24px; }
         .po-table-wrap { background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow:hidden; margin-top: 8px; }
         .po-table { width:100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
         .po-table thead th { position: sticky; top: 0; z-index: 5; background: #f9fafb; color:#374151; text-align:left; padding:12px; font-weight:600; border-bottom:1px solid #e5e7eb; }
         .po-th-link { all: unset; cursor: pointer; color:#374151; font-weight:600; display:inline-block; width:100%; text-align: inherit; }
         .po-th-link:hover { text-decoration: underline; }
-
         .po-table tbody td { padding:12px; color:#111827; border-bottom:1px solid #eef0f2; }
         .po-table tbody tr.alt td { background:#fafafa; }
         .po-table .empty { padding: 16px; color:#6b7280; }
 
-        /* Center numeric columns (headers + cells + qty input) */
         .ta-center { text-align: center; }
         .po-qty { width: 92px; padding: 8px 10px; text-align: center; border:1px solid #d1d5db; border-radius:8px; background:#fff; color:#111827; outline:none; }
 
