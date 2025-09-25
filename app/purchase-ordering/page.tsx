@@ -127,7 +127,7 @@ export default function PurchaseOrderingPage() {
         if (sJson?.ok) setSuppliers(sJson.suppliers ?? []);
         else setError(sJson?.error || 'Failed to load suppliers');
         if (lJson?.ok) setLocations(lJson.locations ?? []);
-        else setError((prev) => prev ?? lJson?.error || 'Failed to load locations');
+        else setError((prev) => (prev ?? (lJson?.error || 'Failed to load locations')));
       } catch (e: any) {
         setError(String(e?.message ?? e));
       }
@@ -433,7 +433,7 @@ export default function PurchaseOrderingPage() {
           </thead>
 
           <tbody className="divide-y divide-gray-100">
-            {!hasRows && (
+            {!items.length && (
               <tr>
                 <td className="p-4 text-gray-500" colSpan={13}>
                   Pick a supplier and click “Generate plan”…
