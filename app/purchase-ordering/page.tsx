@@ -5,121 +5,109 @@ import { useEffect, useMemo, useState } from 'react';
 
 type Supplier = { id: string; name: string };
 type Location = { id: string; name: string; tag?: string | null };
-type ProductType = { name: string };
-type ProductCategory = { id: string; name: string };
-type Collection = { id: string; title: string };
 
 type ItemRow = {
   sku: string;
   title: string;
-  orderQty: number;
-  cost: number;   // unit cost/price
-  stock: number;  // current inventory qty
+  variantId?: string | null;
+
+  // From /api/shopify/items-by-supplier
+  inventoryQuantity?: number;   // on-hand (total or per selected location)
+  costAmount?: number;          // unit cost (number)
+  priceAmount?: number;         // optional selling price (not shown but available)
+
+  // From /api/shopify/sales-by-sku
   sales30?: number;
   sales60?: number;
+
+  // Derived
+  avgDaily?: number;            // calculated from sales + lookback
+  forecastQty?: number;         // avgDaily * daysOfStock
+  suggestedQty?: number;        // ceil(max(0, forecastQty - inventoryQuantity))
+  orderQty: number;             // user-editable
 };
 
-type SortKey = 'sku' | 'title' | 'sales30' | 'sales60';
+type SortKey = 'sku' | 'title' | 'sales30' | 'sales60' | 'suggestedQty';
 type SortDir = 'asc' | 'desc';
 
-/* ───────────────── helpers ───────────────── */
-const num = (v: any): number => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-};
-const fmt2 = (v: any) => num(v).toFixed(2);
-/** Remove “— Default Title”, “- Default Title”, etc. (any dash + spaces) */
-const cleanTitle = (t: string) => t.replace(/\s*[–—-]\s*Default Title\s*$/i, '').trim();
-
 export default function PurchaseOrderingPage() {
-  /** Dropdown data */
+  // dropdown data
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
-  const [productTypes, setProductTypes] = useState<ProductType[]>([]);
-  const [productCategories, setProductCategories] = useState<ProductCategory[]>([]);
-  const [collections, setCollections] = useState<Collection[]>([]);
 
-  /** Selections / controls */
+  // selections / controls
   const [supplierId, setSupplierId] = useState<string>('');
-  const [locationId, setLocationId] = useState<string>(''); // blank = All
+  const [locationId, setLocationId] = useState<string>('');
   const [daysOfStock, setDaysOfStock] = useState<number>(14);
   const [lookbackDays, setLookbackDays] = useState<number>(60);
+  const [includePaidFallback, setIncludePaidFallback] = useState<boolean>(true); // default include paid & unpaid
 
-  // Filters (optional)
-  const [productType, setProductType] = useState<string>('');
-  const [productCategoryId, setProductCategoryId] = useState<string>('');
-  const [collectionId, setCollectionId] = useState<string>('');
-
-  // Default ON: count paid orders when there are no fulfillments
-  const [includePaidFallback, setIncludePaidFallback] = useState<boolean>(true);
-
-  /** UI state */
+  // ui state
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<ItemRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
 
-  /** Sorting */
+  // sorting
   const [sortBy, setSortBy] = useState<SortKey>('sku');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const toggleSort = (k: SortKey) => {
     if (sortBy === k) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
     else { setSortBy(k); setSortDir('asc'); }
   };
-  const Caret = ({ k }: { k: SortKey }) =>
-    sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
+  const Caret = ({ k }: { k: SortKey }) => sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
 
-  /** Derived / totals */
-  const sorted = useMemo(() => {
-    const arr = [...items];
-    arr.sort((a, b) => {
-      const dir = sortDir === 'asc' ? 1 : -1;
-      const av = (a as any)[sortBy] ?? '';
-      const bv = (b as any)[sortBy] ?? '';
-      if (typeof av === 'number' || typeof bv === 'number') return (num(av) - num(bv)) * dir;
-      return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' }) * dir;
+  // Helpers
+  function nearestBucketRate(row: ItemRow, lbDays: number): number {
+    const d30 = typeof row.sales30 === 'number' ? row.sales30! : undefined;
+    const d60 = typeof row.sales60 === 'number' ? row.sales60! : undefined;
+    if (d30 == null && d60 == null) return 0;
+
+    // Choose the bucket (30/60) that’s closest to the requested lookback
+    const use60 = lbDays >= 45; // simple threshold
+    if (use60 && d60 != null) return d60 / 60;
+    if (!use60 && d30 != null) return d30 / 30;
+
+    // Fallbacks if only one bucket is present
+    if (d60 != null) return d60 / 60;
+    if (d30 != null) return d30 / 30;
+    return 0;
+  }
+
+  function recalcDerived(rows: ItemRow[], lbDays: number, horizon: number): ItemRow[] {
+    return rows.map(r => {
+      const avg = nearestBucketRate(r, lbDays);
+      const forecast = avg * Math.max(0, horizon || 0);
+      const onHand = Number(r.inventoryQuantity ?? 0);
+      const suggested = Math.max(0, Math.ceil(forecast - onHand));
+      return { ...r, avgDaily: avg, forecastQty: forecast, suggestedQty: suggested };
     });
-    return arr;
-  }, [items, sortBy, sortDir]);
-  const hasRows = items.length > 0;
-  const grandTotal = useMemo(
-    () => sorted.reduce((acc, r) => acc + num(r.orderQty) * num(r.cost), 0),
-    [sorted]
-  );
+  }
 
-  /** Load dropdowns (vendors, locations, and filter options) */
+  // Load dropdowns
   useEffect(() => {
     (async () => {
       setError(null);
       try {
-        const [sRes, lRes, tRes, cRes, colRes] = await Promise.all([
+        const [sRes, lRes] = await Promise.all([
           fetch('/api/shopify/suppliers', { cache: 'no-store' }),
           fetch('/api/shopify/locations', { cache: 'no-store' }),
-          fetch('/api/shopify/product-types', { cache: 'no-store' }),
-          fetch('/api/shopify/product-categories', { cache: 'no-store' }),
-          fetch('/api/shopify/collections', { cache: 'no-store' }),
         ]);
+        const sJson = await sRes.json().catch(() => ({ ok: false }));
+        const lJson = await lRes.json().catch(() => ({ ok: false }));
 
-        const [sJson, lJson, tJson, catJson, colJson] = await Promise.all([
-          sRes.json().catch(() => ({ ok: false })),
-          lRes.json().catch(() => ({ ok: false })),
-          tRes.json().catch(() => ({ ok: false })),
-          cRes.json().catch(() => ({ ok: false })),
-          colRes.json().catch(() => ({ ok: false })),
-        ]);
+        if (sJson?.ok) setSuppliers(sJson.suppliers ?? []);
+        else setError(sJson?.error || 'Failed to load suppliers');
 
-        if (sJson?.ok) setSuppliers(sJson.suppliers ?? []); else setError(sJson?.error || 'Failed to load suppliers');
-        if (lJson?.ok) setLocations(lJson.locations ?? []); else setError(prev => prev ?? (lJson?.error || 'Failed to load locations'));
-        if (tJson?.ok) setProductTypes(tJson.types ?? []);
-        if (catJson?.ok) setProductCategories(catJson.categories ?? []);
-        if (colJson?.ok) setCollections(colJson.collections ?? []);
+        if (lJson?.ok) setLocations(lJson.locations ?? []);
+        else setError(prev => prev ?? (lJson?.error || 'Failed to load locations'));
       } catch (e: any) {
         setError(String(e?.message ?? e));
       }
     })();
   }, []);
 
-  /** Fetch items + sales */
+  // Fetch plan (items + sales) for a supplier
   async function fetchPlan(forSupplierId: string) {
     if (!forSupplierId) {
       setError('Please choose a supplier');
@@ -131,47 +119,34 @@ export default function PurchaseOrderingPage() {
     setItems([]);
 
     try {
-      // Build querystring with optional filters
-      const qs = new URLSearchParams();
-      qs.set('supplierId', forSupplierId);
-      qs.set('limit', '800');
-      if (productType) qs.set('productType', productType);
-      if (productCategoryId) qs.set('productCategoryId', productCategoryId);
-      if (collectionId) qs.set('collectionId', collectionId);
-      // Hint for your API to include price/inventory if it supports it
-      qs.set('withPricing', '1');
-      qs.set('withInventory', '1');
-
-      // 1) Items (variants with SKUs) by vendor from Shopify GraphQL
-      const itsRes = await fetch(`/api/shopify/items-by-supplier?${qs.toString()}`, { cache: 'no-store' });
+      // 1) Items by supplier (includes cost & stock)
+      const itsRes = await fetch(
+        `/api/shopify/items-by-supplier?supplierId=${encodeURIComponent(forSupplierId)}&limit=800` +
+        (locationId ? `&locationId=${encodeURIComponent(locationId)}` : ''),
+        { cache: 'no-store' }
+      );
       const itsJson = await itsRes.json().catch(() => ({ ok: false }));
       if (!itsJson?.ok) throw new Error(itsJson?.error || 'Failed to fetch items');
 
       const baseRows: ItemRow[] = (itsJson.items as any[]).map((it: any) => ({
-        sku: String(it.sku || '').trim(),
-        title: cleanTitle(String(it.title || '')),
+        sku: it.sku,
+        title: it.title || '',
+        variantId: it.variantId || null,
+        inventoryQuantity: Number(it.inventoryQuantity ?? 0),
+        costAmount: typeof it.costAmount === 'number' ? it.costAmount : Number(it.costAmount ?? 0),
+        priceAmount: typeof it.priceAmount === 'number' ? it.priceAmount : Number(it.priceAmount ?? 0),
         orderQty: 0,
-        // Accept a variety of possible keys coming from the API
-        cost: num(
-          it.cost ??
-          it.unitCost?.amount ??
-          it.priceAmount ??
-          it.price?.amount ??
-          it.compareAtPrice?.amount
-        ),
-        stock: num(it.inventoryQuantity ?? it.stock ?? it.onHand),
       }));
-
       if (!baseRows.length) {
         setItems([]);
-        setStatus('No items found for this selection.');
+        setStatus('No items found for this supplier.');
         return;
       }
 
       setItems(baseRows);
       setStatus(`Loaded ${baseRows.length} item(s). Getting sales…`);
 
-      // 2) Sales 30/60 by SKU from Shopify fulfillments (location optional)
+      // 2) Sales 30/60 by SKU
       const skus = baseRows.map(r => r.sku).filter(Boolean).slice(0, 800);
       if (skus.length) {
         const salesRes = await fetch('/api/shopify/sales-by-sku', {
@@ -179,25 +154,31 @@ export default function PurchaseOrderingPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             skus,
-            locationId: locationId || undefined, // blank = All
+            locationId: locationId || undefined,
             days30: true,
             days60: true,
+            // default is to count both paid and unpaid if there are no fulfillments
             countPaidIfNoFulfillments: includePaidFallback,
-            lookbackDays, // if your API uses it
           }),
         });
         const salesJson = await salesRes.json().catch(() => ({ ok: false }));
         if (!salesJson?.ok) throw new Error(salesJson?.error || 'Failed to fetch sales');
 
         const bySku: Record<string, { d30?: number; d60?: number }> = salesJson.sales || {};
-        setItems(prev =>
-          prev.map(r => ({
-            ...r,
-            sales30: bySku[r.sku]?.d30 ?? 0,
-            sales60: bySku[r.sku]?.d60 ?? 0,
-          })),
-        );
-        setStatus(`Sales source: ${salesJson.source || 'ShopifyOrders/ShopifyFulfillments'}`);
+        const merged = baseRows.map(r => ({
+          ...r,
+          sales30: bySku[r.sku]?.d30 ?? 0,
+          sales60: bySku[r.sku]?.d60 ?? 0,
+        }));
+
+        // 3) Derive avg/day, forecast, suggested
+        const withDerived = recalcDerived(merged, lookbackDays, daysOfStock);
+        setItems(withDerived);
+        setStatus(`Sales source: ${salesJson.source || 'Shopify'}`);
+      } else {
+        // No SKUs to look up — just compute derived with zeros
+        setItems(recalcDerived(baseRows, lookbackDays, daysOfStock));
+        setStatus('No SKUs found to compute sales.');
       }
     } catch (e: any) {
       setError(String(e?.message ?? e));
@@ -207,161 +188,139 @@ export default function PurchaseOrderingPage() {
     }
   }
 
-  /** Auto-refresh when relevant inputs change */
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (supplierId) fetchPlan(supplierId); }, [
-    supplierId,
-    locationId,
-    productType,
-    productCategoryId,
-    collectionId,
-    includePaidFallback,
-    lookbackDays,
-  ]);
+  // Auto-refresh when supplier / location / includePaidFallback changes
+  useEffect(() => {
+    if (supplierId) fetchPlan(supplierId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supplierId, locationId, includePaidFallback]);
+
+  // Recalculate derived fields when daysOfStock or lookbackDays change
+  useEffect(() => {
+    setItems(prev => recalcDerived(prev, lookbackDays, daysOfStock));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [daysOfStock, lookbackDays]);
+
+  // Sorting
+  const sorted = useMemo(() => {
+    const arr = [...items];
+    arr.sort((a, b) => {
+      const dir = sortDir === 'asc' ? 1 : -1;
+      const av = (a as any)[sortBy] ?? '';
+      const bv = (b as any)[sortBy] ?? '';
+      if (typeof av === 'number' || typeof bv === 'number') return (Number(av) - Number(bv)) * dir;
+      return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' }) * dir;
+    });
+    return arr;
+  }, [items, sortBy, sortDir]);
+
+  const hasRows = items.length > 0;
+
+  // Bulk helper: apply suggested to all orderQty
+  function applySuggestedAll() {
+    setItems(prev => prev.map(r => ({ ...r, orderQty: Math.max(0, Math.ceil(r.suggestedQty ?? 0)) })));
+  }
+
+  const grandTotal = useMemo(() => {
+    return items.reduce((acc, r) => acc + (Number(r.costAmount ?? 0) * Number(r.orderQty ?? 0)), 0);
+  }, [items]);
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header + actions */}
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Purchase Ordering</h1>
-          <p className="text-sm text-gray-500">Forecast demand &amp; create POs (Shopify)</p>
-        </div>
-        <div className="flex items-center gap-4">
-          <button
-            className="px-4 py-2 rounded-2xl bg-black text-white disabled:opacity-50"
-            disabled={!supplierId || loading}
-            onClick={() => fetchPlan(supplierId)}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Purchase Ordering</h1>
+        <span className="text-sm text-gray-500">Forecast demand &amp; create POs (Shopify)</span>
+      </div>
+
+      {/* Controls */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+        <label className="flex flex-col text-sm">
+          Days of stock
+          <input
+            type="number"
+            min={1}
+            className="border rounded p-2"
+            value={daysOfStock}
+            onChange={(e) => setDaysOfStock(Math.max(1, Number(e.target.value || 0)))}
+          />
+        </label>
+
+        <label className="flex flex-col text-sm">
+          Look-back (days)
+          <input
+            type="number"
+            min={7}
+            className="border rounded p-2"
+            value={lookbackDays}
+            onChange={(e) => setLookbackDays(Math.max(7, Number(e.target.value || 0)))}
+          />
+          <span className="text-[11px] text-gray-500 mt-1">
+            Uses the closest of 30/60d sales to estimate avg/day.
+          </span>
+        </label>
+
+        <label className="flex flex-col text-sm">
+          Location
+          <select
+            className="border rounded p-2"
+            value={locationId}
+            onChange={(e) => setLocationId(e.target.value)}
           >
-            {loading ? 'Loading…' : 'Generate plan'}
-          </button>
-          <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+            <option value="">All</option>
+            {locations.map(l => (
+              <option key={l.id} value={l.id}>{l.name}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col text-sm">
+          Supplier
+          <select
+            className="border rounded p-2"
+            value={supplierId}
+            onChange={(e) => setSupplierId(e.target.value)}
+          >
+            <option value="">Choose…</option>
+            {suppliers.map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col justify-end text-sm">
+          <span className="inline-flex items-center gap-2">
             <input
               type="checkbox"
               className="accent-black"
               checked={includePaidFallback}
               onChange={(e) => setIncludePaidFallback(e.target.checked)}
             />
-            Include paid orders when no fulfillments
-          </label>
-        </div>
+            Count paid orders if no fulfillments
+          </span>
+          <span className="text-[11px] text-gray-500">Applies when “All” locations selected.</span>
+        </label>
       </div>
 
-      {/* Planning */}
-      <section className="rounded-2xl border p-4 md:p-5 bg-white">
-        <h2 className="text-sm font-medium text-gray-700 mb-3">Planning</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-          <label className="flex flex-col text-sm">
-            Supplier <span className="text-xs text-gray-500">(required)</span>
-            <select
-              className="mt-1 border rounded p-2"
-              value={supplierId}
-              onChange={(e) => setSupplierId(e.target.value)}
-            >
-              <option value="">Choose…</option>
-              {suppliers.map(s => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </label>
+      <div className="flex items-center gap-3">
+        <button
+          className="px-3 py-2 rounded bg-black text-white disabled:opacity-50"
+          disabled={!supplierId || loading}
+          onClick={() => fetchPlan(supplierId)}
+        >
+          {loading ? "Loading…" : "Generate plan"}
+        </button>
 
-          <label className="flex flex-col text-sm">
-            Location
-            <select
-              className="mt-1 border rounded p-2"
-              value={locationId}
-              onChange={(e) => setLocationId(e.target.value)}
-            >
-              <option value="">All</option>
-              {locations.map(l => (
-                <option key={l.id} value={l.id}>{l.name}</option>
-              ))}
-            </select>
-          </label>
+        <button
+          className="px-3 py-2 rounded border border-gray-300 disabled:opacity-50"
+          disabled={!hasRows}
+          onClick={applySuggestedAll}
+          title="Fill order quantities with Suggested"
+        >
+          Auto-fill with Suggested
+        </button>
 
-          <label className="flex flex-col text-sm">
-            Days of stock
-            <input
-              type="number"
-              className="mt-1 border rounded p-2"
-              value={daysOfStock}
-              min={0}
-              onChange={(e) => setDaysOfStock(num(e.target.value))}
-            />
-          </label>
+        {!!status && <span className="text-xs text-gray-600">{status}</span>}
+      </div>
 
-          <label className="flex flex-col text-sm">
-            Lookback (days)
-            <input
-              type="number"
-              className="mt-1 border rounded p-2"
-              value={lookbackDays}
-              min={0}
-              onChange={(e) => setLookbackDays(num(e.target.value))}
-            />
-          </label>
-        </div>
-      </section>
-
-      {/* Filters */}
-      <section className="rounded-2xl border p-4 md:p-5 bg-white">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-medium text-gray-700">Filters</h2>
-          {(productType || productCategoryId || collectionId) && (
-            <button
-              className="text-xs text-gray-600 hover:underline"
-              onClick={() => { setProductType(''); setProductCategoryId(''); setCollectionId(''); }}
-            >
-              Clear filters
-            </button>
-          )}
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <label className="flex flex-col text-sm">
-            Product type
-            <select
-              className="mt-1 border rounded p-2"
-              value={productType}
-              onChange={(e) => setProductType(e.target.value)}
-            >
-              <option value="">All</option>
-              {productTypes.map(t => (
-                <option key={t.name} value={t.name}>{t.name}</option>
-              ))}
-            </select>
-          </label>
-
-          <label className="flex flex-col text-sm">
-            Product category
-            <select
-              className="mt-1 border rounded p-2"
-              value={productCategoryId}
-              onChange={(e) => setProductCategoryId(e.target.value)}
-            >
-              <option value="">All</option>
-              {productCategories.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-          </label>
-
-          <label className="flex flex-col text-sm">
-            Collection
-            <select
-              className="mt-1 border rounded p-2"
-              value={collectionId}
-              onChange={(e) => setCollectionId(e.target.value)}
-            >
-              <option value="">All</option>
-              {collections.map(c => (
-                <option key={c.id} value={c.id}>{c.title}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-      </section>
-
-      {!!status && <div className="text-xs text-gray-600">{status}</div>}
       {error && (
         <div className="p-3 text-sm rounded bg-red-50 text-red-700 border border-red-200">
           {error}
@@ -369,84 +328,92 @@ export default function PurchaseOrderingPage() {
       )}
 
       {/* Items table */}
-      <div className="rounded-2xl border overflow-auto bg-white">
+      <div className="border rounded-lg overflow-auto">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 sticky top-0 z-10">
-            <tr className="text-gray-700">
-              <th className="text-left p-3 w-40">
+          <thead className="bg-gray-50">
+            <tr className="whitespace-nowrap">
+              <th className="text-left p-3">
                 <button className="font-medium hover:underline" onClick={() => toggleSort('sku')}>
                   SKU <Caret k="sku" />
                 </button>
               </th>
-              <th className="text-left p-3 min-w-[280px]">
+              <th className="text-left p-3">
                 <button className="font-medium hover:underline" onClick={() => toggleSort('title')}>
                   Product <Caret k="title" />
                 </button>
               </th>
-              <th className="text-right p-3 w-24">Cost</th>
-              <th className="text-right p-3 w-24">In stock</th>
-              <th className="text-left p-3 w-32">Order qty</th>
-              <th className="text-right p-3 w-28">Line total</th>
-              <th className="text-right p-3 w-28">
+              <th className="text-right p-3">In stock</th>
+              <th className="text-right p-3">Cost</th>
+              <th className="text-right p-3">
                 <button className="font-medium hover:underline" onClick={() => toggleSort('sales30')}>
-                  30 days sales <Caret k="sales30" />
+                  30d sales <Caret k="sales30" />
                 </button>
               </th>
-              <th className="text-right p-3 w-28">
+              <th className="text-right p-3">
                 <button className="font-medium hover:underline" onClick={() => toggleSort('sales60')}>
-                  60 days sales <Caret k="sales60" />
+                  60d sales <Caret k="sales60" />
                 </button>
               </th>
+              <th className="text-right p-3">Avg/day</th>
+              <th className="text-right p-3">Forecast</th>
+              <th className="text-right p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('suggestedQty')}>
+                  Suggested <Caret k="suggestedQty" />
+                </button>
+              </th>
+              <th className="text-right p-3">Order qty</th>
+              <th className="text-right p-3">Line total</th>
             </tr>
           </thead>
           <tbody>
             {!hasRows && (
-              <tr><td className="p-3" colSpan={8}>Pick a supplier and click “Generate plan”…</td></tr>
+              <tr><td className="p-3" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
             )}
             {sorted.map((r) => {
-              const lineTotal = num(r.orderQty) * num(r.cost);
+              const cost = Number(r.costAmount ?? 0);
+              const lineTotal = cost * Number(r.orderQty ?? 0);
               return (
                 <tr key={r.sku} className="border-t">
-                  <td className="p-3 align-middle">{r.sku}</td>
-                  <td className="p-3 align-middle">{r.title}</td>
-                  <td className="p-3 text-right align-middle">{fmt2(r.cost)}</td>
-                  <td className="p-3 text-right align-middle">{Number.isFinite(r.stock) ? r.stock : 0}</td>
-                  <td className="p-3 align-middle">
+                  <td className="p-3">{r.sku}</td>
+                  <td className="p-3">{r.title}</td>
+                  <td className="p-3 text-right">{r.inventoryQuantity ?? 0}</td>
+                  <td className="p-3 text-right">
+                    {cost ? cost.toFixed(2) : '—'}
+                  </td>
+                  <td className="p-3 text-right">{r.sales30 ?? 0}</td>
+                  <td className="p-3 text-right">{r.sales60 ?? 0}</td>
+                  <td className="p-3 text-right">{(r.avgDaily ?? 0).toFixed(2)}</td>
+                  <td className="p-3 text-right">{Math.ceil(r.forecastQty ?? 0)}</td>
+                  <td className="p-3 text-right">{r.suggestedQty ?? 0}</td>
+                  <td className="p-3 text-right">
                     <input
                       type="number"
-                      className="border rounded p-2 w-28"
+                      className="border rounded p-2 w-24 text-right"
                       value={r.orderQty}
                       min={0}
                       onChange={(e) => {
-                        const v = num(e.target.value);
+                        const v = Math.max(0, Number(e.target.value || 0));
                         setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
                       }}
                     />
                   </td>
-                  <td className="p-3 text-right align-middle">{fmt2(lineTotal)}</td>
-                  <td className="p-3 text-right align-middle">{r.sales30 ?? 0}</td>
-                  <td className="p-3 text-right align-middle">{r.sales60 ?? 0}</td>
+                  <td className="p-3 text-right">{lineTotal ? lineTotal.toFixed(2) : '—'}</td>
                 </tr>
               );
             })}
           </tbody>
-          {hasRows && (
-            <tfoot className="bg-gray-50">
-              <tr className="font-medium">
-                <td className="p-3" colSpan={5}>Totals</td>
-                <td className="p-3 text-right">{fmt2(grandTotal)}</td>
-                <td className="p-3 text-right">—</td>
-                <td className="p-3 text-right">—</td>
-              </tr>
-            </tfoot>
-          )}
         </table>
       </div>
 
-      <p className="text-xs text-gray-500">
-        Sales are counted from Shopify <em>Fulfillments</em> (net shipped units). With the checkbox enabled (default),
-        paid order quantities are counted when there are no fulfillments (and when Location is “All”).
-      </p>
+      <div className="flex items-center justify-between text-sm text-gray-700">
+        <div>
+          Sales are counted from Shopify <em>Fulfillments</em> (net shipped units). If enabled, paid orders are counted
+          when there are no fulfillments (only when “All” locations is selected).
+        </div>
+        <div className="font-medium">
+          Grand total: {grandTotal ? grandTotal.toFixed(2) : '0.00'}
+        </div>
+      </div>
     </div>
   );
 }
