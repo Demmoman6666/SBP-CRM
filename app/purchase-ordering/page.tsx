@@ -37,7 +37,6 @@ export default function PurchaseOrderingPage() {
   const [locationId, setLocationId] = useState<string>('');
   const [daysOfStock, setDaysOfStock] = useState<number>(14);
   const [lookbackDays, setLookbackDays] = useState<number>(60);
-  const [includePaidFallback, setIncludePaidFallback] = useState<boolean>(true);
 
   // ui state
   const [loading, setLoading] = useState(false);
@@ -142,7 +141,7 @@ export default function PurchaseOrderingPage() {
       setItems(baseRows);
       setStatus(`Loaded ${baseRows.length} item(s). Getting sales…`);
 
-      // Sales (30/60)
+      // Sales (30/60) — include ALL orders by default (exclude drafts)
       const skus = baseRows.map(r => r.sku).filter(Boolean).slice(0, 800);
       if (skus.length) {
         const salesRes = await fetch('/api/shopify/sales-by-sku', {
@@ -153,7 +152,11 @@ export default function PurchaseOrderingPage() {
             locationId: locationId || undefined,
             days30: true,
             days60: true,
-            countPaidIfNoFulfillments: includePaidFallback,
+
+            // NEW: ask the API to count *all* orders (not just fulfillments); exclude drafts
+            source: 'orders',                 // prefer orders over fulfillments
+            includeAllStatuses: true,         // paid + unpaid, fulfilled + partial + unfulfilled
+            excludeDrafts: true,              // do not include draft orders
           }),
         });
         const salesJson = await salesRes.json().catch(() => ({ ok: false }));
@@ -167,7 +170,7 @@ export default function PurchaseOrderingPage() {
         }));
 
         setItems(recalcDerived(merged, lookbackDays, daysOfStock));
-        setStatus(`ShopifyOrders (60d)`);
+        setStatus(`ShopifyOrders (all orders)`);
       } else {
         setItems(recalcDerived(baseRows, lookbackDays, daysOfStock));
         setStatus('No SKUs found to compute sales.');
@@ -181,7 +184,7 @@ export default function PurchaseOrderingPage() {
   }
 
   // auto refresh on selections
-  useEffect(() => { if (supplierId) fetchPlan(supplierId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [supplierId, locationId, includePaidFallback]);
+  useEffect(() => { if (supplierId) fetchPlan(supplierId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [supplierId, locationId]);
 
   // recompute suggested on horizon/lookback change
   useEffect(() => { setItems(prev => recalcDerived(prev, lookbackDays, daysOfStock)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [daysOfStock, lookbackDays]);
@@ -244,15 +247,6 @@ export default function PurchaseOrderingPage() {
               {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </label>
-
-          <label className="po-checkbox">
-            <input
-              type="checkbox"
-              checked={includePaidFallback}
-              onChange={(e) => setIncludePaidFallback(e.target.checked)}
-            />
-            <span>Count paid orders if no fulfillments <em>(when “All” locations)</em></span>
-          </label>
         </div>
 
         <div className="po-actions">
@@ -282,7 +276,6 @@ export default function PurchaseOrderingPage() {
                   Product <Caret k="title" />
                 </button>
               </th>
-              {/* CHANGED to ta-center on all numeric headers */}
               <th className="ta-center">In stock</th>
               <th className="ta-center">Cost</th>
               <th className="ta-center">
@@ -319,7 +312,6 @@ export default function PurchaseOrderingPage() {
                 <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
                   <td>{r.sku}</td>
                   <td>{r.title}</td>
-                  {/* CHANGED to ta-center on all numeric cells */}
                   <td className="ta-center">{r.inventoryQuantity ?? 0}</td>
                   <td className="ta-center">{gbp(costNum)}</td>
                   <td className="ta-center">{r.sales30 ?? 0}</td>
@@ -349,25 +341,27 @@ export default function PurchaseOrderingPage() {
         {hasRows && (
           <div className="po-table-foot">
             <div className="note">
-              Sales are from Shopify <em>Fulfillments</em>. If enabled, paid orders are counted when there are no
-              fulfillments (only when “All” locations is selected).
+              Sales use all Shopify <em>Orders</em> (paid & unpaid; fulfilled, partially fulfilled, and unfulfilled).
+              Draft orders are excluded.
             </div>
             <div className="total">Grand total: {gbp(grandTotal)}</div>
           </div>
         )}
       </div>
 
+      {/* Scoped styles — unchanged visual design, only center numeric content */}
       <style jsx>{`
         .po-wrap { padding: 24px; max-width: 1200px; margin: 0 auto; }
         .po-card { border: 1px solid #e5e7eb; background: #fff; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
         .po-grid { display: grid; grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 16px; padding: 16px; }
         @media (min-width: 768px) { .po-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-        @media (min-width: 1024px) { .po-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+        @media (min-width: 1024px) { .po-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
         .po-field { display: flex; flex-direction: column; font-size: 14px; color: #374151; }
         .po-field > span { font-weight: 500; }
         .po-field input, .po-field select { margin-top: 6px; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 10px; background: #fff; color: #111827; outline: none; }
         .po-field small { margin-top: 6px; color: #6b7280; font-size: 11px; }
-        .po-checkbox { display:flex; align-items:center; gap: 10px; padding: 0 2px; color:#374151; font-size: 14px; }
+
         .po-actions { display:flex; align-items:center; gap: 10px; border-top: 1px solid #e5e7eb; padding: 10px 12px; background: #fafafa; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
         .po-btn { background:#111827; color:#fff; padding:8px 12px; border-radius:8px; border:1px solid #111827; font-weight: 600; cursor:pointer; }
         .po-btn:hover { background:#000; border-color:#000; }
@@ -375,6 +369,7 @@ export default function PurchaseOrderingPage() {
         .po-btn.po-btn--secondary { background:#fff; color:#111827; border:1px solid #d1d5db; }
         .po-btn.po-btn--secondary:hover { background:#f9fafb; }
         .po-status { font-size:12px; color:#6b7280; margin-left: 8px; }
+
         .po-error { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:10px 12px; border-radius:8px; font-size:14px; }
 
         .po-table-wrap { background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow:hidden; margin-top: 8px; }
@@ -386,10 +381,8 @@ export default function PurchaseOrderingPage() {
         .po-table tbody tr.alt td { background:#fafafa; }
         .po-table .empty { padding: 16px; color:#6b7280; }
 
-        /* NEW: center alignment helper */
+        /* Center numeric columns (headers + cells + qty input) */
         .ta-center { text-align: center; }
-
-        /* Center the qty input too */
         .po-qty { width: 92px; padding: 8px 10px; text-align: center; border:1px solid #d1d5db; border-radius:8px; background:#fff; color:#111827; outline:none; }
 
         .po-table-foot { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; background:#fafafa; border-top:1px solid #e5e7eb; font-size:14px; }
