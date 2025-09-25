@@ -706,3 +706,21 @@ model PurchaseOrderSync {
   @@index([supplierId, createdAt])
   @@index([locationId, createdAt])
 }
+
+/* ---------------- Inventory snapshots (Shopify) ----------------
+   Daily snapshot of available inventory per SKU (optionally per location).
+   Enables exact "Days Out of Stock" by counting days with available === 0.
+*/
+model InventoryDay {
+  id         String   @id @default(cuid())
+  sku        String
+  locationId String?  // null = aggregated across all locations
+  date       DateTime @db.Date
+  available  Int
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([sku, locationId, date])
+  @@index([sku, date])
+}
