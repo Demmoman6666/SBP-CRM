@@ -268,119 +268,98 @@ export default function PurchaseOrderingPage() {
 
       {error && <div className="po-error">{error}</div>}
 
-      {/* FULL-BLEED TABLE (uses the entire screen width) */}
-      <div className="po-bleed">
-        <div className="po-table-wrap">
-          <table className="po-table">
-            {/* Column widths keep headers/cells perfectly aligned */}
-            <colgroup>
-              <col style={{ width: '12%' }} />
-              <col style={{ width: '28%' }} />
-              <col style={{ width: '6%' }} />
-              <col style={{ width: '6%' }} />
-              <col style={{ width: '6%' }} />
-              <col style={{ width: '6%' }} />
-              <col style={{ width: '6%' }} />
-              <col style={{ width: '6%' }} />
-              <col style={{ width: '7%' }} />
-              <col style={{ width: '9%' }} />
-              <col style={{ width: '8%' }} />
-            </colgroup>
+      <div className="po-table-wrap">
+        <table className="po-table">
+          <thead>
+            <tr>
+              <th>
+                <button type="button" className="po-th-link" onClick={() => toggleSort('sku')}>
+                  SKU <Caret k="sku" />
+                </button>
+              </th>
+              <th>
+                <button type="button" className="po-th-link" onClick={() => toggleSort('title')}>
+                  Product <Caret k="title" />
+                </button>
+              </th>
+              {/* CHANGED to ta-center on all numeric headers */}
+              <th className="ta-center">In stock</th>
+              <th className="ta-center">Cost</th>
+              <th className="ta-center">
+                <button type="button" className="po-th-link" onClick={() => toggleSort('sales30')}>
+                  30d sales <Caret k="sales30" />
+                </button>
+              </th>
+              <th className="ta-center">
+                <button type="button" className="po-th-link" onClick={() => toggleSort('sales60')}>
+                  60d sales <Caret k="sales60" />
+                </button>
+              </th>
+              <th className="ta-center">Avg/day</th>
+              <th className="ta-center">Forecast</th>
+              <th className="ta-center">
+                <button type="button" className="po-th-link" onClick={() => toggleSort('suggestedQty')}>
+                  Suggested <Caret k="suggestedQty" />
+                </button>
+              </th>
+              <th className="ta-center">Order qty</th>
+              <th className="ta-center">Line total</th>
+            </tr>
+          </thead>
 
-            <thead>
-              <tr>
-                <th>
-                  <button type="button" className="po-th-link" onClick={() => toggleSort('sku')}>
-                    SKU <Caret k="sku" />
-                  </button>
-                </th>
-                <th>
-                  <button type="button" className="po-th-link" onClick={() => toggleSort('title')}>
-                    Product <Caret k="title" />
-                  </button>
-                </th>
-                <th className="ta-right">In stock</th>
-                <th className="ta-right">Cost</th>
-                <th className="ta-right">
-                  <button type="button" className="po-th-link" onClick={() => toggleSort('sales30')}>
-                    30d sales <Caret k="sales30" />
-                  </button>
-                </th>
-                <th className="ta-right">
-                  <button type="button" className="po-th-link" onClick={() => toggleSort('sales60')}>
-                    60d sales <Caret k="sales60" />
-                  </button>
-                </th>
-                <th className="ta-right">Avg/day</th>
-                <th className="ta-right">Forecast</th>
-                <th className="ta-right">
-                  <button type="button" className="po-th-link" onClick={() => toggleSort('suggestedQty')}>
-                    Suggested <Caret k="suggestedQty" />
-                  </button>
-                </th>
-                <th className="ta-right">Order qty</th>
-                <th className="ta-right">Line total</th>
-              </tr>
-            </thead>
+          <tbody>
+            {!hasRows && (
+              <tr><td className="empty" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
+            )}
 
-            <tbody>
-              {!hasRows && (
-                <tr><td className="empty" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
-              )}
+            {sorted.map((r, idx) => {
+              const costNum = Number(r.costAmount ?? 0);
+              const lineTotal = costNum * Number(r.orderQty ?? 0);
+              return (
+                <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
+                  <td>{r.sku}</td>
+                  <td>{r.title}</td>
+                  {/* CHANGED to ta-center on all numeric cells */}
+                  <td className="ta-center">{r.inventoryQuantity ?? 0}</td>
+                  <td className="ta-center">{gbp(costNum)}</td>
+                  <td className="ta-center">{r.sales30 ?? 0}</td>
+                  <td className="ta-center">{r.sales60 ?? 0}</td>
+                  <td className="ta-center">{(r.avgDaily ?? 0).toFixed(2)}</td>
+                  <td className="ta-center">{Math.ceil(r.forecastQty ?? 0)}</td>
+                  <td className="ta-center">{r.suggestedQty ?? 0}</td>
+                  <td className="ta-center">
+                    <input
+                      type="number"
+                      className="po-qty"
+                      value={r.orderQty}
+                      min={0}
+                      onChange={(e) => {
+                        const v = Math.max(0, Number(e.target.value || 0));
+                        setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
+                      }}
+                    />
+                  </td>
+                  <td className="ta-center">{gbp(lineTotal)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
 
-              {sorted.map((r, idx) => {
-                const costNum = Number(r.costAmount ?? 0);
-                const lineTotal = costNum * Number(r.orderQty ?? 0);
-                return (
-                  <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
-                    <td>{r.sku}</td>
-                    <td>{r.title}</td>
-                    <td className="ta-right">{r.inventoryQuantity ?? 0}</td>
-                    <td className="ta-right">{gbp(costNum)}</td>
-                    <td className="ta-right">{r.sales30 ?? 0}</td>
-                    <td className="ta-right">{r.sales60 ?? 0}</td>
-                    <td className="ta-right">{(r.avgDaily ?? 0).toFixed(2)}</td>
-                    <td className="ta-right">{Math.ceil(r.forecastQty ?? 0)}</td>
-                    <td className="ta-right">{r.suggestedQty ?? 0}</td>
-                    <td className="ta-right">
-                      <input
-                        type="number"
-                        className="po-qty"
-                        value={r.orderQty}
-                        min={0}
-                        onChange={(e) => {
-                          const v = Math.max(0, Number(e.target.value || 0));
-                          setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
-                        }}
-                      />
-                    </td>
-                    <td className="ta-right">{gbp(lineTotal)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          {hasRows && (
-            <div className="po-table-foot">
-              <div className="note">
-                Sales are from Shopify <em>Fulfillments</em>. If enabled, paid orders are counted when there are no
-                fulfillments (only when “All” locations is selected).
-              </div>
-              <div className="total">Grand total: {gbp(grandTotal)}</div>
+        {hasRows && (
+          <div className="po-table-foot">
+            <div className="note">
+              Sales are from Shopify <em>Fulfillments</em>. If enabled, paid orders are counted when there are no
+              fulfillments (only when “All” locations is selected).
             </div>
-          )}
-        </div>
+            <div className="total">Grand total: {gbp(grandTotal)}</div>
+          </div>
+        )}
       </div>
 
-      {/* Styles: keep existing look; add a full-bleed wrapper for table */}
       <style jsx>{`
         .po-wrap { padding: 24px; max-width: 1200px; margin: 0 auto; }
-
-        .po-card {
-          border: 1px solid #e5e7eb; background: #fff; border-radius: 12px;
-          box-shadow: 0 1px 2px rgba(0,0,0,.04);
-        }
+        .po-card { border: 1px solid #e5e7eb; background: #fff; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
         .po-grid { display: grid; grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 16px; padding: 16px; }
         @media (min-width: 768px) { .po-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
         @media (min-width: 1024px) { .po-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
@@ -398,39 +377,22 @@ export default function PurchaseOrderingPage() {
         .po-status { font-size:12px; color:#6b7280; margin-left: 8px; }
         .po-error { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:10px 12px; border-radius:8px; font-size:14px; }
 
-        /* Full-bleed container: lets the table span the full viewport width */
-        .po-bleed {
-          position: relative;
-          left: 50%;
-          right: 50%;
-          margin-left: -50vw;
-          margin-right: -50vw;
-          width: 100vw;
-          padding-left: 24px;
-          padding-right: 24px;
-          /* keep some breathing room on very narrow screens */
-          box-sizing: border-box;
-        }
-
-        .po-table-wrap {
-          background:#fff; border:1px solid #e5e7eb; border-radius:12px;
-          box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow:hidden; margin-top: 8px;
-        }
+        .po-table-wrap { background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow:hidden; margin-top: 8px; }
         .po-table { width:100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
         .po-table thead th { position: sticky; top: 0; z-index: 5; background: #f9fafb; color:#374151; text-align:left; padding:12px; font-weight:600; border-bottom:1px solid #e5e7eb; }
         .po-th-link { all: unset; cursor: pointer; color:#374151; font-weight:600; display:inline-block; width:100%; text-align: inherit; }
         .po-th-link:hover { text-decoration: underline; }
         .po-table tbody td { padding:12px; color:#111827; border-bottom:1px solid #eef0f2; }
         .po-table tbody tr.alt td { background:#fafafa; }
-        .po-table td.ta-right, .po-table th.ta-right { text-align:right; }
         .po-table .empty { padding: 16px; color:#6b7280; }
 
-        .po-qty { width: 92px; padding: 8px 10px; text-align: right; border:1px solid #d1d5db; border-radius:8px; background:#fff; color:#111827; outline:none; }
+        /* NEW: center alignment helper */
+        .ta-center { text-align: center; }
 
-        .po-table-foot {
-          display:flex; align-items:center; justify-content:space-between;
-          padding: 10px 12px; background:#fafafa; border-top:1px solid #e5e7eb; font-size:14px;
-        }
+        /* Center the qty input too */
+        .po-qty { width: 92px; padding: 8px 10px; text-align: center; border:1px solid #d1d5db; border-radius:8px; background:#fff; color:#111827; outline:none; }
+
+        .po-table-foot { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; background:#fafafa; border-top:1px solid #e5e7eb; font-size:14px; }
         .po-table-foot .note { color:#6b7280; }
         .po-table-foot .total { font-weight:600; color:#111827; }
       `}</style>
