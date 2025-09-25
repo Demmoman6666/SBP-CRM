@@ -23,8 +23,9 @@ export default function PurchaseOrderingPage() {
 
   // selections / controls
   const [supplierId, setSupplierId] = useState<string>('');
-  const [locationId, setLocationId] = useState<string>('');
-  const [includePaidFallback, setIncludePaidFallback] = useState<boolean>(false); // counts paid orders if no fulfillments
+  const [locationId, setLocationId] = useState<string>(''); // blank = All
+  // Default: include BOTH paid and unpaid (paid-count fallback enabled)
+  const [includePaidFallback, setIncludePaidFallback] = useState<boolean>(true);
 
   // ui state
   const [loading, setLoading] = useState(false);
@@ -37,7 +38,10 @@ export default function PurchaseOrderingPage() {
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const toggleSort = (k: SortKey) => {
     if (sortBy === k) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
-    else { setSortBy(k); setSortDir('asc'); }
+    else {
+      setSortBy(k);
+      setSortDir('asc');
+    }
   };
 
   const sorted = useMemo(() => {
@@ -46,7 +50,9 @@ export default function PurchaseOrderingPage() {
       const dir = sortDir === 'asc' ? 1 : -1;
       const av = (a as any)[sortBy] ?? '';
       const bv = (b as any)[sortBy] ?? '';
-      if (typeof av === 'number' || typeof bv === 'number') return (Number(av) - Number(bv)) * dir;
+      if (typeof av === 'number' || typeof bv === 'number') {
+        return (Number(av) - Number(bv)) * dir;
+      }
       return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' }) * dir;
     });
     return arr;
@@ -116,7 +122,7 @@ export default function PurchaseOrderingPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             skus,
-            locationId: locationId || undefined,
+            locationId: locationId || undefined, // blank = All
             days30: true,
             days60: true,
             countPaidIfNoFulfillments: includePaidFallback,
@@ -131,7 +137,7 @@ export default function PurchaseOrderingPage() {
             ...r,
             sales30: bySku[r.sku]?.d30 ?? 0,
             sales60: bySku[r.sku]?.d60 ?? 0,
-          })),
+          }))
         );
         setStatus(`Sales source: ${salesJson.source || 'Shopify'}`);
       }
@@ -143,11 +149,13 @@ export default function PurchaseOrderingPage() {
     }
   }
 
-  // Optional: auto-refresh plan when supplier or location changes
-  useEffect(() => { if (supplierId) fetchPlan(supplierId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [supplierId, locationId, includePaidFallback]);
+  // Optional: auto-refresh plan when supplier, location or fallback changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (supplierId) fetchPlan(supplierId); }, [supplierId, locationId, includePaidFallback]);
 
   const hasRows = items.length > 0;
-  const Caret = ({ k }: { k: SortKey }) => sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
+  const Caret = ({ k }: { k: SortKey }) =>
+    sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
 
   return (
     <div className="p-6 space-y-6">
@@ -213,7 +221,7 @@ export default function PurchaseOrderingPage() {
             checked={includePaidFallback}
             onChange={(e) => setIncludePaidFallback(e.target.checked)}
           />
-          Count paid orders if no fulfillments
+          Count paid orders if no fulfillments (default on)
         </label>
 
         {!!status && <span className="text-xs text-gray-600">{status}</span>}
@@ -282,8 +290,8 @@ export default function PurchaseOrderingPage() {
       </div>
 
       <p className="text-xs text-gray-500">
-        Sales are counted from Shopify <em>Fulfillments</em> (net shipped units). If you enable the checkbox, paid order
-        quantities are counted when there are no fulfillments (only when “All” locations is selected).
+        Sales are counted from Shopify <em>Fulfillments</em> (net shipped units). With the checkbox enabled (default),
+        paid order quantities are counted when there are no fulfillments (and when Location is “All”).
       </p>
     </div>
   );
