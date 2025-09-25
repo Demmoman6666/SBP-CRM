@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireShopifyEnv, shopifyGraphql } from "@/lib/shopify";
+import { requireShopifyEnv, shopifyGraphql, gidToNumericId } from "@/lib/shopify";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * Your schema specifics:
+ * Notes:
  * - variant.price -> Money (SCALAR)  ✅ no sub-selections
- * - inventoryItem.unitCost -> MoneyV2 (OBJECT)  ✅ needs { amount ... }
+ * - inventoryItem.unitCost -> MoneyV2 (OBJECT)  ✅ needs { amount }
+ * - inventory levels: use quantities.available and (optionally) filter by locationId
  */
 const QUERY = /* GraphQL */ `
   query ProductsByVendor($query: String!, $cursor: String) {
@@ -29,6 +30,14 @@ const QUERY = /* GraphQL */ `
                 price
                 inventoryItem {
                   unitCost { amount }
+                  inventoryLevels(first: 100) {
+                    edges {
+                      node {
+                        quantities { available }
+                        location { id name }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -51,11 +60,9 @@ export async function GET(req: NextRequest) {
     requireShopifyEnv();
 
     const sp = req.nextUrl.searchParams;
-    const vendor =
-      sp.get("supplierId") ||
-      sp.get("vendor") ||
-      "";
+    const vendor = sp.get("supplierId") || sp.get("vendor") || "";
     const limit = Math.max(1, Math.min(Number(sp.get("limit") || "800"), 2000));
+    const locationId = (sp.get("locationId") || "").trim() || null; // numeric ID (from /api/shopify/locations) or empty
 
     if (!vendor) {
       return NextResponse.json(
@@ -67,16 +74,17 @@ export async function GET(req: NextRequest) {
     // Active products by vendor
     const query = `vendor:"${vendor.replace(/"/g, '\\"')}" status:active`;
 
-    const items: Array<{
+    type OutItem = {
       sku: string;
       title: string;
       productTitle: string;
       variantId: string | null;
-      priceAmount: number;     // scalar Money parsed to number
-      costAmount: number;      // MoneyV2.amount parsed to number
+      priceAmount: number;
+      costAmount: number;
       inventoryQuantity: number;
-    }> = [];
+    };
 
+    const items: OutItem[] = [];
     let cursor: string | null = null;
     let count = 0;
 
@@ -99,8 +107,30 @@ export async function GET(req: NextRequest) {
           // unitCost is MoneyV2 -> { amount }
           const costAmount = Number(v?.inventoryItem?.unitCost?.amount ?? 0) || 0;
 
-          const inventoryQuantity =
-            typeof v?.inventoryQuantity === "number" ? v.inventoryQuantity : 0;
+          // Prefer per-location available if a locationId was provided; otherwise
+          // use variant.inventoryQuantity (total), falling back to summed levels.
+          let invQty = 0;
+          const levels = (v?.inventoryItem?.inventoryLevels?.edges || []) as Array<any>;
+          if (levels.length) {
+            const wantedNum = locationId || null; // numeric id string
+            let sum = 0;
+            for (const le of levels) {
+              const node = le?.node;
+              const avail = Number(node?.quantities?.available ?? 0) || 0;
+              const locGid = node?.location?.id || "";
+              const locNum = gidToNumericId(locGid) || "";
+              if (!wantedNum || wantedNum === locNum || wantedNum === locGid) {
+                sum += Number.isFinite(avail) ? avail : 0;
+              }
+            }
+            invQty = sum;
+          }
+          if (!locationId) {
+            // when no location filter, if Shopify gave us the total variant inventory, use it
+            if (typeof v?.inventoryQuantity === "number") {
+              invQty = v.inventoryQuantity;
+            }
+          }
 
           items.push({
             sku,
@@ -109,7 +139,7 @@ export async function GET(req: NextRequest) {
             variantId: v?.id || null,
             priceAmount,
             costAmount,
-            inventoryQuantity,
+            inventoryQuantity: Number.isFinite(invQty) ? invQty : 0,
           });
 
           count++;
