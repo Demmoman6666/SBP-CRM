@@ -60,6 +60,7 @@ export default function PurchaseOrderingPage() {
     const v = Number(n ?? 0);
     return Number.isFinite(v) ? v.toFixed(2) : '0.00';
   };
+  const gbp = (n: number | null | undefined) => `£${fmt(n)}`;
 
   function nearestBucketRate(row: ItemRow, lbDays: number): number {
     const d30 = typeof row.sales30 === 'number' ? row.sales30! : undefined;
@@ -269,6 +270,21 @@ export default function PurchaseOrderingPage() {
 
       <div className="po-table-wrap">
         <table className="po-table">
+          {/* Column widths so headers/cells line up perfectly */}
+          <colgroup>
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '28%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '6%' }} />
+            <col style={{ width: '7%' }} />
+            <col style={{ width: '9%' }} />
+            <col style={{ width: '8%' }} />
+          </colgroup>
+
           <thead>
             <tr>
               <th>
@@ -305,42 +321,42 @@ export default function PurchaseOrderingPage() {
             </tr>
           </thead>
 
-        <tbody>
-          {!hasRows && (
-            <tr><td className="empty" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
-          )}
+          <tbody>
+            {!hasRows && (
+              <tr><td className="empty" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
+            )}
 
-          {sorted.map((r, idx) => {
-            const costNum = Number(r.costAmount ?? 0);
-            const lineTotal = costNum * Number(r.orderQty ?? 0);
-            return (
-              <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
-                <td>{r.sku}</td>
-                <td>{r.title}</td>
-                <td className="ta-right">{r.inventoryQuantity ?? 0}</td>
-                <td className="ta-right">{costNum ? fmt(costNum) : '—'}</td>
-                <td className="ta-right">{r.sales30 ?? 0}</td>
-                <td className="ta-right">{r.sales60 ?? 0}</td>
-                <td className="ta-right">{(r.avgDaily ?? 0).toFixed(2)}</td>
-                <td className="ta-right">{Math.ceil(r.forecastQty ?? 0)}</td>
-                <td className="ta-right">{r.suggestedQty ?? 0}</td>
-                <td className="ta-right">
-                  <input
-                    type="number"
-                    className="po-qty"
-                    value={r.orderQty}
-                    min={0}
-                    onChange={(e) => {
-                      const v = Math.max(0, Number(e.target.value || 0));
-                      setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
-                    }}
-                  />
-                </td>
-                <td className="ta-right">{lineTotal ? fmt(lineTotal) : '—'}</td>
-              </tr>
-            );
-          })}
-        </tbody>
+            {sorted.map((r, idx) => {
+              const costNum = Number(r.costAmount ?? 0);
+              const lineTotal = costNum * Number(r.orderQty ?? 0);
+              return (
+                <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
+                  <td>{r.sku}</td>
+                  <td>{r.title}</td>
+                  <td className="ta-right">{r.inventoryQuantity ?? 0}</td>
+                  <td className="ta-right">{gbp(costNum)}</td>
+                  <td className="ta-right">{r.sales30 ?? 0}</td>
+                  <td className="ta-right">{r.sales60 ?? 0}</td>
+                  <td className="ta-right">{(r.avgDaily ?? 0).toFixed(2)}</td>
+                  <td className="ta-right">{Math.ceil(r.forecastQty ?? 0)}</td>
+                  <td className="ta-right">{r.suggestedQty ?? 0}</td>
+                  <td className="ta-right">
+                    <input
+                      type="number"
+                      className="po-qty"
+                      value={r.orderQty}
+                      min={0}
+                      onChange={(e) => {
+                        const v = Math.max(0, Number(e.target.value || 0));
+                        setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
+                      }}
+                    />
+                  </td>
+                  <td className="ta-right">{gbp(lineTotal)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
         </table>
 
         {hasRows && (
@@ -349,82 +365,42 @@ export default function PurchaseOrderingPage() {
               Sales are from Shopify <em>Fulfillments</em>. If enabled, paid orders are counted when there are no
               fulfillments (only when “All” locations is selected).
             </div>
-            <div className="total">Grand total: £{fmt(grandTotal)}</div>
+            <div className="total">Grand total: {gbp(grandTotal)}</div>
           </div>
         )}
       </div>
 
-      {/* Scoped overrides that beat your global pink theme */}
+      {/* Only alignment/width tweaks; no color/style changes */}
       <style jsx>{`
         .po-wrap { padding: 24px; max-width: 1200px; margin: 0 auto; }
-
         .po-card { border: 1px solid #e5e7eb; background: #fff; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
         .po-grid { display: grid; grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 16px; padding: 16px; }
         @media (min-width: 768px) { .po-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
         @media (min-width: 1024px) { .po-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
-
         .po-field { display: flex; flex-direction: column; font-size: 14px; color: #374151; }
         .po-field > span { font-weight: 500; }
-        .po-field input, .po-field select {
-          margin-top: 6px; border: 1px solid #d1d5db !important; border-radius: 8px !important; padding: 8px 10px !important;
-          background: #fff !important; color: #111827 !important; outline: none !important; box-shadow: none !important;
-        }
-        .po-field input:focus, .po-field select:focus { box-shadow: 0 0 0 2px #9ca3af55 !important; }
-
+        .po-field input, .po-field select { margin-top: 6px; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 10px; background: #fff; color: #111827; outline: none; }
+        .po-field small { margin-top: 6px; color: #6b7280; font-size: 11px; }
         .po-checkbox { display:flex; align-items:center; gap: 10px; padding: 0 2px; color:#374151; font-size: 14px; }
-        .po-checkbox input { accent-color: #111827; }
-        .po-checkbox em { color:#6b7280; font-style: normal; }
-
         .po-actions { display:flex; align-items:center; gap: 10px; border-top: 1px solid #e5e7eb; padding: 10px 12px; background: #fafafa; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
-
-        /* HARD overrides so buttons don't pick up global pink */
-        .po-btn {
-          all: unset !important;
-          display:inline-flex !important; align-items:center !important; justify-content:center !important;
-          background:#111827 !important; color:#fff !important;
-          padding:8px 12px !important; border-radius:8px !important; border:1px solid #111827 !important;
-          font-weight: 600 !important; cursor:pointer !important;
-        }
-        .po-btn:hover { background:#000 !important; border-color:#000 !important; }
-        .po-btn:disabled { opacity:.5 !important; cursor:not-allowed !important; }
-        .po-btn--secondary { background:#fff !important; color:#111827 !important; border:1px solid #d1d5db !important; }
-        .po-btn--secondary:hover { background:#f9fafb !important; }
+        .po-btn { background:#111827; color:#fff; padding:8px 12px; border-radius:8px; border:1px solid #111827; font-weight: 600; cursor:pointer; }
+        .po-btn:hover { background:#000; border-color:#000; }
+        .po-btn:disabled { opacity:.5; cursor:not-allowed; }
+        .po-btn.po-btn--secondary { background:#fff; color:#111827; border:1px solid #d1d5db; }
+        .po-btn.po-btn--secondary:hover { background:#f9fafb; }
         .po-status { font-size:12px; color:#6b7280; margin-left: 8px; }
-
         .po-error { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:10px 12px; border-radius:8px; font-size:14px; }
 
         .po-table-wrap { background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow:hidden; margin-top: 8px; }
         .po-table { width:100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
-        .po-table thead th {
-          position: sticky; top: 0; z-index: 5;
-          background: #f9fafb !important; color:#374151 !important; text-align:left; padding:12px; font-weight:600;
-          border-bottom:1px solid #e5e7eb;
-        }
-
-        /* Sort header buttons: remove any global pill styling */
-        .po-th-link {
-          all: unset !important;
-          cursor: pointer !important;
-          color:#374151 !important; font-weight:600 !important;
-          padding:0 !important; margin:0 !important; background: transparent !important; border:0 !important; border-radius:0 !important; box-shadow:none !important;
-        }
-        .po-th-link:hover { text-decoration: underline !important; }
-
+        .po-table thead th { position: sticky; top: 0; z-index: 5; background: #f9fafb; color:#374151; text-align:left; padding:12px; font-weight:600; border-bottom:1px solid #e5e7eb; }
+        .po-th-link { all: unset; cursor: pointer; color:#374151; font-weight:600; display:inline-block; width:100%; text-align: inherit; }
+        .po-th-link:hover { text-decoration: underline; }
         .po-table tbody td { padding:12px; color:#111827; border-bottom:1px solid #eef0f2; }
-        /* Clear row separation (zebra + border) */
-        .po-table tbody tr.alt td { background:#fafafa !important; }
-        .po-table tbody tr:not(.alt) td { background:#ffffff !important; }
-
+        .po-table tbody tr.alt td { background:#fafafa; }
         .po-table td.ta-right, .po-table th.ta-right { text-align:right; }
         .po-table .empty { padding: 16px; color:#6b7280; }
-
-        .po-qty {
-          width: 92px; padding: 8px 10px; text-align: right;
-          border:1px solid #d1d5db !important; border-radius:8px !important;
-          background:#fff !important; color:#111827 !important; outline:none !important; box-shadow:none !important;
-        }
-        .po-qty:focus { box-shadow: 0 0 0 2px #9ca3af55 !important; }
-
+        .po-qty { width: 92px; padding: 8px 10px; text-align: right; border:1px solid #d1d5db; border-radius:8px; background:#fff; color:#111827; outline:none; }
         .po-table-foot { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; background:#fafafa; border-top:1px solid #e5e7eb; font-size:14px; }
         .po-table-foot .note { color:#6b7280; }
         .po-table-foot .total { font-weight:600; color:#111827; }
