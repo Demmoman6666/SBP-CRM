@@ -9,13 +9,15 @@ type ItemRow = {
   sku: string;
   title: string;
   orderQty: number;
+  cost: number;     // unit cost/price (numeric)
+  stock: number;    // current inventory qty
   sales30?: number;
   sales60?: number;
 };
 
-type ProductType = { name: string };                 // from /api/shopify/product-types
-type ProductCategory = { id: string; name: string }; // from /api/shopify/product-categories
-type Collection = { id: string; title: string };     // from /api/shopify/collections
+type ProductType = { name: string };
+type ProductCategory = { id: string; name: string };
+type Collection = { id: string; title: string };
 
 type SortKey = 'sku' | 'title' | 'sales30' | 'sales60';
 type SortDir = 'asc' | 'desc';
@@ -35,9 +37,9 @@ export default function PurchaseOrderingPage() {
   const [lookbackDays, setLookbackDays] = useState<number>(60);
 
   // Filters (optional)
-  const [productType, setProductType] = useState<string>('');         // string name
-  const [productCategoryId, setProductCategoryId] = useState<string>(''); // taxonomy id
-  const [collectionId, setCollectionId] = useState<string>('');       // collection gid/num id
+  const [productType, setProductType] = useState<string>('');
+  const [productCategoryId, setProductCategoryId] = useState<string>('');
+  const [collectionId, setCollectionId] = useState<string>('');
 
   // Default: include BOTH paid and unpaid (paid-count fallback ON)
   const [includePaidFallback, setIncludePaidFallback] = useState<boolean>(true);
@@ -91,9 +93,9 @@ export default function PurchaseOrderingPage() {
 
         if (sJson?.ok) setSuppliers(sJson.suppliers ?? []); else setError(sJson?.error || 'Failed to load suppliers');
         if (lJson?.ok) setLocations(lJson.locations ?? []); else setError(prev => prev ?? (lJson?.error || 'Failed to load locations'));
-        if (tJson?.ok) setProductTypes(tJson.types ?? []);    // optional
-        if (catJson?.ok) setProductCategories(catJson.categories ?? []); // optional
-        if (colJson?.ok) setCollections(colJson.collections ?? []);      // optional
+        if (tJson?.ok) setProductTypes(tJson.types ?? []);
+        if (catJson?.ok) setProductCategories(catJson.categories ?? []);
+        if (colJson?.ok) setCollections(colJson.collections ?? []);
       } catch (e: any) {
         setError(String(e?.message ?? e));
       }
@@ -129,6 +131,8 @@ export default function PurchaseOrderingPage() {
         sku: it.sku,
         title: it.title || '',
         orderQty: 0,
+        cost: typeof it.priceAmount === 'string' ? Number(it.priceAmount) : Number(it.priceAmount ?? 0),
+        stock: typeof it.inventoryQuantity === 'number' ? it.inventoryQuantity : Number(it.inventoryQuantity ?? 0),
       }));
       if (!baseRows.length) {
         setItems([]);
@@ -151,7 +155,7 @@ export default function PurchaseOrderingPage() {
             days30: true,
             days60: true,
             countPaidIfNoFulfillments: includePaidFallback,
-            lookbackDays, // if your API wants this; safe to include
+            lookbackDays, // safe to include if your API uses it
           }),
         });
         const salesJson = await salesRes.json().catch(() => ({ ok: false }));
@@ -189,6 +193,7 @@ export default function PurchaseOrderingPage() {
 
   const hasRows = items.length > 0;
   const Caret = ({ k }: { k: SortKey }) => (sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null);
+  const fmt = (n: number | undefined | null) => (Number.isFinite(Number(n)) ? Number(n).toFixed(2) : '0.00');
 
   return (
     <div className="p-6 space-y-6">
@@ -354,7 +359,16 @@ export default function PurchaseOrderingPage() {
                   Product <Caret k="title" />
                 </button>
               </th>
+
+              {/* NEW: cost & stock to the LEFT of order qty */}
+              <th className="text-right p-3">Cost</th>
+              <th className="text-right p-3">In stock</th>
+
               <th className="text-left p-3">Order qty</th>
+
+              {/* NEW: line total to the RIGHT of order qty */}
+              <th className="text-right p-3">Line total</th>
+
               <th className="text-right p-3">
                 <button className="font-medium hover:underline" onClick={() => toggleSort('sales30')}>
                   30 days sales <Caret k="sales30" />
@@ -369,28 +383,38 @@ export default function PurchaseOrderingPage() {
           </thead>
           <tbody>
             {!hasRows && (
-              <tr><td className="p-3" colSpan={5}>Pick a supplier and click “Generate plan”…</td></tr>
+              <tr><td className="p-3" colSpan={8}>Pick a supplier and click “Generate plan”…</td></tr>
             )}
-            {sorted.map((r) => (
-              <tr key={r.sku} className="border-t">
-                <td className="p-3">{r.sku}</td>
-                <td className="p-3">{r.title}</td>
-                <td className="p-3">
-                  <input
-                    type="number"
-                    className="border rounded p-2 w-28"
-                    value={r.orderQty}
-                    min={0}
-                    onChange={(e) => {
-                      const v = Number(e.target.value || 0);
-                      setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
-                    }}
-                  />
-                </td>
-                <td className="p-3 text-right">{r.sales30 ?? 0}</td>
-                <td className="p-3 text-right">{r.sales60 ?? 0}</td>
-              </tr>
-            ))}
+            {sorted.map((r) => {
+              const lineTotal = (r.orderQty || 0) * (r.cost || 0);
+              return (
+                <tr key={r.sku} className="border-t">
+                  <td className="p-3">{r.sku}</td>
+                  <td className="p-3">{r.title}</td>
+
+                  <td className="p-3 text-right">{fmt(r.cost)}</td>
+                  <td className="p-3 text-right">{Number.isFinite(r.stock) ? r.stock : 0}</td>
+
+                  <td className="p-3">
+                    <input
+                      type="number"
+                      className="border rounded p-2 w-28"
+                      value={r.orderQty}
+                      min={0}
+                      onChange={(e) => {
+                        const v = Number(e.target.value || 0);
+                        setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
+                      }}
+                    />
+                  </td>
+
+                  <td className="p-3 text-right">{fmt(lineTotal)}</td>
+
+                  <td className="p-3 text-right">{r.sales30 ?? 0}</td>
+                  <td className="p-3 text-right">{r.sales60 ?? 0}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
