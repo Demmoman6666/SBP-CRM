@@ -115,7 +115,7 @@ export default function PurchaseOrderingPage() {
     setItems([]);
 
     try {
-      // Items (cost, stock)
+      // Items (cost, stock). Location sent so we can surface location-specific stock if you support it server-side.
       const itsRes = await fetch(
         `/api/shopify/items-by-supplier?supplierId=${encodeURIComponent(forSupplierId)}&limit=800` +
         (locationId ? `&locationId=${encodeURIComponent(locationId)}` : ''),
@@ -166,7 +166,7 @@ export default function PurchaseOrderingPage() {
         }));
 
         setItems(recalcDerived(merged, lookbackDays, daysOfStock));
-        setStatus(`Sales source: ${salesJson.source || 'Shopify'}`);
+        setStatus(`ShopifyOrders`);
       } else {
         setItems(recalcDerived(baseRows, lookbackDays, daysOfStock));
         setStatus('No SKUs found to compute sales.');
@@ -206,200 +206,234 @@ export default function PurchaseOrderingPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Top controls in a neutral card */}
-      <div className="rounded-xl border border-gray-200 bg-white/60 backdrop-blur-sm shadow-sm">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 p-4">
-          <label className="flex flex-col text-sm">
-            <span className="text-gray-700">Days of stock</span>
+    <div className="po-wrap">
+      <div className="po-card">
+        <div className="po-grid">
+          <label className="po-field">
+            <span>Days of stock</span>
             <input
               type="number" min={1}
-              className="mt-1 border border-gray-300 rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-gray-400"
               value={daysOfStock}
               onChange={(e) => setDaysOfStock(Math.max(1, Number(e.target.value || 0)))}
             />
           </label>
 
-          <label className="flex flex-col text-sm">
-            <span className="text-gray-700">Look-back (days)</span>
+          <label className="po-field">
+            <span>Look-back (days)</span>
             <input
               type="number" min={7}
-              className="mt-1 border border-gray-300 rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-gray-400"
               value={lookbackDays}
               onChange={(e) => setLookbackDays(Math.max(7, Number(e.target.value || 0)))}
             />
-            <span className="text-[11px] text-gray-500 mt-1">Uses the closest of 30/60d sales to estimate avg/day.</span>
+            <small>Uses the closest of 30/60d sales to estimate avg/day.</small>
           </label>
 
-          <label className="flex flex-col text-sm">
-            <span className="text-gray-700">Location</span>
-            <select
-              className="mt-1 border border-gray-300 rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-gray-400"
-              value={locationId}
-              onChange={(e) => setLocationId(e.target.value)}
-            >
+          <label className="po-field">
+            <span>Location</span>
+            <select value={locationId} onChange={(e) => setLocationId(e.target.value)}>
               <option value="">All</option>
               {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
             </select>
           </label>
 
-          <label className="flex flex-col text-sm">
-            <span className="text-gray-700">Supplier</span>
-            <select
-              className="mt-1 border border-gray-300 rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-gray-400"
-              value={supplierId}
-              onChange={(e) => setSupplierId(e.target.value)}
-            >
+          <label className="po-field">
+            <span>Supplier</span>
+            <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
               <option value="">Choose…</option>
               {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </label>
 
-          <label className="flex flex-col justify-center text-sm">
-            <span className="inline-flex items-center gap-2 text-gray-700">
-              <input
-                type="checkbox"
-                className="accent-gray-800"
-                checked={includePaidFallback}
-                onChange={(e) => setIncludePaidFallback(e.target.checked)}
-              />
-              Count paid orders if no fulfillments
-            </span>
-            <span className="text-[11px] text-gray-500">Applies when “All” locations selected.</span>
+          <label className="po-checkbox">
+            <input
+              type="checkbox"
+              checked={includePaidFallback}
+              onChange={(e) => setIncludePaidFallback(e.target.checked)}
+            />
+            <span>Count paid orders if no fulfillments <em>(when “All” locations)</em></span>
           </label>
         </div>
 
-        <div className="flex items-center gap-3 border-t border-gray-200 p-3">
-          <button
-            className="px-3 py-2 rounded-md bg-gray-900 text-white hover:bg-black disabled:opacity-50"
-            disabled={!supplierId || loading}
-            onClick={() => fetchPlan(supplierId)}
-          >
+        <div className="po-actions">
+          <button className="po-btn" disabled={!supplierId || loading} onClick={() => fetchPlan(supplierId)}>
             {loading ? "Loading…" : "Generate plan"}
           </button>
-
-          <button
-            className="px-3 py-2 rounded-md border border-gray-300 text-gray-800 hover:bg-gray-50 disabled:opacity-50"
-            disabled={!hasRows}
-            onClick={applySuggestedAll}
-          >
+          <button className="po-btn po-btn--secondary" disabled={!hasRows} onClick={applySuggestedAll}>
             Auto-fill with Suggested
           </button>
-
-          {!!status && <span className="text-xs text-gray-600">Sales source: {status.replace(/^Sales source:\s*/i,'')}</span>}
+          {!!status && <span className="po-status">Sales source: {status}</span>}
         </div>
       </div>
 
-      {error && (
-        <div className="p-3 text-sm rounded-lg bg-red-50 text-red-700 border border-red-200">
-          {error}
-        </div>
-      )}
+      {error && <div className="po-error">{error}</div>}
 
-      {/* DATA TABLE */}
-      <div className="rounded-xl ring-1 ring-gray-200 shadow-sm overflow-hidden bg-white">
-        <div className="overflow-auto">
-          <table className="w-full table-fixed text-sm">
-            <colgroup>
-              <col className="w-[140px]" />
-              <col />
-              <col className="w-[90px]" />
-              <col className="w-[90px]" />
-              <col className="w-[90px]" />
-              <col className="w-[90px]" />
-              <col className="w-[90px]" />
-              <col className="w-[90px]" />
-              <col className="w-[100px]" />
-              <col className="w-[110px]" />
-              <col className="w-[110px]" />
-            </colgroup>
-            <thead className="bg-gray-50/80 backdrop-blur sticky top-0 z-10">
-              <tr className="text-gray-700">
-                <th className="text-left p-3">
-                  <button className="font-medium hover:underline" onClick={() => toggleSort('sku')}>
-                    SKU <Caret k="sku" />
-                  </button>
-                </th>
-                <th className="text-left p-3">
-                  <button className="font-medium hover:underline" onClick={() => toggleSort('title')}>
-                    Product <Caret k="title" />
-                  </button>
-                </th>
-                <th className="text-right p-3">In stock</th>
-                <th className="text-right p-3">Cost</th>
-                <th className="text-right p-3">
-                  <button className="font-medium hover:underline" onClick={() => toggleSort('sales30')}>
-                    30d sales <Caret k="sales30" />
-                  </button>
-                </th>
-                <th className="text-right p-3">
-                  <button className="font-medium hover:underline" onClick={() => toggleSort('sales60')}>
-                    60d sales <Caret k="sales60" />
-                  </button>
-                </th>
-                <th className="text-right p-3">Avg/day</th>
-                <th className="text-right p-3">Forecast</th>
-                <th className="text-right p-3">
-                  <button className="font-medium hover:underline" onClick={() => toggleSort('suggestedQty')}>
-                    Suggested <Caret k="suggestedQty" />
-                  </button>
-                </th>
-                <th className="text-right p-3">Order qty</th>
-                <th className="text-right p-3">Line total</th>
-              </tr>
-            </thead>
+      <div className="po-table-wrap">
+        <table className="po-table">
+          <thead>
+            <tr>
+              <th>
+                <button className="po-th-link" onClick={() => toggleSort('sku')}>
+                  SKU <Caret k="sku" />
+                </button>
+              </th>
+              <th>
+                <button className="po-th-link" onClick={() => toggleSort('title')}>
+                  Product <Caret k="title" />
+                </button>
+              </th>
+              <th className="ta-right">In stock</th>
+              <th className="ta-right">Cost</th>
+              <th className="ta-right">
+                <button className="po-th-link" onClick={() => toggleSort('sales30')}>
+                  30d sales <Caret k="sales30" />
+                </button>
+              </th>
+              <th className="ta-right">
+                <button className="po-th-link" onClick={() => toggleSort('sales60')}>
+                  60d sales <Caret k="sales60" />
+                </button>
+              </th>
+              <th className="ta-right">Avg/day</th>
+              <th className="ta-right">Forecast</th>
+              <th className="ta-right">
+                <button className="po-th-link" onClick={() => toggleSort('suggestedQty')}>
+                  Suggested <Caret k="suggestedQty" />
+                </button>
+              </th>
+              <th className="ta-right">Order qty</th>
+              <th className="ta-right">Line total</th>
+            </tr>
+          </thead>
 
-            <tbody className="divide-y divide-gray-200">
-              {!hasRows && (
-                <tr><td className="p-4 text-gray-500" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
-              )}
+          <tbody>
+            {!hasRows && (
+              <tr><td className="empty" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
+            )}
 
-              {sorted.map((r, idx) => {
-                const costNum = Number(r.costAmount ?? 0);
-                const lineTotal = costNum * Number(r.orderQty ?? 0);
-                return (
-                  <tr key={r.sku} className={idx % 2 ? 'bg-white' : 'bg-gray-50'}>
-                    <td className="p-3 text-gray-900">{r.sku}</td>
-                    <td className="p-3 text-gray-900">{r.title}</td>
-                    <td className="p-3 text-right tabular-nums">{r.inventoryQuantity ?? 0}</td>
-                    <td className="p-3 text-right tabular-nums">{costNum ? fmt(costNum) : '—'}</td>
-                    <td className="p-3 text-right tabular-nums">{r.sales30 ?? 0}</td>
-                    <td className="p-3 text-right tabular-nums">{r.sales60 ?? 0}</td>
-                    <td className="p-3 text-right tabular-nums">{(r.avgDaily ?? 0).toFixed(2)}</td>
-                    <td className="p-3 text-right tabular-nums">{Math.ceil(r.forecastQty ?? 0)}</td>
-                    <td className="p-3 text-right tabular-nums">{r.suggestedQty ?? 0}</td>
-                    <td className="p-3 text-right">
-                      <input
-                        type="number"
-                        className="border border-gray-300 rounded-md p-2 w-24 text-right focus:outline-none focus:ring-2 focus:ring-gray-400"
-                        value={r.orderQty}
-                        min={0}
-                        onChange={(e) => {
-                          const v = Math.max(0, Number(e.target.value || 0));
-                          setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
-                        }}
-                      />
-                    </td>
-                    <td className="p-3 text-right tabular-nums">{lineTotal ? fmt(lineTotal) : '—'}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+            {sorted.map((r, idx) => {
+              const costNum = Number(r.costAmount ?? 0);
+              const lineTotal = costNum * Number(r.orderQty ?? 0);
+              return (
+                <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
+                  <td>{r.sku}</td>
+                  <td>{r.title}</td>
+                  <td className="ta-right">{r.inventoryQuantity ?? 0}</td>
+                  <td className="ta-right">{costNum ? fmt(costNum) : '—'}</td>
+                  <td className="ta-right">{r.sales30 ?? 0}</td>
+                  <td className="ta-right">{r.sales60 ?? 0}</td>
+                  <td className="ta-right">{(r.avgDaily ?? 0).toFixed(2)}</td>
+                  <td className="ta-right">{Math.ceil(r.forecastQty ?? 0)}</td>
+                  <td className="ta-right">{r.suggestedQty ?? 0}</td>
+                  <td className="ta-right">
+                    <input
+                      type="number"
+                      className="po-qty"
+                      value={r.orderQty}
+                      min={0}
+                      onChange={(e) => {
+                        const v = Math.max(0, Number(e.target.value || 0));
+                        setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
+                      }}
+                    />
+                  </td>
+                  <td className="ta-right">{lineTotal ? fmt(lineTotal) : '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
 
         {hasRows && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200 text-sm">
-            <div className="text-gray-600">
+          <div className="po-table-foot">
+            <div className="note">
               Sales are from Shopify <em>Fulfillments</em>. If enabled, paid orders are counted when there are no
               fulfillments (only when “All” locations is selected).
             </div>
-            <div className="font-semibold text-gray-900">
-              Grand total: {fmt(grandTotal)}
-            </div>
+            <div className="total">Grand total: {fmt(grandTotal)}</div>
           </div>
         )}
       </div>
+
+      {/* Scoped styles to override any global pink theme */}
+      <style jsx>{`
+        .po-wrap { padding: 24px; max-width: 1200px; margin: 0 auto; }
+        .po-card {
+          border: 1px solid #e5e7eb; background: #fff; border-radius: 12px;
+          box-shadow: 0 1px 2px rgba(0,0,0,.04);
+        }
+        .po-grid {
+          display: grid; grid-template-columns: repeat(1, minmax(0, 1fr));
+          gap: 16px; padding: 16px;
+        }
+        @media (min-width: 768px) { .po-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media (min-width: 1024px) { .po-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+
+        .po-field { display: flex; flex-direction: column; font-size: 14px; color: #374151; }
+        .po-field > span { font-weight: 500; }
+        .po-field input, .po-field select {
+          margin-top: 6px; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 10px;
+          background: #fff; color: #111827; outline: none;
+        }
+        .po-field input:focus, .po-field select:focus { box-shadow: 0 0 0 2px #9ca3af55; }
+        .po-field small { margin-top: 6px; color: #6b7280; font-size: 11px; }
+
+        .po-checkbox { display:flex; align-items:center; gap: 10px; padding: 0 2px; color:#374151; font-size: 14px; }
+        .po-checkbox em { color:#6b7280; font-style: normal; }
+
+        .po-actions {
+          display:flex; align-items:center; gap: 10px;
+          border-top: 1px solid #e5e7eb; padding: 10px 12px; background: #fafafa;
+          border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;
+        }
+        .po-btn {
+          background:#111827; color:#fff; padding:8px 12px; border-radius:8px; border:1px solid #111827;
+          font-weight: 600; cursor:pointer;
+        }
+        .po-btn:hover { background:#000; border-color:#000; }
+        .po-btn:disabled { opacity:.5; cursor:not-allowed; }
+        .po-btn--secondary { background:#fff; color:#111827; border:1px solid #d1d5db; }
+        .po-btn--secondary:hover { background:#f9fafb; }
+
+        .po-status { font-size:12px; color:#6b7280; margin-left: 8px; }
+
+        .po-error {
+          background:#fef2f2; color:#991b1b; border:1px solid #fecaca;
+          padding:10px 12px; border-radius:8px; font-size:14px;
+        }
+
+        .po-table-wrap {
+          background:#fff; border:1px solid #e5e7eb; border-radius:12px;
+          box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow:hidden; margin-top: 8px;
+        }
+        .po-table { width:100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+        .po-table thead th {
+          position: sticky; top: 0; z-index: 5;
+          background: #f9fafb; color:#374151; text-align:left; padding:12px; font-weight:600;
+          border-bottom:1px solid #e5e7eb;
+        }
+        .po-th-link {
+          all: unset; cursor: pointer; color:#374151; font-weight:600;
+        }
+        .po-th-link:hover { text-decoration: underline; }
+
+        .po-table tbody td { padding:12px; color:#111827; border-bottom:1px solid #f3f4f6; }
+        .po-table tbody tr.alt td { background:#fafafa; }
+        .po-table td.ta-right, .po-table th.ta-right { text-align:right; }
+        .po-table .empty { padding: 16px; color:#6b7280; }
+
+        .po-qty {
+          width: 92px; padding: 8px 10px; text-align: right; border:1px solid #d1d5db; border-radius:8px;
+          background:#fff; color:#111827; outline:none;
+        }
+        .po-qty:focus { box-shadow: 0 0 0 2px #9ca3af55; }
+
+        .po-table-foot {
+          display:flex; align-items:center; justify-content:space-between;
+          padding: 10px 12px; background:#fafafa; border-top:1px solid #e5e7eb; font-size:14px;
+        }
+        .po-table-foot .note { color:#6b7280; }
+        .po-table-foot .total { font-weight:600; color:#111827; }
+      `}</style>
     </div>
   );
 }
