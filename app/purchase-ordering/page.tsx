@@ -153,10 +153,10 @@ export default function PurchaseOrderingPage() {
             days30: true,
             days60: true,
 
-            // NEW: ask the API to count *all* orders (not just fulfillments); exclude drafts
-            source: 'orders',                 // prefer orders over fulfillments
-            includeAllStatuses: true,         // paid + unpaid, fulfilled + partial + unfulfilled
-            excludeDrafts: true,              // do not include draft orders
+            // include all order states; exclude drafts (server should honor these flags)
+            source: 'orders',
+            includeAllStatuses: true,
+            excludeDrafts: true,
           }),
         });
         const salesJson = await salesRes.json().catch(() => ({ ok: false }));
@@ -262,94 +262,97 @@ export default function PurchaseOrderingPage() {
 
       {error && <div className="po-error">{error}</div>}
 
-      <div className="po-table-wrap">
-        <table className="po-table">
-          <thead>
-            <tr>
-              <th>
-                <button type="button" className="po-th-link" onClick={() => toggleSort('sku')}>
-                  SKU <Caret k="sku" />
-                </button>
-              </th>
-              <th>
-                <button type="button" className="po-th-link" onClick={() => toggleSort('title')}>
-                  Product <Caret k="title" />
-                </button>
-              </th>
-              <th className="ta-center">In stock</th>
-              <th className="ta-center">Cost</th>
-              <th className="ta-center">
-                <button type="button" className="po-th-link" onClick={() => toggleSort('sales30')}>
-                  30d sales <Caret k="sales30" />
-                </button>
-              </th>
-              <th className="ta-center">
-                <button type="button" className="po-th-link" onClick={() => toggleSort('sales60')}>
-                  60d sales <Caret k="sales60" />
-                </button>
-              </th>
-              <th className="ta-center">Avg/day</th>
-              <th className="ta-center">Forecast</th>
-              <th className="ta-center">
-                <button type="button" className="po-th-link" onClick={() => toggleSort('suggestedQty')}>
-                  Suggested <Caret k="suggestedQty" />
-                </button>
-              </th>
-              <th className="ta-center">Order qty</th>
-              <th className="ta-center">Line total</th>
-            </tr>
-          </thead>
+      {/* FULL-WIDTH (bleed) table wrapper */}
+      <div className="po-bleed">
+        <div className="po-table-wrap">
+          <table className="po-table">
+            <thead>
+              <tr>
+                <th>
+                  <button type="button" className="po-th-link" onClick={() => toggleSort('sku')}>
+                    SKU <Caret k="sku" />
+                  </button>
+                </th>
+                <th>
+                  <button type="button" className="po-th-link" onClick={() => toggleSort('title')}>
+                    Product <Caret k="title" />
+                  </button>
+                </th>
+                <th className="ta-center">In stock</th>
+                <th className="ta-center">Cost</th>
+                <th className="ta-center">
+                  <button type="button" className="po-th-link" onClick={() => toggleSort('sales30')}>
+                    30d sales <Caret k="sales30" />
+                  </button>
+                </th>
+                <th className="ta-center">
+                  <button type="button" className="po-th-link" onClick={() => toggleSort('sales60')}>
+                    60d sales <Caret k="sales60" />
+                  </button>
+                </th>
+                <th className="ta-center">Avg/day</th>
+                <th className="ta-center">Forecast</th>
+                <th className="ta-center">
+                  <button type="button" className="po-th-link" onClick={() => toggleSort('suggestedQty')}>
+                    Suggested <Caret k="suggestedQty" />
+                  </button>
+                </th>
+                <th className="ta-center">Order qty</th>
+                <th className="ta-center">Line total</th>
+              </tr>
+            </thead>
 
-          <tbody>
-            {!hasRows && (
-              <tr><td className="empty" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
-            )}
+            <tbody>
+              {!hasRows && (
+                <tr><td className="empty" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
+              )}
 
-            {sorted.map((r, idx) => {
-              const costNum = Number(r.costAmount ?? 0);
-              const lineTotal = costNum * Number(r.orderQty ?? 0);
-              return (
-                <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
-                  <td>{r.sku}</td>
-                  <td>{r.title}</td>
-                  <td className="ta-center">{r.inventoryQuantity ?? 0}</td>
-                  <td className="ta-center">{gbp(costNum)}</td>
-                  <td className="ta-center">{r.sales30 ?? 0}</td>
-                  <td className="ta-center">{r.sales60 ?? 0}</td>
-                  <td className="ta-center">{(r.avgDaily ?? 0).toFixed(2)}</td>
-                  <td className="ta-center">{Math.ceil(r.forecastQty ?? 0)}</td>
-                  <td className="ta-center">{r.suggestedQty ?? 0}</td>
-                  <td className="ta-center">
-                    <input
-                      type="number"
-                      className="po-qty"
-                      value={r.orderQty}
-                      min={0}
-                      onChange={(e) => {
-                        const v = Math.max(0, Number(e.target.value || 0));
-                        setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
-                      }}
-                    />
-                  </td>
-                  <td className="ta-center">{gbp(lineTotal)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              {sorted.map((r, idx) => {
+                const costNum = Number(r.costAmount ?? 0);
+                const lineTotal = costNum * Number(r.orderQty ?? 0);
+                return (
+                  <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
+                    <td>{r.sku}</td>
+                    <td>{r.title}</td>
+                    <td className="ta-center">{r.inventoryQuantity ?? 0}</td>
+                    <td className="ta-center">{gbp(costNum)}</td>
+                    <td className="ta-center">{r.sales30 ?? 0}</td>
+                    <td className="ta-center">{r.sales60 ?? 0}</td>
+                    <td className="ta-center">{(r.avgDaily ?? 0).toFixed(2)}</td>
+                    <td className="ta-center">{Math.ceil(r.forecastQty ?? 0)}</td>
+                    <td className="ta-center">{r.suggestedQty ?? 0}</td>
+                    <td className="ta-center">
+                      <input
+                        type="number"
+                        className="po-qty"
+                        value={r.orderQty}
+                        min={0}
+                        onChange={(e) => {
+                          const v = Math.max(0, Number(e.target.value || 0));
+                          setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
+                        }}
+                      />
+                    </td>
+                    <td className="ta-center">{gbp(lineTotal)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
 
-        {hasRows && (
-          <div className="po-table-foot">
-            <div className="note">
-              Sales use all Shopify <em>Orders</em> (paid & unpaid; fulfilled, partially fulfilled, and unfulfilled).
-              Draft orders are excluded.
+          {hasRows && (
+            <div className="po-table-foot">
+              <div className="note">
+                Sales use all Shopify <em>Orders</em> (paid & unpaid; fulfilled, partially fulfilled, and unfulfilled).
+                Draft orders are excluded.
+              </div>
+              <div className="total">Grand total: {gbp(grandTotal)}</div>
             </div>
-            <div className="total">Grand total: {gbp(grandTotal)}</div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      {/* Scoped styles — unchanged visual design, only center numeric content */}
+      {/* Scoped styles (unchanged look, plus full-width bleed) */}
       <style jsx>{`
         .po-wrap { padding: 24px; max-width: 1200px; margin: 0 auto; }
         .po-card { border: 1px solid #e5e7eb; background: #fff; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
@@ -372,11 +375,23 @@ export default function PurchaseOrderingPage() {
 
         .po-error { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:10px 12px; border-radius:8px; font-size:14px; }
 
+        /* FULL-WIDTH (bleed) container so the table spans the viewport */
+        .po-bleed {
+          position: relative;
+          left: 50%;
+          right: 50%;
+          margin-left: -50vw;
+          margin-right: -50vw;
+          width: 100vw;
+          padding: 0 24px; /* keeps same side gutters */
+        }
+
         .po-table-wrap { background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow:hidden; margin-top: 8px; }
         .po-table { width:100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
         .po-table thead th { position: sticky; top: 0; z-index: 5; background: #f9fafb; color:#374151; text-align:left; padding:12px; font-weight:600; border-bottom:1px solid #e5e7eb; }
         .po-th-link { all: unset; cursor: pointer; color:#374151; font-weight:600; display:inline-block; width:100%; text-align: inherit; }
         .po-th-link:hover { text-decoration: underline; }
+
         .po-table tbody td { padding:12px; color:#111827; border-bottom:1px solid #eef0f2; }
         .po-table tbody tr.alt td { background:#fafafa; }
         .po-table .empty { padding: 16px; color:#6b7280; }
