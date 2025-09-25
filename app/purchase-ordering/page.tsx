@@ -75,10 +75,7 @@ export default function PurchaseOrderingPage() {
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const toggleSort = (k: SortKey) => {
     if (sortBy === k) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    else {
-      setSortBy(k);
-      setSortDir('asc');
-    }
+    else { setSortBy(k); setSortDir('asc'); }
   };
   const Caret = ({ k }: { k: SortKey }) =>
     sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
@@ -90,18 +87,17 @@ export default function PurchaseOrderingPage() {
 
   // ---- Consumption (avg/day) & suggestions
   function pickSalesForAvg(row: ItemRow, lbDays: number): number {
-    // Prefer custom window if provided and lbDays is not one of the canned windows
     if (typeof row.salesCustom === 'number' && lbDays !== 30 && lbDays !== 60) {
       return row.salesCustom!;
     }
-    // Otherwise, choose the nearest bucket
+    // choose the nearest bucket
     if (lbDays >= 45) {
       if (typeof row.sales60 === 'number') return row.sales60!;
-      if (typeof row.sales30 === 'number') return row.sales30! * (60 / 30);
+      if (typeof row.sales30 === 'number') return row.sales30! * 2; // normalize 30d to ~60d
       return 0;
     } else {
       if (typeof row.sales30 === 'number') return row.sales30!;
-      if (typeof row.sales60 === 'number') return row.sales60! * (30 / 60);
+      if (typeof row.sales60 === 'number') return row.sales60! / 2; // normalize 60d to ~30d
       return 0;
     }
   }
@@ -145,10 +141,7 @@ export default function PurchaseOrderingPage() {
   }, []);
 
   async function fetchPlan(forSupplierId: string) {
-    if (!forSupplierId) {
-      setError('Please choose a supplier');
-      return;
-    }
+    if (!forSupplierId) { setError('Please choose a supplier'); return; }
     setLoading(true);
     setError(null);
     setStatus('Loading items…');
@@ -208,11 +201,9 @@ export default function PurchaseOrderingPage() {
           ...r,
           sales30: toNum(salesJson.sales?.[r.sku]),
           sales60: toNum(salesJson.sales60?.[r.sku]),
-          // only keep a distinct “custom” figure if it’s not the same window as 30 or 60
-          salesCustom:
-            lookbackDays !== 30 && lookbackDays !== 60
-              ? toNum(salesJson.custom?.totals?.[r.sku])
-              : undefined,
+          salesCustom: (lookbackDays !== 30 && lookbackDays !== 60)
+            ? toNum(salesJson.custom?.totals?.[r.sku])
+            : undefined,
         }));
 
         // 3) Optional: OOS days for the same custom window
@@ -226,9 +217,7 @@ export default function PurchaseOrderingPage() {
           if (oosJson?.ok && oosJson.days) {
             merged = merged.map((r) => ({ ...r, oosDays: toNum(oosJson.days[r.sku]) }));
           }
-        } catch {
-          // optional; ignore if endpoint not available
-        }
+        } catch { /* optional */ }
 
         setItems(recalcDerived(merged, lookbackDays, daysOfStock));
         setStatus(`${salesJson.source || 'ShopifyOrders'} (${lookbackDays}d)`);
@@ -241,13 +230,16 @@ export default function PurchaseOrderingPage() {
     }
   }
 
-  // Auto-refresh when dependencies change
+  // Auto-refresh on key changes
   useEffect(() => {
     if (supplierId) fetchPlan(supplierId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supplierId, locationId, includePaidFallback, lookbackDays, daysOfStock]);
 
   // Sorting
+  const [sortBy, setSortByState] = useState<SortKey>('sku'); // keep state name explicit if needed elsewhere
+  useEffect(() => setSortByState(sortBy), [sortBy]); // keep in sync
+
   const sorted = useMemo(() => {
     const arr = [...items];
     arr.sort((a, b) => {
@@ -266,7 +258,7 @@ export default function PurchaseOrderingPage() {
     [items]
   );
 
-  // Hide the “custom” column if lookback matches 30 or 60 to avoid the duplicate you saw
+  // Hide the “custom” column if lookback matches 30 or 60 (prevents duplicate)
   const showCustomCol = lookbackDays !== 30 && lookbackDays !== 60;
 
   return (
@@ -277,7 +269,7 @@ export default function PurchaseOrderingPage() {
         <span className="text-sm text-gray-500">Forecast demand &amp; create POs (Shopify)</span>
       </div>
 
-      {/* Controls (neutral styling; no pink buttons) */}
+      {/* Controls (neutral styling; no pink) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
         <label className="flex flex-col text-sm">
           Days of stock
@@ -310,9 +302,7 @@ export default function PurchaseOrderingPage() {
           >
             <option value="">All</option>
             {locations.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name}
-              </option>
+              <option key={l.id} value={l.id}>{l.name}</option>
             ))}
           </select>
         </label>
@@ -326,9 +316,7 @@ export default function PurchaseOrderingPage() {
           >
             <option value="">Choose…</option>
             {suppliers.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
+              <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
         </label>
@@ -364,87 +352,99 @@ export default function PurchaseOrderingPage() {
       </div>
 
       {error && (
-        <div className="p-3 text-sm rounded bg-red-50 text-red-700 border border-red-200">{error}</div>
+        <div className="p-3 text-sm rounded bg-red-50 text-red-700 border border-red-200">
+          {error}
+        </div>
       )}
 
-      {/* Table (clean, bordered, zebra rows) */}
-      <div className="border rounded-lg overflow-auto">
+      {/* Table (clean, bordered, zebra rows, sticky neutral header) */}
+      <div className="rounded-xl border border-gray-200 shadow-sm overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50">
-            <tr className="border-b">
-              <th className="text-left p-3">
-                <button className="font-medium hover:underline" onClick={() => toggleSort('sku')}>
+          <thead className="bg-gray-50 text-gray-700 sticky top-0 z-10">
+            <tr className="border-b border-gray-200">
+              <th className="px-3 py-2 text-left">
+                <button className="font-medium hover:underline hover:text-gray-900" onClick={() => toggleSort('sku')}>
                   SKU <Caret k="sku" />
                 </button>
               </th>
-              <th className="text-left p-3">
-                <button className="font-medium hover:underline" onClick={() => toggleSort('title')}>
+              <th className="px-3 py-2 text-left">
+                <button className="font-medium hover:underline hover:text-gray-900" onClick={() => toggleSort('title')}>
                   Product <Caret k="title" />
                 </button>
               </th>
-              <th className="text-right p-3">In stock</th>
-              <th className="text-right p-3">Cost</th>
-              <th className="text-right p-3">
-                <button className="font-medium hover:underline" onClick={() => toggleSort('sales30')}>
+              <th className="px-3 py-2 text-right">In stock</th>
+              <th className="px-3 py-2 text-right">Cost</th>
+              <th className="px-3 py-2 text-right">
+                <button className="font-medium hover:underline hover:text-gray-900" onClick={() => toggleSort('sales30')}>
                   30 days <Caret k="sales30" />
                 </button>
               </th>
-              <th className="text-right p-3">
-                <button className="font-medium hover:underline" onClick={() => toggleSort('sales60')}>
+              <th className="px-3 py-2 text-right">
+                <button className="font-medium hover:underline hover:text-gray-900" onClick={() => toggleSort('sales60')}>
                   60 days <Caret k="sales60" />
                 </button>
               </th>
               {showCustomCol && (
-                <th className="text-right p-3">
-                  <button className="font-medium hover:underline" onClick={() => toggleSort('salesCustom')}>
+                <th className="px-3 py-2 text-right">
+                  <button
+                    className="font-medium hover:underline hover:text-gray-900"
+                    onClick={() => toggleSort('salesCustom')}
+                  >
                     {lookbackDays} days <Caret k="salesCustom" />
                   </button>
                 </th>
               )}
-              <th className="text-right p-3">
-                <button className="font-medium hover:underline" onClick={() => toggleSort('oosDays')}>
+              <th className="px-3 py-2 text-right">
+                <button className="font-medium hover:underline hover:text-gray-900" onClick={() => toggleSort('oosDays')}>
                   Days OOS <Caret k="oosDays" />
                 </button>
               </th>
-              <th className="text-right p-3">Avg/day</th>
-              <th className="text-right p-3">Forecast</th>
-              <th className="text-right p-3">
-                <button className="font-medium hover:underline" onClick={() => toggleSort('suggestedQty')}>
+              <th className="px-3 py-2 text-right">Avg/day</th>
+              <th className="px-3 py-2 text-right">Forecast</th>
+              <th className="px-3 py-2 text-right">
+                <button
+                  className="font-medium hover:underline hover:text-gray-900"
+                  onClick={() => toggleSort('suggestedQty')}
+                >
                   Suggested <Caret k="suggestedQty" />
                 </button>
               </th>
-              <th className="text-right p-3">Order qty</th>
-              <th className="text-right p-3">Line total</th>
+              <th className="px-3 py-2 text-right">Order qty</th>
+              <th className="px-3 py-2 text-right">Line total</th>
             </tr>
           </thead>
-          <tbody>
+
+          <tbody className="divide-y divide-gray-100">
             {!hasRows && (
               <tr>
-                <td className="p-3" colSpan={showCustomCol ? 13 : 12}>
+                <td className="px-3 py-3" colSpan={showCustomCol ? 13 : 12}>
                   Pick a supplier and click “Generate plan”…
                 </td>
               </tr>
             )}
-            {sorted.map((r, i) => {
+
+            {sorted.map((r) => {
               const cost = toNum(r.costAmount);
               const lineTotal = cost * toNum(r.orderQty);
               return (
-                <tr key={r.sku} className={i % 2 ? 'bg-gray-50 border-b' : 'border-b'}>
-                  <td className="p-3">{r.sku}</td>
-                  <td className="p-3">{r.title}</td>
-                  <td className="p-3 text-right">{toNum(r.inventoryQuantity)}</td>
-                  <td className="p-3 text-right">{cost ? fmt2(cost) : '—'}</td>
-                  <td className="p-3 text-right">{toNum(r.sales30)}</td>
-                  <td className="p-3 text-right">{toNum(r.sales60)}</td>
-                  {showCustomCol && <td className="p-3 text-right">{toNum(r.salesCustom)}</td>}
-                  <td className="p-3 text-right">{toNum(r.oosDays)}</td>
-                  <td className="p-3 text-right">{(r.avgDaily ?? 0).toFixed(2)}</td>
-                  <td className="p-3 text-right">{Math.ceil(r.forecastQty ?? 0)}</td>
-                  <td className="p-3 text-right">{toNum(r.suggestedQty)}</td>
-                  <td className="p-3 text-right">
+                <tr key={r.sku} className="odd:bg-white even:bg-gray-50 hover:bg-gray-100/70 transition-colors">
+                  <td className="px-3 py-3 font-mono text-xs text-gray-700">{r.sku}</td>
+                  <td className="px-3 py-3">{r.title}</td>
+                  <td className="px-3 py-3 text-right">{toNum(r.inventoryQuantity)}</td>
+                  <td className="px-3 py-3 text-right">{cost ? fmt2(cost) : '—'}</td>
+                  <td className="px-3 py-3 text-right">{toNum(r.sales30)}</td>
+                  <td className="px-3 py-3 text-right">{toNum(r.sales60)}</td>
+                  {showCustomCol && (
+                    <td className="px-3 py-3 text-right">{toNum(r.salesCustom)}</td>
+                  )}
+                  <td className="px-3 py-3 text-right">{toNum(r.oosDays)}</td>
+                  <td className="px-3 py-3 text-right">{(r.avgDaily ?? 0).toFixed(2)}</td>
+                  <td className="px-3 py-3 text-right">{Math.ceil(r.forecastQty ?? 0)}</td>
+                  <td className="px-3 py-3 text-right">{toNum(r.suggestedQty)}</td>
+                  <td className="px-3 py-3 text-right">
                     <input
                       type="number"
-                      className="border rounded p-2 w-24 text-right"
+                      className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right focus:border-gray-500 focus:outline-none"
                       value={r.orderQty}
                       min={0}
                       onChange={(e) => {
@@ -453,7 +453,7 @@ export default function PurchaseOrderingPage() {
                       }}
                     />
                   </td>
-                  <td className="p-3 text-right">{lineTotal ? fmt2(lineTotal) : '—'}</td>
+                  <td className="px-3 py-3 text-right">{lineTotal ? fmt2(lineTotal) : '—'}</td>
                 </tr>
               );
             })}
