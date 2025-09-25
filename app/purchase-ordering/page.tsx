@@ -1,3 +1,4 @@
+// app/purchase-ordering/page.tsx
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -10,18 +11,18 @@ type ItemRow = {
   title: string;
   variantId?: string | null;
 
-  inventoryQuantity?: number;      // on-hand
-  costAmount?: number;             // unit cost
+  inventoryQuantity?: number;   // on-hand
+  costAmount?: number;          // unit cost
   priceAmount?: number | null;
 
-  sales30?: number;
-  sales60?: number;
-  salesCustom?: number;
-  oosDays?: number;
+  sales30?: number;             // shipped/paid units in last 30 days
+  sales60?: number;             // shipped/paid units in last 60 days
+  salesCustom?: number;         // shipped/paid units in last N days
+  oosDays?: number;             // days out of stock in last N days (optional)
 
-  avgDaily?: number;
-  forecastQty?: number;
-  suggestedQty?: number;
+  avgDaily?: number;            // consumption (units/day)
+  forecastQty?: number;         // avgDaily * daysOfStock
+  suggestedQty?: number;        // max(0, ceil(forecast - onHand))
 
   orderQty: number;
 };
@@ -36,7 +37,7 @@ type SortKey =
   | 'suggestedQty';
 type SortDir = 'asc' | 'desc';
 
-/* ---------- helpers ---------- */
+// Coerce anything to a number (prevents React errors when APIs return objects)
 function toNum(v: any): number {
   if (v == null) return 0;
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
@@ -45,54 +46,25 @@ function toNum(v: any): number {
     return Number.isFinite(n) ? n : 0;
   }
   if (typeof v === 'object') {
-    if ('amount' in (v as any)) return toNum((v as any).amount);
-    if ('available' in (v as any)) return toNum((v as any).available);
+    if ('amount' in v) return toNum((v as any).amount);
+    if ('available' in v) return toNum((v as any).available);
   }
   return 0;
 }
-const fmt2 = (n?: number | null) =>
-  Number.isFinite(Number(n)) ? Number(n).toFixed(2) : '0.00';
 
-function nearestBucketRate(row: ItemRow, lbDays: number): number {
-  const d30 = typeof row.sales30 === 'number' ? row.sales30! : undefined;
-  const d60 = typeof row.sales60 === 'number' ? row.sales60! : undefined;
-  if (d30 == null && d60 == null) return 0;
-  const use60 = lbDays >= 45;
-  if (use60 && d60 != null) return d60 / 60;
-  if (!use60 && d30 != null) return d30 / 30;
-  if (d60 != null) return d60 / 60;
-  if (d30 != null) return d30 / 30;
-  return 0;
-}
-
-function recalcDerived(rows: ItemRow[], lbDays: number, horizon: number): ItemRow[] {
-  return rows.map((r) => {
-    const avg =
-      typeof r.salesCustom === 'number'
-        ? (lbDays > 0 ? r.salesCustom! / lbDays : 0)
-        : nearestBucketRate(r, lbDays);
-
-    const forecast = avg * Math.max(0, horizon || 0);
-    const onHand = toNum(r.inventoryQuantity);
-    const suggested = Math.max(0, Math.ceil(forecast - onHand));
-    return { ...r, avgDaily: avg, forecastQty: forecast, suggestedQty: suggested };
-  });
-}
-
-/* ---------- component ---------- */
 export default function PurchaseOrderingPage() {
-  // dropdowns
+  // dropdown data
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
 
-  // selections
+  // selections / controls
   const [supplierId, setSupplierId] = useState<string>('');
   const [locationId, setLocationId] = useState<string>('');
-  const [daysOfStock, setDaysOfStock] = useState<number>(14);
-  const [lookbackDays, setLookbackDays] = useState<number>(60);
+  const [daysOfStock, setDaysOfStock] = useState<number>(14); // “Days of stock”
+  const [lookbackDays, setLookbackDays] = useState<number>(60); // fully custom
   const [includePaidFallback, setIncludePaidFallback] = useState<boolean>(true);
 
-  // ui
+  // ui state
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<ItemRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -109,11 +81,47 @@ export default function PurchaseOrderingPage() {
     }
   };
   const Caret = ({ k }: { k: SortKey }) =>
-    sortBy === k ? (
-      <span className="ml-1 text-gray-500">{sortDir === 'asc' ? '▲' : '▼'}</span>
-    ) : null;
+    sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
 
-  /* load dropdowns */
+  const fmt2 = (n: number | null | undefined) => {
+    const v = Number(n ?? 0);
+    return Number.isFinite(v) ? v.toFixed(2) : '0.00';
+  };
+
+  // ---- Consumption (avg/day) & suggestions
+  function pickSalesForAvg(row: ItemRow, lbDays: number): number {
+    // Prefer custom window if provided and lbDays is not one of the canned windows
+    if (typeof row.salesCustom === 'number' && lbDays !== 30 && lbDays !== 60) {
+      return row.salesCustom!;
+    }
+    // Otherwise, choose the nearest bucket
+    if (lbDays >= 45) {
+      if (typeof row.sales60 === 'number') return row.sales60!;
+      if (typeof row.sales30 === 'number') return row.sales30! * (60 / 30);
+      return 0;
+    } else {
+      if (typeof row.sales30 === 'number') return row.sales30!;
+      if (typeof row.sales60 === 'number') return row.sales60! * (30 / 60);
+      return 0;
+    }
+  }
+
+  function recalcDerived(rows: ItemRow[], lbDays: number, horizon: number): ItemRow[] {
+    return rows.map((r) => {
+      const totalSales = pickSalesForAvg(r, lbDays);
+      const oos = Math.max(0, toNum(r.oosDays));
+      // Effective days = lookback minus out-of-stock days, minimum 1 to avoid divide-by-zero
+      const effectiveDays = Math.max(1, lbDays - oos);
+      const avg = totalSales / effectiveDays;
+
+      const forecast = avg * Math.max(0, horizon || 0);
+      const onHand = toNum(r.inventoryQuantity);
+      const suggested = Math.max(0, Math.ceil(forecast - onHand));
+      return { ...r, avgDaily: avg, forecastQty: forecast, suggestedQty: suggested };
+    });
+  }
+
+  // load dropdowns (Shopify vendors & locations)
   useEffect(() => {
     (async () => {
       setError(null);
@@ -124,8 +132,10 @@ export default function PurchaseOrderingPage() {
         ]);
         const sJson = await sRes.json().catch(() => ({ ok: false }));
         const lJson = await lRes.json().catch(() => ({ ok: false }));
+
         if (sJson?.ok) setSuppliers(sJson.suppliers ?? []);
         else setError(sJson?.error || 'Failed to load suppliers');
+
         if (lJson?.ok) setLocations(lJson.locations ?? []);
         else setError((prev) => (prev ?? (lJson?.error || 'Failed to load locations')));
       } catch (e: any) {
@@ -134,7 +144,6 @@ export default function PurchaseOrderingPage() {
     })();
   }, []);
 
-  /* fetch plan */
   async function fetchPlan(forSupplierId: string) {
     if (!forSupplierId) {
       setError('Please choose a supplier');
@@ -146,25 +155,27 @@ export default function PurchaseOrderingPage() {
     setItems([]);
 
     try {
-      // 1) Items (cost, stock, etc.)
+      // 1) Items (variants with SKUs) by vendor from Shopify
       const itsRes = await fetch(
-        `/api/shopify/items-by-supplier?supplierId=${encodeURIComponent(
-          forSupplierId
-        )}&limit=800` + (locationId ? `&locationId=${encodeURIComponent(locationId)}` : ''),
+        `/api/shopify/items-by-supplier?supplierId=${encodeURIComponent(forSupplierId)}&limit=800` +
+          (locationId ? `&locationId=${encodeURIComponent(locationId)}` : ''),
         { cache: 'no-store' }
       );
       const itsJson = await itsRes.json().catch(() => ({ ok: false }));
       if (!itsJson?.ok) throw new Error(itsJson?.error || 'Failed to fetch items');
 
-      const base: ItemRow[] = (itsJson.items as any[]).map((it: any) => ({
-        sku: it.sku,
-        title: String(it.title || '').replace(/\s+—\s+Default Title$/i, ''),
-        variantId: it.variantId || null,
-        inventoryQuantity: toNum(it.inventoryQuantity),
-        costAmount: toNum(it.costAmount),
-        priceAmount: it.priceAmount == null ? null : toNum(it.priceAmount),
-        orderQty: 0,
-      }));
+      const base: ItemRow[] = (itsJson.items as any[]).map((it: any) => {
+        const cleanTitle = String(it.title || '').replace(/\s+—\s+Default Title$/i, '');
+        return {
+          sku: it.sku,
+          title: cleanTitle,
+          variantId: it.variantId || null,
+          inventoryQuantity: toNum(it.inventoryQuantity),
+          costAmount: toNum(it.costAmount),
+          priceAmount: it.priceAmount == null ? null : toNum(it.priceAmount),
+          orderQty: 0,
+        };
+      });
 
       if (!base.length) {
         setItems([]);
@@ -175,65 +186,53 @@ export default function PurchaseOrderingPage() {
       setItems(base);
       setStatus(`Loaded ${base.length} item(s). Getting sales…`);
 
-      // 2) Sales (30 / 60 / custom)
+      // 2) Sales 30/60 + custom by SKU
       const skus = base.map((r) => r.sku).filter(Boolean).slice(0, 800);
-      const salesRes = await fetch('/api/shopify/sales-by-sku', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          skus,
-          locationId: locationId || undefined,
-          days30: true,
-          days60: true,
-          days: lookbackDays,
-          countPaidIfNoFulfillments: includePaidFallback,
-        }),
-      });
-      const salesJson = await salesRes.json().catch(() => ({ ok: false }));
-      if (!salesJson?.ok) throw new Error(salesJson?.error || 'Failed to fetch sales');
-
-      const merged = base.map((r) => {
-        const s30 =
-          salesJson.sales?.[r.sku]?.d30 ??
-          salesJson.sales30?.[r.sku] ??
-          salesJson.d30?.[r.sku] ??
-          0;
-        const s60 =
-          salesJson.sales?.[r.sku]?.d60 ??
-          salesJson.sales60?.[r.sku] ??
-          salesJson.d60?.[r.sku] ??
-          0;
-        const sc =
-          salesJson.custom?.totals?.[r.sku] ??
-          salesJson.custom?.[r.sku] ??
-          0;
-
-        return {
-          ...r,
-          sales30: toNum(s30),
-          sales60: toNum(s60),
-          salesCustom: toNum(sc),
-        };
-      });
-
-      // 3) Optional OOS days
-      let withOOS = merged;
-      try {
-        const oosRes = await fetch('/api/shopify/oos-days-by-sku', {
+      if (skus.length) {
+        const salesRes = await fetch('/api/shopify/sales-by-sku', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ skus, days: lookbackDays, locationId: locationId || undefined }),
+          body: JSON.stringify({
+            skus,
+            locationId: locationId || undefined,
+            days30: true,
+            days60: true,
+            days: lookbackDays,
+            countPaidIfNoFulfillments: includePaidFallback,
+          }),
         });
-        const oosJson = await oosRes.json().catch(() => ({ ok: false }));
-        if (oosJson?.ok && oosJson.days) {
-          withOOS = merged.map((r) => ({ ...r, oosDays: toNum(oosJson.days[r.sku]) }));
-        }
-      } catch {
-        // ignore if route not present
-      }
+        const salesJson = await salesRes.json().catch(() => ({ ok: false }));
+        if (!salesJson?.ok) throw new Error(salesJson?.error || 'Failed to fetch sales');
 
-      setItems(recalcDerived(withOOS, lookbackDays, daysOfStock));
-      setStatus(`${salesJson.source || 'Shopify'} (${lookbackDays}d)`);
+        let merged = base.map((r) => ({
+          ...r,
+          sales30: toNum(salesJson.sales?.[r.sku]),
+          sales60: toNum(salesJson.sales60?.[r.sku]),
+          // only keep a distinct “custom” figure if it’s not the same window as 30 or 60
+          salesCustom:
+            lookbackDays !== 30 && lookbackDays !== 60
+              ? toNum(salesJson.custom?.totals?.[r.sku])
+              : undefined,
+        }));
+
+        // 3) Optional: OOS days for the same custom window
+        try {
+          const oosRes = await fetch('/api/shopify/oos-days-by-sku', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ skus, days: lookbackDays, locationId: locationId || undefined }),
+          });
+          const oosJson = await oosRes.json().catch(() => ({ ok: false }));
+          if (oosJson?.ok && oosJson.days) {
+            merged = merged.map((r) => ({ ...r, oosDays: toNum(oosJson.days[r.sku]) }));
+          }
+        } catch {
+          // optional; ignore if endpoint not available
+        }
+
+        setItems(recalcDerived(merged, lookbackDays, daysOfStock));
+        setStatus(`${salesJson.source || 'ShopifyOrders'} (${lookbackDays}d)`);
+      }
     } catch (e: any) {
       setError(String(e?.message ?? e));
       setStatus('');
@@ -242,19 +241,13 @@ export default function PurchaseOrderingPage() {
     }
   }
 
-  // auto-refresh on key controls
+  // Auto-refresh when dependencies change
   useEffect(() => {
     if (supplierId) fetchPlan(supplierId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supplierId, locationId, includePaidFallback]);
+  }, [supplierId, locationId, includePaidFallback, lookbackDays, daysOfStock]);
 
-  // live recompute when these change
-  useEffect(() => {
-    setItems((prev) => recalcDerived(prev, lookbackDays, daysOfStock));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [daysOfStock, lookbackDays]);
-
-  /* sorting + totals */
+  // Sorting
   const sorted = useMemo(() => {
     const arr = [...items];
     arr.sort((a, b) => {
@@ -267,49 +260,51 @@ export default function PurchaseOrderingPage() {
     return arr;
   }, [items, sortBy, sortDir]);
 
+  const hasRows = items.length > 0;
   const grandTotal = useMemo(
     () => items.reduce((acc, r) => acc + toNum(r.costAmount) * toNum(r.orderQty), 0),
     [items]
   );
 
-  const hasRows = items.length > 0;
+  // Hide the “custom” column if lookback matches 30 or 60 to avoid the duplicate you saw
+  const showCustomCol = lookbackDays !== 30 && lookbackDays !== 60;
 
   return (
-    <div className="max-w-[1200px] mx-auto p-6 space-y-6">
+    <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Purchase Ordering</h1>
         <span className="text-sm text-gray-500">Forecast demand &amp; create POs (Shopify)</span>
       </div>
 
-      {/* Controls */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <label className="text-sm flex flex-col">
+      {/* Controls (neutral styling; no pink buttons) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+        <label className="flex flex-col text-sm">
           Days of stock
           <input
             type="number"
-            className="border rounded-lg p-2"
+            className="border rounded p-2"
             min={0}
             value={daysOfStock}
             onChange={(e) => setDaysOfStock(Math.max(0, Number(e.target.value || 0)))}
           />
         </label>
 
-        <label className="text-sm flex flex-col">
+        <label className="flex flex-col text-sm">
           Lookback (days)
           <input
             type="number"
-            className="border rounded-lg p-2"
+            className="border rounded p-2"
             min={1}
             value={lookbackDays}
             onChange={(e) => setLookbackDays(Math.max(1, Number(e.target.value || 0)))}
           />
         </label>
 
-        <label className="text-sm flex flex-col">
+        <label className="flex flex-col text-sm">
           Location
           <select
-            className="border rounded-lg p-2"
+            className="border rounded p-2"
             value={locationId}
             onChange={(e) => setLocationId(e.target.value)}
           >
@@ -322,10 +317,10 @@ export default function PurchaseOrderingPage() {
           </select>
         </label>
 
-        <label className="text-sm flex flex-col">
+        <label className="flex flex-col text-sm">
           Supplier
           <select
-            className="border rounded-lg p-2"
+            className="border rounded p-2"
             value={supplierId}
             onChange={(e) => setSupplierId(e.target.value)}
           >
@@ -337,122 +332,111 @@ export default function PurchaseOrderingPage() {
             ))}
           </select>
         </label>
+
+        <label className="flex flex-col justify-center text-sm">
+          <span className="mb-1">Options</span>
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="accent-black"
+              checked={includePaidFallback}
+              onChange={(e) => setIncludePaidFallback(e.target.checked)}
+            />
+            Count paid orders if no fulfillments
+          </label>
+        </label>
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-3">
         <button
-          className="px-4 py-2 rounded-lg bg-black text-white disabled:opacity-50"
+          className="px-3 py-2 rounded bg-black text-white disabled:opacity-50"
           disabled={!supplierId || loading}
           onClick={() => fetchPlan(supplierId)}
         >
           {loading ? 'Loading…' : 'Generate plan'}
         </button>
-
-        <button
-          className="px-4 py-2 rounded-lg border border-gray-300 text-gray-800 disabled:opacity-50"
-          disabled={!hasRows}
-          onClick={() =>
-            setItems((prev) =>
-              prev.map((r) => ({ ...r, orderQty: Math.max(0, toNum(r.suggestedQty)) }))
-            )
-          }
-        >
-          Auto-fill with Suggested
-        </button>
-
-        <label className="inline-flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="accent-black"
-            checked={includePaidFallback}
-            onChange={(e) => setIncludePaidFallback(e.target.checked)}
-          />
-          Count paid orders if no fulfillments
-        </label>
-
-        {!!status && <span className="text-xs text-gray-600">Sales source: {status}</span>}
+        {!!status && <span className="text-xs text-gray-600">{status}</span>}
+        {hasRows && (
+          <span className="ml-auto text-sm text-gray-700">
+            Total cost: <span className="font-semibold">£{fmt2(grandTotal)}</span>
+          </span>
+        )}
       </div>
 
       {error && (
-        <div className="p-3 text-sm rounded-lg bg-red-50 text-red-700 border border-red-200">
-          {error}
-        </div>
+        <div className="p-3 text-sm rounded bg-red-50 text-red-700 border border-red-200">{error}</div>
       )}
 
-      {/* Table */}
-      <div className="border rounded-xl overflow-hidden shadow-sm">
+      {/* Table (clean, bordered, zebra rows) */}
+      <div className="border rounded-lg overflow-auto">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b">
-            <tr className="text-gray-700">
-              <Th onClick={() => toggleSort('sku')} active={sortBy === 'sku'} dir={sortDir}>
-                SKU
-              </Th>
-              <Th onClick={() => toggleSort('title')} active={sortBy === 'title'} dir={sortDir}>
-                Product
-              </Th>
-              <ThRight>In stock</ThRight>
-              <ThRight>Cost</ThRight>
-              <ThRight>
-                <SortBtn onClick={() => toggleSort('sales30')} active={sortBy === 'sales30'} dir={sortDir}>
-                  30d sales
-                </SortBtn>
-              </ThRight>
-              <ThRight>
-                <SortBtn onClick={() => toggleSort('sales60')} active={sortBy === 'sales60'} dir={sortDir}>
-                  60d sales
-                </SortBtn>
-              </ThRight>
-              <ThRight>
-                <SortBtn
-                  onClick={() => toggleSort('salesCustom')}
-                  active={sortBy === 'salesCustom'}
-                  dir={sortDir}
-                >
-                  {lookbackDays}d sales
-                </SortBtn>
-              </ThRight>
-              <ThRight>
-                <SortBtn onClick={() => toggleSort('oosDays')} active={sortBy === 'oosDays'} dir={sortDir}>
-                  Days OOS
-                </SortBtn>
-              </ThRight>
-              <ThRight>Avg/day</ThRight>
-              <ThRight>Forecast</ThRight>
-              <ThRight>
-                <SortBtn
-                  onClick={() => toggleSort('suggestedQty')}
-                  active={sortBy === 'suggestedQty'}
-                  dir={sortDir}
-                >
-                  Suggested
-                </SortBtn>
-              </ThRight>
-              <ThRight>Order qty</ThRight>
-              <ThRight>Line total</ThRight>
+          <thead className="bg-gray-50">
+            <tr className="border-b">
+              <th className="text-left p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('sku')}>
+                  SKU <Caret k="sku" />
+                </button>
+              </th>
+              <th className="text-left p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('title')}>
+                  Product <Caret k="title" />
+                </button>
+              </th>
+              <th className="text-right p-3">In stock</th>
+              <th className="text-right p-3">Cost</th>
+              <th className="text-right p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('sales30')}>
+                  30 days <Caret k="sales30" />
+                </button>
+              </th>
+              <th className="text-right p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('sales60')}>
+                  60 days <Caret k="sales60" />
+                </button>
+              </th>
+              {showCustomCol && (
+                <th className="text-right p-3">
+                  <button className="font-medium hover:underline" onClick={() => toggleSort('salesCustom')}>
+                    {lookbackDays} days <Caret k="salesCustom" />
+                  </button>
+                </th>
+              )}
+              <th className="text-right p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('oosDays')}>
+                  Days OOS <Caret k="oosDays" />
+                </button>
+              </th>
+              <th className="text-right p-3">Avg/day</th>
+              <th className="text-right p-3">Forecast</th>
+              <th className="text-right p-3">
+                <button className="font-medium hover:underline" onClick={() => toggleSort('suggestedQty')}>
+                  Suggested <Caret k="suggestedQty" />
+                </button>
+              </th>
+              <th className="text-right p-3">Order qty</th>
+              <th className="text-right p-3">Line total</th>
             </tr>
           </thead>
-
-          <tbody className="divide-y divide-gray-100">
-            {!items.length && (
+          <tbody>
+            {!hasRows && (
               <tr>
-                <td className="p-4 text-gray-500" colSpan={13}>
+                <td className="p-3" colSpan={showCustomCol ? 13 : 12}>
                   Pick a supplier and click “Generate plan”…
                 </td>
               </tr>
             )}
-
             {sorted.map((r, i) => {
               const cost = toNum(r.costAmount);
               const lineTotal = cost * toNum(r.orderQty);
               return (
-                <tr key={r.sku} className={i % 2 ? 'bg-white' : 'bg-gray-50'}>
+                <tr key={r.sku} className={i % 2 ? 'bg-gray-50 border-b' : 'border-b'}>
                   <td className="p-3">{r.sku}</td>
                   <td className="p-3">{r.title}</td>
                   <td className="p-3 text-right">{toNum(r.inventoryQuantity)}</td>
                   <td className="p-3 text-right">{cost ? fmt2(cost) : '—'}</td>
                   <td className="p-3 text-right">{toNum(r.sales30)}</td>
                   <td className="p-3 text-right">{toNum(r.sales60)}</td>
-                  <td className="p-3 text-right">{toNum(r.salesCustom)}</td>
+                  {showCustomCol && <td className="p-3 text-right">{toNum(r.salesCustom)}</td>}
                   <td className="p-3 text-right">{toNum(r.oosDays)}</td>
                   <td className="p-3 text-right">{(r.avgDaily ?? 0).toFixed(2)}</td>
                   <td className="p-3 text-right">{Math.ceil(r.forecastQty ?? 0)}</td>
@@ -460,7 +444,7 @@ export default function PurchaseOrderingPage() {
                   <td className="p-3 text-right">
                     <input
                       type="number"
-                      className="w-24 p-2 border rounded-lg text-right"
+                      className="border rounded p-2 w-24 text-right"
                       value={r.orderQty}
                       min={0}
                       onChange={(e) => {
@@ -477,59 +461,10 @@ export default function PurchaseOrderingPage() {
         </table>
       </div>
 
-      <div className="text-right text-sm text-gray-700">
-        <span className="font-medium">Grand total:</span> £{fmt2(grandTotal)}
-      </div>
-
       <p className="text-xs text-gray-500">
-        Sales are counted from Shopify <em>Fulfillments</em> (net shipped units). If enabled, paid order quantities are
-        counted when there are no fulfillments (only when “All” locations is selected).
+        Sales are counted from Shopify fulfillments; if enabled, paid orders are used when no fulfillments exist. Avg/day
+        divides sales by the effective days (lookback minus out-of-stock days).
       </p>
     </div>
-  );
-}
-
-/* small presentational helpers */
-function Th({
-  children,
-  onClick,
-  active,
-  dir,
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  active?: boolean;
-  dir?: 'asc' | 'desc';
-}) {
-  return (
-    <th className="p-3 text-left font-semibold">
-      {onClick ? (
-        <button onClick={onClick} className="hover:underline">
-          {children} {active ? <span className="text-gray-500">{dir === 'asc' ? '▲' : '▼'}</span> : null}
-        </button>
-      ) : (
-        children
-      )}
-    </th>
-  );
-}
-function ThRight(props: any) {
-  return <th className="p-3 text-right font-semibold" {...props} />;
-}
-function SortBtn({
-  children,
-  onClick,
-  active,
-  dir,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  active?: boolean;
-  dir?: 'asc' | 'desc';
-}) {
-  return (
-    <button onClick={onClick} className="hover:underline">
-      {children} {active ? <span className="text-gray-500">{dir === 'asc' ? '▲' : '▼'}</span> : null}
-    </button>
   );
 }
