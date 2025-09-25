@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireShopifyEnv, shopifyGraphql } from "@/lib/shopify";
+import { requireShopifyEnv, shopifyGraphql, gidToNumericId } from "@/lib/shopify";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,9 +13,18 @@ const QUERY = /* GraphQL */ `
           id
           title
           vendor
+          productType
+          productCategory { productTaxonomyNode { id name fullName } }
           variants(first: 100) {
             edges {
-              node { id sku title }
+              node {
+                id
+                sku
+                title
+                inventoryQuantity
+                price { amount }
+                inventoryItem { unitCost { amount } }
+              }
             }
           }
         }
@@ -25,50 +34,129 @@ const QUERY = /* GraphQL */ `
   }
 `;
 
+function stripDefaultTitle(s: string) {
+  return s.replace(/\s*[–—-]\s*Default Title\s*$/i, "").trim();
+}
+
 export async function GET(req: NextRequest) {
   try {
     requireShopifyEnv();
+
+    const sp = req.nextUrl.searchParams;
     const vendor =
-      req.nextUrl.searchParams.get("supplierId") ||
-      req.nextUrl.searchParams.get("vendor") ||
+      sp.get("supplierId") ||
+      sp.get("vendor") ||
       "";
-    const limit = Number(req.nextUrl.searchParams.get("limit") || "800");
-    if (!vendor) return NextResponse.json({ ok: false, error: "Missing supplierId (vendor)" }, { status: 400 });
+    const limit = Math.min(Number(sp.get("limit") || "800"), 1000);
 
-    const query = `vendor:"${vendor.replace(/"/g, '\\"')}" status:active`;
+    // Optional filters pulled from the querystring:
+    const productType = (sp.get("productType") || "").trim();
+    const productCategoryId = (sp.get("productCategoryId") || "").trim(); // taxonomy node id (gid)
+    const collectionIdRaw = (sp.get("collectionId") || "").trim();       // gid or numeric
+    const collectionNumeric = collectionIdRaw
+      ? (/^\d+$/.test(collectionIdRaw) ? collectionIdRaw : (gidToNumericId(collectionIdRaw) || ""))
+      : "";
+
+    if (!vendor) {
+      return NextResponse.json(
+        { ok: false, error: "Missing supplierId (vendor)" },
+        { status: 400 }
+      );
+    }
+
+    // Build Shopify Admin search query
+    // See https://shopify.dev/docs/api/admin-graphql for product search syntax.
+    const parts: string[] = [];
+    parts.push(`vendor:"${vendor.replace(/"/g, '\\"')}"`);
+    parts.push(`status:active`);
+    if (productType) parts.push(`product_type:"${productType.replace(/"/g, '\\"')}"`);
+    if (collectionNumeric) parts.push(`collection_id:${collectionNumeric}`);
+    const query = parts.join(" ");
+
     let cursor: string | null = null;
-    const items: any[] = [];
-    let count = 0;
+    const items: Array<{
+      sku: string;
+      title: string;
+      variantId: string;
+      productTitle: string;
+      cost: number;
+      inventoryQuantity: number;
+    }> = [];
 
-    while (count < limit) {
+    while (items.length < limit) {
       const data: any = await shopifyGraphql(QUERY, { query, cursor });
       const edges = data?.products?.edges || [];
+
       for (const e of edges) {
-        const p = e.node;
-        const title = p?.title || "";
-        const vEdges = p?.variants?.edges || [];
-        for (const ve of vEdges) {
-          const v = ve.node;
+        const p = e.node as {
+          title: string;
+          productCategory?: { productTaxonomyNode?: { id: string } | null } | null;
+          variants: { edges: Array<{ node: any }> };
+        };
+
+        // If productCategoryId filter provided, enforce it client-side
+        if (productCategoryId) {
+          const catId = p?.productCategory?.productTaxonomyNode?.id || "";
+          if (!catId || catId !== productCategoryId) continue;
+        }
+
+        const productTitle = (p?.title || "").trim();
+
+        for (const ve of p?.variants?.edges || []) {
+          const v = ve.node as {
+            id: string;
+            sku?: string | null;
+            title?: string | null;
+            inventoryQuantity?: number | null;
+            price?: { amount?: string | null } | null;
+            inventoryItem?: { unitCost?: { amount?: string | null } | null } | null;
+          };
+
           const sku = String(v?.sku || "").trim();
           if (!sku) continue;
+
+          const vTitle = (v?.title || "").trim();
+          const needsVariant =
+            vTitle &&
+            !/^(default title)$/i.test(vTitle) &&
+            vTitle.toLowerCase() !== productTitle.toLowerCase();
+
+          const combinedTitle = needsVariant ? `${productTitle} — ${vTitle}` : productTitle;
+          const cleanTitle = stripDefaultTitle(combinedTitle);
+
+          // Prefer unit cost; fall back to variant price if missing
+          const cost =
+            Number(v?.inventoryItem?.unitCost?.amount ?? "") ||
+            Number(v?.price?.amount ?? "") ||
+            0;
+
+          const stock =
+            typeof v?.inventoryQuantity === "number" ? v.inventoryQuantity : 0;
+
           items.push({
             sku,
-            title: `${title} — ${v?.title || ""}`.trim(),
-            variantId: v?.id,
-            productTitle: title,
+            title: cleanTitle,
+            variantId: String(v?.id || ""),
+            productTitle,
+            cost,
+            inventoryQuantity: stock,
           });
-          count++;
-          if (count >= limit) break;
+
+          if (items.length >= limit) break;
         }
-        if (count >= limit) break;
+        if (items.length >= limit) break;
       }
+
       const hasNext = data?.products?.pageInfo?.hasNextPage;
-      cursor = hasNext ? data?.products?.pageInfo?.endCursor : null;
+      cursor = hasNext ? data?.products?.pageInfo?.endCursor || null : null;
       if (!hasNext) break;
     }
 
-    return NextResponse.json({ ok: true, items });
+    return NextResponse.json({ ok: true, items, source: "ShopifyProducts" });
   } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: err?.message || String(err) },
+      { status: 500 }
+    );
   }
 }
