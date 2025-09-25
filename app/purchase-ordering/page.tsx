@@ -5,22 +5,31 @@ import { useEffect, useMemo, useState } from 'react';
 
 type Supplier = { id: string; name: string };
 type Location = { id: string; name: string; tag?: string | null };
-type ItemRow = {
-  sku: string;
-  title: string;
-  orderQty: number;
-  cost: number;     // unit cost/price (numeric)
-  stock: number;    // current inventory qty
-  sales30?: number;
-  sales60?: number;
-};
-
 type ProductType = { name: string };
 type ProductCategory = { id: string; name: string };
 type Collection = { id: string; title: string };
 
+type ItemRow = {
+  sku: string;
+  title: string;
+  orderQty: number;
+  cost: number;   // unit cost/price
+  stock: number;  // current inventory qty
+  sales30?: number;
+  sales60?: number;
+};
+
 type SortKey = 'sku' | 'title' | 'sales30' | 'sales60';
 type SortDir = 'asc' | 'desc';
+
+/* ───────────────── helpers ───────────────── */
+const num = (v: any): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+const fmt2 = (v: any) => num(v).toFixed(2);
+/** Remove “— Default Title”, “- Default Title”, etc. (any dash + spaces) */
+const cleanTitle = (t: string) => t.replace(/\s*[–—-]\s*Default Title\s*$/i, '').trim();
 
 export default function PurchaseOrderingPage() {
   /** Dropdown data */
@@ -41,7 +50,7 @@ export default function PurchaseOrderingPage() {
   const [productCategoryId, setProductCategoryId] = useState<string>('');
   const [collectionId, setCollectionId] = useState<string>('');
 
-  // Default: include BOTH paid and unpaid (paid-count fallback ON)
+  // Default ON: count paid orders when there are no fulfillments
   const [includePaidFallback, setIncludePaidFallback] = useState<boolean>(true);
 
   /** UI state */
@@ -57,20 +66,28 @@ export default function PurchaseOrderingPage() {
     if (sortBy === k) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
     else { setSortBy(k); setSortDir('asc'); }
   };
+  const Caret = ({ k }: { k: SortKey }) =>
+    sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
 
+  /** Derived / totals */
   const sorted = useMemo(() => {
     const arr = [...items];
     arr.sort((a, b) => {
       const dir = sortDir === 'asc' ? 1 : -1;
       const av = (a as any)[sortBy] ?? '';
       const bv = (b as any)[sortBy] ?? '';
-      if (typeof av === 'number' || typeof bv === 'number') return (Number(av) - Number(bv)) * dir;
+      if (typeof av === 'number' || typeof bv === 'number') return (num(av) - num(bv)) * dir;
       return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' }) * dir;
     });
     return arr;
   }, [items, sortBy, sortDir]);
+  const hasRows = items.length > 0;
+  const grandTotal = useMemo(
+    () => sorted.reduce((acc, r) => acc + num(r.orderQty) * num(r.cost), 0),
+    [sorted]
+  );
 
-  /** Load dropdowns (Shopify vendors, locations, and filter options) */
+  /** Load dropdowns (vendors, locations, and filter options) */
   useEffect(() => {
     (async () => {
       setError(null);
@@ -121,6 +138,9 @@ export default function PurchaseOrderingPage() {
       if (productType) qs.set('productType', productType);
       if (productCategoryId) qs.set('productCategoryId', productCategoryId);
       if (collectionId) qs.set('collectionId', collectionId);
+      // Hint for your API to include price/inventory if it supports it
+      qs.set('withPricing', '1');
+      qs.set('withInventory', '1');
 
       // 1) Items (variants with SKUs) by vendor from Shopify GraphQL
       const itsRes = await fetch(`/api/shopify/items-by-supplier?${qs.toString()}`, { cache: 'no-store' });
@@ -128,12 +148,20 @@ export default function PurchaseOrderingPage() {
       if (!itsJson?.ok) throw new Error(itsJson?.error || 'Failed to fetch items');
 
       const baseRows: ItemRow[] = (itsJson.items as any[]).map((it: any) => ({
-        sku: it.sku,
-        title: it.title || '',
+        sku: String(it.sku || '').trim(),
+        title: cleanTitle(String(it.title || '')),
         orderQty: 0,
-        cost: typeof it.priceAmount === 'string' ? Number(it.priceAmount) : Number(it.priceAmount ?? 0),
-        stock: typeof it.inventoryQuantity === 'number' ? it.inventoryQuantity : Number(it.inventoryQuantity ?? 0),
+        // Accept a variety of possible keys coming from the API
+        cost: num(
+          it.cost ??
+          it.unitCost?.amount ??
+          it.priceAmount ??
+          it.price?.amount ??
+          it.compareAtPrice?.amount
+        ),
+        stock: num(it.inventoryQuantity ?? it.stock ?? it.onHand),
       }));
+
       if (!baseRows.length) {
         setItems([]);
         setStatus('No items found for this selection.');
@@ -143,7 +171,7 @@ export default function PurchaseOrderingPage() {
       setItems(baseRows);
       setStatus(`Loaded ${baseRows.length} item(s). Getting sales…`);
 
-      // 2) Sales 30/60 by SKU from Shopify fulfillments
+      // 2) Sales 30/60 by SKU from Shopify fulfillments (location optional)
       const skus = baseRows.map(r => r.sku).filter(Boolean).slice(0, 800);
       if (skus.length) {
         const salesRes = await fetch('/api/shopify/sales-by-sku', {
@@ -155,7 +183,7 @@ export default function PurchaseOrderingPage() {
             days30: true,
             days60: true,
             countPaidIfNoFulfillments: includePaidFallback,
-            lookbackDays, // safe to include if your API uses it
+            lookbackDays, // if your API uses it
           }),
         });
         const salesJson = await salesRes.json().catch(() => ({ ok: false }));
@@ -169,7 +197,7 @@ export default function PurchaseOrderingPage() {
             sales60: bySku[r.sku]?.d60 ?? 0,
           })),
         );
-        setStatus(`Sales source: ${salesJson.source || 'Shopify'}`);
+        setStatus(`Sales source: ${salesJson.source || 'ShopifyOrders/ShopifyFulfillments'}`);
       }
     } catch (e: any) {
       setError(String(e?.message ?? e));
@@ -190,10 +218,6 @@ export default function PurchaseOrderingPage() {
     includePaidFallback,
     lookbackDays,
   ]);
-
-  const hasRows = items.length > 0;
-  const Caret = ({ k }: { k: SortKey }) => (sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null);
-  const fmt = (n: number | undefined | null) => (Number.isFinite(Number(n)) ? Number(n).toFixed(2) : '0.00');
 
   return (
     <div className="p-6 space-y-6">
@@ -223,7 +247,7 @@ export default function PurchaseOrderingPage() {
         </div>
       </div>
 
-      {/* Planning block */}
+      {/* Planning */}
       <section className="rounded-2xl border p-4 md:p-5 bg-white">
         <h2 className="text-sm font-medium text-gray-700 mb-3">Planning</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -262,7 +286,7 @@ export default function PurchaseOrderingPage() {
               className="mt-1 border rounded p-2"
               value={daysOfStock}
               min={0}
-              onChange={(e) => setDaysOfStock(Number(e.target.value || 0))}
+              onChange={(e) => setDaysOfStock(num(e.target.value))}
             />
           </label>
 
@@ -273,13 +297,13 @@ export default function PurchaseOrderingPage() {
               className="mt-1 border rounded p-2"
               value={lookbackDays}
               min={0}
-              onChange={(e) => setLookbackDays(Number(e.target.value || 0))}
+              onChange={(e) => setLookbackDays(num(e.target.value))}
             />
           </label>
         </div>
       </section>
 
-      {/* Filters block */}
+      {/* Filters */}
       <section className="rounded-2xl border p-4 md:p-5 bg-white">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-medium text-gray-700">Filters</h2>
@@ -345,36 +369,30 @@ export default function PurchaseOrderingPage() {
       )}
 
       {/* Items table */}
-      <div className="border rounded-2xl overflow-auto bg-white">
+      <div className="rounded-2xl border overflow-auto bg-white">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="text-left p-3">
+          <thead className="bg-gray-50 sticky top-0 z-10">
+            <tr className="text-gray-700">
+              <th className="text-left p-3 w-40">
                 <button className="font-medium hover:underline" onClick={() => toggleSort('sku')}>
                   SKU <Caret k="sku" />
                 </button>
               </th>
-              <th className="text-left p-3">
+              <th className="text-left p-3 min-w-[280px]">
                 <button className="font-medium hover:underline" onClick={() => toggleSort('title')}>
                   Product <Caret k="title" />
                 </button>
               </th>
-
-              {/* NEW: cost & stock to the LEFT of order qty */}
-              <th className="text-right p-3">Cost</th>
-              <th className="text-right p-3">In stock</th>
-
-              <th className="text-left p-3">Order qty</th>
-
-              {/* NEW: line total to the RIGHT of order qty */}
-              <th className="text-right p-3">Line total</th>
-
-              <th className="text-right p-3">
+              <th className="text-right p-3 w-24">Cost</th>
+              <th className="text-right p-3 w-24">In stock</th>
+              <th className="text-left p-3 w-32">Order qty</th>
+              <th className="text-right p-3 w-28">Line total</th>
+              <th className="text-right p-3 w-28">
                 <button className="font-medium hover:underline" onClick={() => toggleSort('sales30')}>
                   30 days sales <Caret k="sales30" />
                 </button>
               </th>
-              <th className="text-right p-3">
+              <th className="text-right p-3 w-28">
                 <button className="font-medium hover:underline" onClick={() => toggleSort('sales60')}>
                   60 days sales <Caret k="sales60" />
                 </button>
@@ -386,36 +404,42 @@ export default function PurchaseOrderingPage() {
               <tr><td className="p-3" colSpan={8}>Pick a supplier and click “Generate plan”…</td></tr>
             )}
             {sorted.map((r) => {
-              const lineTotal = (r.orderQty || 0) * (r.cost || 0);
+              const lineTotal = num(r.orderQty) * num(r.cost);
               return (
                 <tr key={r.sku} className="border-t">
-                  <td className="p-3">{r.sku}</td>
-                  <td className="p-3">{r.title}</td>
-
-                  <td className="p-3 text-right">{fmt(r.cost)}</td>
-                  <td className="p-3 text-right">{Number.isFinite(r.stock) ? r.stock : 0}</td>
-
-                  <td className="p-3">
+                  <td className="p-3 align-middle">{r.sku}</td>
+                  <td className="p-3 align-middle">{r.title}</td>
+                  <td className="p-3 text-right align-middle">{fmt2(r.cost)}</td>
+                  <td className="p-3 text-right align-middle">{Number.isFinite(r.stock) ? r.stock : 0}</td>
+                  <td className="p-3 align-middle">
                     <input
                       type="number"
                       className="border rounded p-2 w-28"
                       value={r.orderQty}
                       min={0}
                       onChange={(e) => {
-                        const v = Number(e.target.value || 0);
+                        const v = num(e.target.value);
                         setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
                       }}
                     />
                   </td>
-
-                  <td className="p-3 text-right">{fmt(lineTotal)}</td>
-
-                  <td className="p-3 text-right">{r.sales30 ?? 0}</td>
-                  <td className="p-3 text-right">{r.sales60 ?? 0}</td>
+                  <td className="p-3 text-right align-middle">{fmt2(lineTotal)}</td>
+                  <td className="p-3 text-right align-middle">{r.sales30 ?? 0}</td>
+                  <td className="p-3 text-right align-middle">{r.sales60 ?? 0}</td>
                 </tr>
               );
             })}
           </tbody>
+          {hasRows && (
+            <tfoot className="bg-gray-50">
+              <tr className="font-medium">
+                <td className="p-3" colSpan={5}>Totals</td>
+                <td className="p-3 text-right">{fmt2(grandTotal)}</td>
+                <td className="p-3 text-right">—</td>
+                <td className="p-3 text-right">—</td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 
