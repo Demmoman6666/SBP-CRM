@@ -712,15 +712,17 @@ model PurchaseOrderSync {
 // Enables exact "Days Out of Stock" by counting days with available === 0.
 
 model InventoryDay {
-  id         String   @id @default(cuid())
-  date       DateTime // store as UTC midnight for the day
-  sku        String
-  locationId String?  // Shopify Location ID, or null for "all"
-  available  Int      @default(0)
+  id           String   @id @default(cuid())
+  date         DateTime
+  sku          String
+  locationId   String
+  locationName String?
+  available    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  createdAt  DateTime @default(now())
-
-  @@index([sku, date])
-  @@index([locationId, date])
-  @@unique([sku, locationId, date], map: "inventoryday_sku_location_date_unique")
+  @@unique([sku, date, locationId], map: "invday_sku_date_location")
+  @@index([date])
+  @@index([sku])
+  @@index([locationId])
 }
