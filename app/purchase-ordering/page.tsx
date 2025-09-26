@@ -18,7 +18,8 @@ type ItemRow = {
   sales30?: number;
   sales60?: number;
 
-  oosDays?: number;             // days out of stock in lookback
+  // out-of-stock days for the look-back window
+  oosDays?: number;
 
   avgDaily?: number;
   forecastQty?: number;
@@ -26,7 +27,7 @@ type ItemRow = {
   orderQty: number;
 };
 
-type SortKey = 'sku' | 'title' | 'sales30' | 'sales60' | 'oosDays' | 'suggestedQty';
+type SortKey = 'sku' | 'title' | 'sales30' | 'sales60' | 'suggestedQty';
 type SortDir = 'asc' | 'desc';
 
 export default function PurchaseOrderingPage() {
@@ -57,11 +58,11 @@ export default function PurchaseOrderingPage() {
     sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
 
   // helpers
-  const fmt2 = (n: number | null | undefined) => {
+  const fmt = (n: number | null | undefined) => {
     const v = Number(n ?? 0);
     return Number.isFinite(v) ? v.toFixed(2) : '0.00';
   };
-  const fmtGBP = (n: number | null | undefined) => `£${fmt2(n)}`;
+  const gbp = (n: number | null | undefined) => `£${fmt(n)}`;
 
   function nearestBucketRate(row: ItemRow, lbDays: number): number {
     const d30 = typeof row.sales30 === 'number' ? row.sales30! : undefined;
@@ -77,11 +78,7 @@ export default function PurchaseOrderingPage() {
 
   function recalcDerived(rows: ItemRow[], lbDays: number, horizon: number): ItemRow[] {
     return rows.map(r => {
-      // adjust effective days for any recorded OOS days (min 1 day to avoid divide-by-zero)
-      const effectiveDays = Math.max(1, lbDays - Math.max(0, Number(r.oosDays ?? 0)));
-      const salesForWindow = lbDays >= 45 ? Number(r.sales60 ?? 0) : Number(r.sales30 ?? 0);
-      const avg = effectiveDays > 0 ? (salesForWindow / effectiveDays) : 0;
-
+      const avg = nearestBucketRate(r, lbDays);
       const forecast = avg * Math.max(0, horizon || 0);
       const onHand = Number(r.inventoryQuantity ?? 0);
       const suggested = Math.max(0, Math.ceil(forecast - onHand));
@@ -112,7 +109,7 @@ export default function PurchaseOrderingPage() {
     })();
   }, []);
 
-  // fetch items + sales (+ OOS) for a supplier
+  // fetch items + sales (+ oos-days) for a supplier
   async function fetchPlan(forSupplierId: string) {
     if (!forSupplierId) { setError('Please choose a supplier'); return; }
     setLoading(true);
@@ -147,9 +144,9 @@ export default function PurchaseOrderingPage() {
       setItems(baseRows);
       setStatus(`Loaded ${baseRows.length} item(s). Getting sales…`);
 
-      // Sales (30/60) — drafts excluded at the API; count orders when no fulfillments
       const skus = baseRows.map(r => r.sku).filter(Boolean).slice(0, 800);
       if (skus.length) {
+        // Sales (30/60) — all non-draft orders
         const salesRes = await fetch('/api/shopify/sales-by-sku', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -158,8 +155,9 @@ export default function PurchaseOrderingPage() {
             locationId: locationId || undefined,
             days30: true,
             days60: true,
-            // server defaults include paid & unpaid where appropriate; drafts excluded
-            countPaidIfNoFulfillments: true
+            source: 'orders',
+            includeAllStatuses: true,
+            excludeDrafts: true,
           }),
         });
         const salesJson = await salesRes.json().catch(() => ({ ok: false }));
@@ -167,11 +165,11 @@ export default function PurchaseOrderingPage() {
 
         let merged = baseRows.map(r => ({
           ...r,
-          sales30: Number(salesJson.sales?.[r.sku] ?? 0),
-          sales60: Number(salesJson.sales60?.[r.sku] ?? 0),
+          sales30: salesJson.sales?.[r.sku]?.d30 ?? 0,
+          sales60: salesJson.sales?.[r.sku]?.d60 ?? 0,
         }));
 
-        // Days OOS (prefer snapshots; fallback proxy)
+        // Days OOS (optional; ignore if endpoint absent)
         try {
           const oosRes = await fetch('/api/shopify/oos-days-by-sku', {
             method: 'POST',
@@ -182,10 +180,10 @@ export default function PurchaseOrderingPage() {
           if (oosJson?.ok && oosJson.days) {
             merged = merged.map(r => ({ ...r, oosDays: Number(oosJson.days[r.sku] ?? 0) }));
           }
-        } catch { /* optional */ }
+        } catch { /* no-op */ }
 
         setItems(recalcDerived(merged, lookbackDays, daysOfStock));
-        setStatus(`${salesJson.source || 'ShopifyOrders'} (${lookbackDays}d)`);
+        setStatus(`ShopifyOrders (all orders)`);
       } else {
         setItems(recalcDerived(baseRows, lookbackDays, daysOfStock));
         setStatus('No SKUs found to compute sales.');
@@ -220,243 +218,219 @@ export default function PurchaseOrderingPage() {
   const hasRows = items.length > 0;
   const grandTotal = useMemo(() => items.reduce((acc, r) => acc + (Number(r.costAmount ?? 0) * Number(r.orderQty ?? 0)), 0), [items]);
 
+  const totalOOSDays = useMemo(
+    () => items.reduce((acc, r) => acc + Number(r.oosDays ?? 0), 0),
+    [items]
+  );
+
   function applySuggestedAll() {
     setItems(prev => prev.map(r => ({ ...r, orderQty: Math.max(0, Math.ceil(r.suggestedQty ?? 0)) })));
   }
 
   return (
-    <div className="po-root">
-      <div className="po-card po-controls">
-        <div className="po-grid">
-          <label className="po-field">
-            <span>Days of stock</span>
-            <input
-              type="number" min={1}
-              value={daysOfStock}
-              onChange={(e) => setDaysOfStock(Math.max(1, Number(e.target.value || 0)))}
-            />
-          </label>
+    <div className="po-wrap">
+      {/* FULL-WIDTH header (controls) */}
+      <div className="po-bleed">
+        <div className="po-card">
+          <div className="po-grid">
+            <label className="po-field">
+              <span>Days of stock</span>
+              <input
+                type="number" min={1}
+                value={daysOfStock}
+                onChange={(e) => setDaysOfStock(Math.max(1, Number(e.target.value || 0)))}
+              />
+            </label>
 
-          <label className="po-field">
-            <span>Look-back (days)</span>
-            <input
-              type="number" min={7}
-              value={lookbackDays}
-              onChange={(e) => setLookbackDays(Math.max(7, Number(e.target.value || 0)))}
-            />
-            <small>Uses the closest of 30/60d sales to estimate avg/day.</small>
-          </label>
+            <label className="po-field">
+              <span>Look-back (days)</span>
+              <input
+                type="number" min={7}
+                value={lookbackDays}
+                onChange={(e) => setLookbackDays(Math.max(7, Number(e.target.value || 0)))}
+              />
+              <small>Uses the closest of 30/60d sales to estimate avg/day.</small>
+            </label>
 
-          <label className="po-field">
-            <span>Location</span>
-            <select value={locationId} onChange={(e) => setLocationId(e.target.value)}>
-              <option value="">All</option>
-              {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-            </select>
-          </label>
+            <label className="po-field">
+              <span>Location</span>
+              <select value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+                <option value="">All</option>
+                {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+              </select>
+            </label>
 
-          <label className="po-field">
-            <span>Supplier</span>
-            <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
-              <option value="">Choose…</option>
-              {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-          </label>
+            <label className="po-field">
+              <span>Supplier</span>
+              <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+                <option value="">Choose…</option>
+                {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </label>
 
-          <div className="po-actions">
-            <button className="po-btn" disabled={!supplierId || loading} onClick={() => fetchPlan(supplierId)}>
-              {loading ? "Loading…" : "Generate plan"}
-            </button>
-            <button className="po-btn po-btn--secondary" disabled={!hasRows} onClick={applySuggestedAll}>
-              Auto-fill with Suggested
-            </button>
-            {!!status && <span className="po-status">Sales source: {status}</span>}
+            <div className="po-actions">
+              <button type="button" className="po-btn" disabled={!supplierId || loading} onClick={() => fetchPlan(supplierId)}>
+                {loading ? "Loading…" : "Generate plan"}
+              </button>
+              <button type="button" className="po-btn po-btn--secondary" disabled={!hasRows} onClick={applySuggestedAll}>
+                Auto-fill with Suggested
+              </button>
+              {!!status && <span className="po-status">Sales source: {status}</span>}
+            </div>
           </div>
+        </div>
+
+        {error && <div className="po-error">{error}</div>}
+      </div>
+
+      {/* FULL-WIDTH table */}
+      <div className="po-bleed">
+        <div className="po-table-wrap">
+          <table className="po-table">
+            <thead>
+              <tr>
+                <th>
+                  <button type="button" className="po-th-link" onClick={() => toggleSort('sku')}>
+                    SKU <Caret k="sku" />
+                  </button>
+                </th>
+                <th>
+                  <button type="button" className="po-th-link" onClick={() => toggleSort('title')}>
+                    Product <Caret k="title" />
+                  </button>
+                </th>
+                <th className="ta-center">In stock</th>
+                <th className="ta-center">Cost</th>
+                <th className="ta-center">
+                  <button type="button" className="po-th-link" onClick={() => toggleSort('sales30')}>
+                    30d sales <Caret k="sales30" />
+                  </button>
+                </th>
+                <th className="ta-center">
+                  <button type="button" className="po-th-link" onClick={() => toggleSort('sales60')}>
+                    60d sales <Caret k="sales60" />
+                  </button>
+                </th>
+                <th className="ta-center">Days OOS</th>
+                <th className="ta-center">Avg/day</th>
+                <th className="ta-center">Forecast</th>
+                <th className="ta-center">
+                  <button type="button" className="po-th-link" onClick={() => toggleSort('suggestedQty')}>
+                    Suggested <Caret k="suggestedQty" />
+                  </button>
+                </th>
+                <th className="ta-center">Order qty</th>
+                <th className="ta-center">Line total</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {!hasRows && (
+                <tr><td className="empty" colSpan={12}>Pick a supplier and click “Generate plan”…</td></tr>
+              )}
+
+              {sorted.map((r, idx) => {
+                const costNum = Number(r.costAmount ?? 0);
+                const lineTotal = costNum * Number(r.orderQty ?? 0);
+                return (
+                  <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
+                    <td>{r.sku}</td>
+                    <td>{r.title}</td>
+                    <td className="ta-center">{r.inventoryQuantity ?? 0}</td>
+                    <td className="ta-center">{gbp(costNum)}</td>
+                    <td className="ta-center">{r.sales30 ?? 0}</td>
+                    <td className="ta-center">{r.sales60 ?? 0}</td>
+                    <td className="ta-center">{r.oosDays ?? 0}</td>
+                    <td className="ta-center">{(r.avgDaily ?? 0).toFixed(2)}</td>
+                    <td className="ta-center">{Math.ceil(r.forecastQty ?? 0)}</td>
+                    <td className="ta-center">{r.suggestedQty ?? 0}</td>
+                    <td className="ta-center">
+                      <input
+                        type="number"
+                        className="po-qty"
+                        value={r.orderQty}
+                        min={0}
+                        onChange={(e) => {
+                          const v = Math.max(0, Number(e.target.value || 0));
+                          setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
+                        }}
+                      />
+                    </td>
+                    <td className="ta-center">{gbp(lineTotal)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {hasRows && (
+            <div className="po-table-foot">
+              <div className="note">
+                Sales use all Shopify <em>Orders</em> (paid & unpaid; any fulfillment state). Draft orders are excluded.
+                Days OOS shows how many days each SKU was out of stock within the {lookbackDays}-day look-back window.
+              </div>
+              <div className="total">
+                Total OOS days (sum across SKUs): {totalOOSDays}
+                &nbsp;&nbsp;|&nbsp;&nbsp; Grand total: {gbp(grandTotal)}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {error && <div className="po-error">{error}</div>}
-
-      <div className="po-table-wrap">
-        <table className="po-table">
-          <thead>
-            <tr>
-              <th>
-                <button className="po-th-link" onClick={() => toggleSort('sku')}>
-                  SKU <Caret k="sku" />
-                </button>
-              </th>
-              <th>
-                <button className="po-th-link" onClick={() => toggleSort('title')}>
-                  Product <Caret k="title" />
-                </button>
-              </th>
-              <th className="ta-center">In stock</th>
-              <th className="ta-center">Cost</th>
-              <th className="ta-center">
-                <button className="po-th-link" onClick={() => toggleSort('sales30')}>
-                  30d sales <Caret k="sales30" />
-                </button>
-              </th>
-              <th className="ta-center">
-                <button className="po-th-link" onClick={() => toggleSort('sales60')}>
-                  60d sales <Caret k="sales60" />
-                </button>
-              </th>
-              <th className="ta-center">
-                <button className="po-th-link" onClick={() => toggleSort('oosDays')}>
-                  Days OOS <Caret k="oosDays" />
-                </button>
-              </th>
-              <th className="ta-center">Avg/day</th>
-              <th className="ta-center">Forecast</th>
-              <th className="ta-center">
-                <button className="po-th-link" onClick={() => toggleSort('suggestedQty')}>
-                  Suggested <Caret k="suggestedQty" />
-                </button>
-              </th>
-              <th className="ta-center">Order qty</th>
-              <th className="ta-center">Line total</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {!hasRows && (
-              <tr><td className="empty" colSpan={12}>Pick a supplier and click “Generate plan”…</td></tr>
-            )}
-
-            {sorted.map((r, idx) => {
-              const costNum = Number(r.costAmount ?? 0);
-              const lineTotal = costNum * Number(r.orderQty ?? 0);
-              return (
-                <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
-                  <td>{r.sku}</td>
-                  <td>{r.title}</td>
-                  <td className="ta-center">{r.inventoryQuantity ?? 0}</td>
-                  <td className="ta-center">{costNum ? fmtGBP(costNum) : '—'}</td>
-                  <td className="ta-center">{r.sales30 ?? 0}</td>
-                  <td className="ta-center">{r.sales60 ?? 0}</td>
-                  <td className="ta-center">{r.oosDays ?? 0}</td>
-                  <td className="ta-center">{(r.avgDaily ?? 0).toFixed(2)}</td>
-                  <td className="ta-center">{Math.ceil(r.forecastQty ?? 0)}</td>
-                  <td className="ta-center">{r.suggestedQty ?? 0}</td>
-                  <td className="ta-center">
-                    <input
-                      type="number"
-                      className="po-qty"
-                      value={r.orderQty}
-                      min={0}
-                      onChange={(e) => {
-                        const v = Math.max(0, Number(e.target.value || 0));
-                        setItems(prev => prev.map(x => x.sku === r.sku ? { ...x, orderQty: v } : x));
-                      }}
-                    />
-                  </td>
-                  <td className="ta-center">{lineTotal ? fmtGBP(lineTotal) : '—'}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-
-        {hasRows && (
-          <div className="po-table-foot">
-            <div className="total">Grand total: {fmtGBP(grandTotal)}</div>
-          </div>
-        )}
-      </div>
-
-      {/* Scoped styles + global overrides to ensure full-width */}
+      {/* Styles: same look, numeric columns centered, header + table full-width */}
       <style jsx>{`
-        /* FULL-BLEED root that ignores any global max-width container */
-        .po-root{
-          width: 100vw;
-          max-width: 100vw;
-          margin-left: calc(50% - 50vw);
-          margin-right: calc(50% - 50vw);
-          padding: 24px;
-        }
+        .po-wrap { padding: 24px; }
 
-        .po-card {
-          border: 1px solid #e5e7eb; background: #fff; border-radius: 12px;
-          box-shadow: 0 1px 2px rgba(0,0,0,.04); margin-bottom: 14px;
-        }
+        .po-card { border: 1px solid #e5e7eb; background: #fff; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+        .po-grid { display: grid; grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 16px; padding: 16px; }
+        @media (min-width: 768px) { .po-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media (min-width: 1024px) { .po-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
-        .po-controls .po-grid {
-          display: grid; grid-template-columns: repeat(12, minmax(0, 1fr));
-          gap: 16px; padding: 16px;
-          align-items: end;
-        }
-        .po-field { grid-column: span 3 / span 3; display: flex; flex-direction: column; font-size: 14px; color: #374151; }
-        .po-field:nth-child(2){ grid-column: span 3 / span 3; }
-        .po-field:nth-child(3){ grid-column: span 3 / span 3; }
-        .po-field:nth-child(4){ grid-column: span 3 / span 3; }
-
+        .po-field { display: flex; flex-direction: column; font-size: 14px; color: #374151; }
         .po-field > span { font-weight: 500; }
-        .po-field input, .po-field select {
-          margin-top: 6px; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 10px;
-          background: #fff; color: #111827; outline: none;
-        }
+        .po-field input, .po-field select { margin-top: 6px; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 10px; background: #fff; color: #111827; outline: none; }
         .po-field small { margin-top: 6px; color: #6b7280; font-size: 11px; }
 
-        .po-actions { grid-column: 1 / -1; display:flex; align-items:center; gap: 10px; padding-top: 4px; }
-        .po-btn {
-          background:#111827; color:#fff; padding:8px 12px; border-radius:8px; border:1px solid #111827;
-          font-weight: 600; cursor:pointer;
-        }
+        .po-actions { display:flex; align-items:center; gap: 10px; border-top: 1px solid #e5e7eb; padding: 10px 12px; background: #fafafa; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
+        .po-btn { background:#111827; color:#fff; padding:8px 12px; border-radius:8px; border:1px solid #111827; font-weight: 600; cursor:pointer; }
         .po-btn:hover { background:#000; border-color:#000; }
         .po-btn:disabled { opacity:.5; cursor:not-allowed; }
-        .po-btn--secondary { background:#fff; color:#111827; border:1px solid #d1d5db; }
-        .po-btn--secondary:hover { background:#f9fafb; }
+        .po-btn.po-btn--secondary { background:#fff; color:#111827; border:1px solid #d1d5db; }
+        .po-btn.po-btn--secondary:hover { background:#f9fafb; }
         .po-status { font-size:12px; color:#6b7280; margin-left: 8px; }
 
-        .po-error {
-          background:#fef2f2; color:#991b1b; border:1px solid #fecaca;
-          padding:10px 12px; border-radius:8px; font-size:14px; margin-bottom: 12px;
-        }
+        .po-error { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:10px 12px; border-radius:8px; font-size:14px; margin-top: 12px; }
 
-        .po-table-wrap {
-          background:#fff; border:1px solid #e5e7eb; border-radius:12px;
-          box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow:hidden;
-        }
+        /* full-bleed sections that ignore any global container width */
+        .po-bleed { position: relative; left: 50%; right: 50%; margin-left: -50vw; margin-right: -50vw; width: 100vw; padding: 0 24px; }
+
+        .po-table-wrap { background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow:hidden; margin-top: 12px; }
         .po-table { width:100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
-        .po-table thead th {
-          position: sticky; top: 0; z-index: 5;
-          background: #f9fafb; color:#374151; text-align:left; padding:12px; font-weight:600;
-          border-bottom:1px solid #e5e7eb;
-        }
-        .po-th-link { all: unset; cursor: pointer; color:#374151; font-weight:600; }
+        .po-table thead th { position: sticky; top: 0; z-index: 5; background: #f9fafb; color:#374151; text-align:left; padding:12px; font-weight:600; border-bottom:1px solid #e5e7eb; }
+        /* ensure numeric headers center even if globals left-align th */
+        .po-table thead th.ta-center { text-align: center; }
+
+        .po-th-link { all: unset; cursor: pointer; color:#374151; font-weight:600; display:inline-block; width:100%; text-align: inherit; }
         .po-th-link:hover { text-decoration: underline; }
 
-        .po-table tbody td { padding:12px; color:#111827; border-bottom:1px solid #f3f4f6; vertical-align: middle; }
+        .po-table tbody td { padding:12px; color:#111827; border-bottom:1px solid #eef0f2; vertical-align: middle; }
         .po-table tbody tr.alt td { background:#fafafa; }
 
         .ta-center { text-align: center; }
+        .po-qty { width: 92px; padding: 8px 10px; text-align: center; border:1px solid #d1d5db; border-radius:8px; background:#fff; color:#111827; outline:none; }
 
-        .po-table .empty { padding: 16px; color:#6b7280; }
-
-        .po-qty {
-          width: 88px; padding: 8px 10px; text-align: center; border:1px solid #d1d5db; border-radius:8px;
-          background:#fff; color:#111827; outline:none;
-        }
-        .po-qty:focus { box-shadow: 0 0 0 2px #9ca3af55; }
-
-        .po-table-foot {
-          display:flex; align-items:center; justify-content:flex-end;
-          padding: 10px 12px; background:#fafafa; border-top:1px solid #e5e7eb; font-size:14px;
-        }
+        .po-table-foot { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; background:#fafafa; border-top:1px solid #e5e7eb; font-size:14px; }
+        .po-table-foot .note { color:#6b7280; }
         .po-table-foot .total { font-weight:600; color:#111827; }
       `}</style>
 
+      {/* belt-and-braces: neutralize common global max-width classes inside this page */}
       <style jsx global>{`
-        /* Neutralize app-level container caps on this page only */
-        .po-root .container,
-        .po-root .content,
-        .po-root .wrap,
-        .po-root [class*="max-w"] {
+        .po-wrap .container,
+        .po-wrap [class*="container"],
+        .po-wrap [class*="max-w"] {
           max-width: none !important;
-          padding-left: 0 !important;
-          padding-right: 0 !important;
         }
       `}</style>
     </div>
