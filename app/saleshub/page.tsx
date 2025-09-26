@@ -46,10 +46,16 @@ export default function SalesHubPage() {
           <div className="action-sub">Planner &amp; saved plans</div>
         </Link>
 
-        {/* NEW: Calendar tile */}
+        {/* Calendar */}
         <Link href="/saleshub/calendar" className="action-tile">
           <div className="action-title">Calendar</div>
           <div className="action-sub">Follow-up actions</div>
+        </Link>
+
+        {/* Education (moved from Home) */}
+        <Link href="/education" className="action-tile">
+          <div className="action-title">Education</div>
+          <div className="action-sub">Training, resources &amp; events</div>
         </Link>
       </section>
 
