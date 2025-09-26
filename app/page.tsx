@@ -9,12 +9,10 @@ export default async function Home() {
 
   // Decide which tiles to show (adjust if you want stricter gating)
   const canSeeSalesHub = true;              // everyone
-  const canSeeReports = true;               // everyone (set to role !== "VIEWER" if you want)
+  const canSeeReports = true;               // everyone
   const canSeeMarketing = true;             // tweak to roles if needed
-  const canSeeEducation = true;             // tweak to roles if needed
 
-  // NEW: Purchase Ordering tile (leave open to all for now; tighten if needed)
-  // e.g. restrict with: const canSeePurchaseOrdering = role === "ADMIN" || role === "MANAGER";
+  // Purchase Ordering tile (leave open to all for now; tighten if needed)
   const canSeePurchaseOrdering = true;
 
   return (
@@ -39,7 +37,6 @@ export default async function Home() {
           </Link>
         )}
 
-        {/* NEW: Purchase Ordering */}
         {canSeePurchaseOrdering && (
           <Link href="/purchase-ordering" className="action-tile">
             <div className="action-title">Purchase Ordering</div>
@@ -47,7 +44,6 @@ export default async function Home() {
           </Link>
         )}
 
-        {/* NEW: Marketing */}
         {canSeeMarketing && (
           <Link href="/marketing" className="action-tile">
             <div className="action-title">Marketing</div>
@@ -55,13 +51,7 @@ export default async function Home() {
           </Link>
         )}
 
-        {/* NEW: Education */}
-        {canSeeEducation && (
-          <Link href="/education" className="action-tile">
-            <div className="action-title">Education</div>
-            <div className="action-sub">Training, resources &amp; events</div>
-          </Link>
-        )}
+        {/* Education tile intentionally moved into /saleshub */}
       </section>
     </div>
   );
