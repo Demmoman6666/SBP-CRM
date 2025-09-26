@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 type Supplier = { id: string; name: string };
-type Location = { id: string; name: string; tag?: string | null };
+type Location  = { id: string; name: string; tag?: string | null };
 
 type ItemRow = {
   sku: string;
@@ -15,17 +15,25 @@ type ItemRow = {
   costAmount?: number;          // unit cost
   priceAmount?: number | null;
 
-  sales30?: number;
-  sales60?: number;
+  sales30?: number;             // units in last 30d
+  sales60?: number;             // units in last 60d
+  oosDays?: number;             // days out of stock over lookback
 
-  avgDaily?: number;
-  forecastQty?: number;
-  suggestedQty?: number;
+  avgDaily?: number;            // consumption (units/day)
+  forecastQty?: number;         // avgDaily * daysOfStock
+  suggestedQty?: number;        // ceil(forecast - onHand)
+
   orderQty: number;
 };
 
-type SortKey = 'sku' | 'title' | 'sales30' | 'sales60' | 'suggestedQty';
-type SortDir = 'asc' | 'desc';
+type SortKey = 'sku'|'title'|'sales30'|'sales60'|'oosDays'|'suggestedQty';
+type SortDir = 'asc'|'desc';
+
+function toNum(v: any): number {
+  if (v == null) return 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
 export default function PurchaseOrderingPage() {
   // dropdown data
@@ -33,20 +41,19 @@ export default function PurchaseOrderingPage() {
   const [locations, setLocations] = useState<Location[]>([]);
 
   // selections / controls
-  const [supplierId, setSupplierId] = useState<string>('');
-  const [locationId, setLocationId] = useState<string>('');
+  const [supplierId, setSupplierId]   = useState<string>('');
+  const [locationId, setLocationId]   = useState<string>('');
   const [daysOfStock, setDaysOfStock] = useState<number>(14);
   const [lookbackDays, setLookbackDays] = useState<number>(60);
-  const [includePaidFallback, setIncludePaidFallback] = useState<boolean>(true);
 
   // ui state
   const [loading, setLoading] = useState(false);
-  const [items, setItems] = useState<ItemRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>('');
+  const [items, setItems]     = useState<ItemRow[]>([]);
+  const [error, setError]     = useState<string | null>(null);
+  const [status, setStatus]   = useState<string>('');
 
   // sorting
-  const [sortBy, setSortBy] = useState<SortKey>('sku');
+  const [sortBy, setSortBy]   = useState<SortKey>('sku');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const toggleSort = (k: SortKey) => {
     if (sortBy === k) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
@@ -55,29 +62,31 @@ export default function PurchaseOrderingPage() {
   const Caret = ({ k }: { k: SortKey }) =>
     sortBy === k ? <span className="ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
 
-  // helpers
   const fmt = (n: number | null | undefined) => {
     const v = Number(n ?? 0);
     return Number.isFinite(v) ? v.toFixed(2) : '0.00';
   };
 
-  function nearestBucketRate(row: ItemRow, lbDays: number): number {
-    const d30 = typeof row.sales30 === 'number' ? row.sales30! : undefined;
-    const d60 = typeof row.sales60 === 'number' ? row.sales60! : undefined;
-    if (d30 == null && d60 == null) return 0;
-    const use60 = lbDays >= 45;
-    if (use60 && d60 != null) return d60 / 60;
-    if (!use60 && d30 != null) return d30 / 30;
-    if (d60 != null) return d60 / 60;
-    if (d30 != null) return d30 / 30;
-    return 0;
+  // avg/day: use custom effective window (lookback minus OOS days)
+  function chooseSalesTotal(row: ItemRow, lbDays: number): number {
+    if (lbDays >= 45) {
+      if (typeof row.sales60 === 'number') return row.sales60!;
+      if (typeof row.sales30 === 'number') return row.sales30! * 2;
+      return 0;
+    } else {
+      if (typeof row.sales30 === 'number') return row.sales30!;
+      if (typeof row.sales60 === 'number') return row.sales60! / 2;
+      return 0;
+    }
   }
-
   function recalcDerived(rows: ItemRow[], lbDays: number, horizon: number): ItemRow[] {
     return rows.map(r => {
-      const avg = nearestBucketRate(r, lbDays);
+      const total = chooseSalesTotal(r, lbDays);
+      const effDays = Math.max(1, lbDays - Math.max(0, toNum(r.oosDays))); // avoid div/0
+      const avg = total / effDays;
+
       const forecast = avg * Math.max(0, horizon || 0);
-      const onHand = Number(r.inventoryQuantity ?? 0);
+      const onHand = toNum(r.inventoryQuantity);
       const suggested = Math.max(0, Math.ceil(forecast - onHand));
       return { ...r, avgDaily: avg, forecastQty: forecast, suggestedQty: suggested };
     });
@@ -106,7 +115,7 @@ export default function PurchaseOrderingPage() {
     })();
   }, []);
 
-  // fetch items + sales for a supplier
+  // fetch items + sales + oos for a supplier
   async function fetchPlan(forSupplierId: string) {
     if (!forSupplierId) { setError('Please choose a supplier'); return; }
     setLoading(true);
@@ -115,7 +124,7 @@ export default function PurchaseOrderingPage() {
     setItems([]);
 
     try {
-      // Items (cost, stock).
+      // 1) Items (variants with SKUs)
       const itsRes = await fetch(
         `/api/shopify/items-by-supplier?supplierId=${encodeURIComponent(forSupplierId)}&limit=800` +
         (locationId ? `&locationId=${encodeURIComponent(locationId)}` : ''),
@@ -124,53 +133,63 @@ export default function PurchaseOrderingPage() {
       const itsJson = await itsRes.json().catch(() => ({ ok: false }));
       if (!itsJson?.ok) throw new Error(itsJson?.error || 'Failed to fetch items');
 
-      const baseRows: ItemRow[] = (itsJson.items as any[]).map((it: any) => {
+      const base: ItemRow[] = (itsJson.items as any[]).map((it: any) => {
         const cleanTitle = String(it.title || '').replace(/\s+—\s+Default Title$/i, '');
         return {
           sku: it.sku,
           title: cleanTitle,
           variantId: it.variantId || null,
-          inventoryQuantity: Number(it.inventoryQuantity ?? 0),
-          costAmount: typeof it.costAmount === 'number' ? it.costAmount : Number(it.costAmount ?? 0),
-          priceAmount: it.priceAmount == null ? null : Number(it.priceAmount),
+          inventoryQuantity: toNum(it.inventoryQuantity),
+          costAmount: toNum(it.costAmount),
+          priceAmount: it.priceAmount == null ? null : toNum(it.priceAmount),
           orderQty: 0,
         };
       });
-      if (!baseRows.length) { setItems([]); setStatus('No items found for this supplier.'); return; }
 
-      setItems(baseRows);
-      setStatus(`Loaded ${baseRows.length} item(s). Getting sales…`);
+      if (!base.length) { setItems([]); setStatus('No items found for this supplier.'); return; }
 
-      // Sales (30/60)
-      const skus = baseRows.map(r => r.sku).filter(Boolean).slice(0, 800);
-      if (skus.length) {
-        const salesRes = await fetch('/api/shopify/sales-by-sku', {
+      setItems(base);
+      setStatus(`Loaded ${base.length} item(s). Getting sales…`);
+
+      // 2) Sales 30/60
+      const skus = base.map(r => r.sku).filter(Boolean).slice(0, 800);
+      const salesRes = await fetch('/api/shopify/sales-by-sku', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          skus,
+          locationId: locationId || undefined,
+          days30: true,
+          days60: true,
+          // backend defaults: include paid/unpaid & any fulfillment state; drafts excluded
+        }),
+      });
+      const salesJson = await salesRes.json().catch(() => ({ ok: false }));
+      if (!salesJson?.ok) throw new Error(salesJson?.error || 'Failed to fetch sales');
+
+      let merged = base.map(r => ({
+        ...r,
+        sales30: toNum(salesJson.sales?.[r.sku]),
+        sales60: toNum(salesJson.sales60?.[r.sku]),
+      }));
+
+      // 3) Days OOS (snapshots preferred; orders/fulfillments fallback is inside API)
+      try {
+        const oosRes = await fetch('/api/shopify/oos-days-by-sku', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            skus,
-            locationId: locationId || undefined,
-            days30: true,
-            days60: true,
-            countPaidIfNoFulfillments: includePaidFallback,
-          }),
+          body: JSON.stringify({ skus, days: lookbackDays, locationId: locationId || undefined }),
         });
-        const salesJson = await salesRes.json().catch(() => ({ ok: false }));
-        if (!salesJson?.ok) throw new Error(salesJson?.error || 'Failed to fetch sales');
-
-        const bySku: Record<string, { d30?: number; d60?: number }> = salesJson.sales || {};
-        const merged = baseRows.map(r => ({
-          ...r,
-          sales30: bySku[r.sku]?.d30 ?? 0,
-          sales60: bySku[r.sku]?.d60 ?? 0,
-        }));
-
-        setItems(recalcDerived(merged, lookbackDays, daysOfStock));
-        setStatus(`ShopifyOrders`);
-      } else {
-        setItems(recalcDerived(baseRows, lookbackDays, daysOfStock));
-        setStatus('No SKUs found to compute sales.');
+        const oosJson = await oosRes.json().catch(() => ({ ok: false }));
+        if (oosJson?.ok && oosJson.days) {
+          merged = merged.map(r => ({ ...r, oosDays: toNum(oosJson.days[r.sku]) }));
+          setStatus(`${salesJson.source || 'ShopifyOrders'} (${lookbackDays}d) + OOS:${oosJson.source}`);
+        }
+      } catch {
+        // optional
       }
+
+      setItems(recalcDerived(merged, lookbackDays, daysOfStock));
     } catch (e: any) {
       setError(String(e?.message ?? e));
       setStatus('');
@@ -179,10 +198,8 @@ export default function PurchaseOrderingPage() {
     }
   }
 
-  // auto refresh on selections
-  useEffect(() => { if (supplierId) fetchPlan(supplierId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [supplierId, locationId, includePaidFallback]);
-
-  // recompute suggested on horizon/lookback change
+  // refresh on key changes
+  useEffect(() => { if (supplierId) fetchPlan(supplierId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [supplierId, locationId]);
   useEffect(() => { setItems(prev => recalcDerived(prev, lookbackDays, daysOfStock)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [daysOfStock, lookbackDays]);
 
   // sorting
@@ -199,14 +216,17 @@ export default function PurchaseOrderingPage() {
   }, [items, sortBy, sortDir]);
 
   const hasRows = items.length > 0;
-  const grandTotal = useMemo(() => items.reduce((acc, r) => acc + (Number(r.costAmount ?? 0) * Number(r.orderQty ?? 0)), 0), [items]);
+  const grandTotal = useMemo(
+    () => items.reduce((acc, r) => acc + toNum(r.costAmount) * toNum(r.orderQty), 0),
+    [items]
+  );
 
-  function applySuggestedAll() {
+  const applySuggestedAll = () =>
     setItems(prev => prev.map(r => ({ ...r, orderQty: Math.max(0, Math.ceil(r.suggestedQty ?? 0)) })));
-  }
 
   return (
     <div className="po-wrap">
+      {/* Header controls — full width */}
       <div className="po-card">
         <div className="po-grid">
           <label className="po-field">
@@ -225,7 +245,7 @@ export default function PurchaseOrderingPage() {
               value={lookbackDays}
               onChange={(e) => setLookbackDays(Math.max(7, Number(e.target.value || 0)))}
             />
-            <small>Uses the closest of 30/60d sales to estimate avg/day.</small>
+            <small>Uses the closest of 30/60d sales to estimate avg/day (adjusted for OOS).</small>
           </label>
 
           <label className="po-field">
@@ -243,20 +263,11 @@ export default function PurchaseOrderingPage() {
               {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </label>
-
-          <label className="po-checkbox">
-            <input
-              type="checkbox"
-              checked={includePaidFallback}
-              onChange={(e) => setIncludePaidFallback(e.target.checked)}
-            />
-            <span>Count paid orders if no fulfillments <em>(when “All” locations)</em></span>
-          </label>
         </div>
 
         <div className="po-actions">
           <button className="po-btn" disabled={!supplierId || loading} onClick={() => fetchPlan(supplierId)}>
-            {loading ? "Loading…" : "Generate plan"}
+            {loading ? 'Loading…' : 'Generate plan'}
           </button>
           <button className="po-btn po-btn--secondary" disabled={!hasRows} onClick={applySuggestedAll}>
             Auto-fill with Suggested
@@ -267,6 +278,7 @@ export default function PurchaseOrderingPage() {
 
       {error && <div className="po-error">{error}</div>}
 
+      {/* Table — full width, zebra rows, center-aligned numerics */}
       <div className="po-table-wrap">
         <table className="po-table">
           <thead>
@@ -281,50 +293,55 @@ export default function PurchaseOrderingPage() {
                   Product <Caret k="title" />
                 </button>
               </th>
-              <th className="ta-right">In stock</th>
-              <th className="ta-right">Cost</th>
-              <th className="ta-right">
+              <th className="tc">In stock</th>
+              <th className="tc">Cost</th>
+              <th className="tc">
                 <button className="po-th-link" onClick={() => toggleSort('sales30')}>
                   30d sales <Caret k="sales30" />
                 </button>
               </th>
-              <th className="ta-right">
+              <th className="tc">
                 <button className="po-th-link" onClick={() => toggleSort('sales60')}>
                   60d sales <Caret k="sales60" />
                 </button>
               </th>
-              <th className="ta-right">Avg/day</th>
-              <th className="ta-right">Forecast</th>
-              <th className="ta-right">
+              <th className="tc">
+                <button className="po-th-link" onClick={() => toggleSort('oosDays')}>
+                  Days OOS <Caret k="oosDays" />
+                </button>
+              </th>
+              <th className="tc">Avg/day</th>
+              <th className="tc">Forecast</th>
+              <th className="tc">
                 <button className="po-th-link" onClick={() => toggleSort('suggestedQty')}>
                   Suggested <Caret k="suggestedQty" />
                 </button>
               </th>
-              <th className="ta-right">Order qty</th>
-              <th className="ta-right">Line total</th>
+              <th className="tc">Order qty</th>
+              <th className="tc">Line total</th>
             </tr>
           </thead>
-
           <tbody>
             {!hasRows && (
-              <tr><td className="empty" colSpan={11}>Pick a supplier and click “Generate plan”…</td></tr>
+              <tr><td className="empty" colSpan={12}>Pick a supplier and click “Generate plan”…</td></tr>
             )}
 
-            {sorted.map((r, idx) => {
-              const costNum = Number(r.costAmount ?? 0);
-              const lineTotal = costNum * Number(r.orderQty ?? 0);
+            {sorted.map((r, i) => {
+              const cost = toNum(r.costAmount);
+              const lineTotal = cost * toNum(r.orderQty);
               return (
-                <tr key={r.sku} className={idx % 2 ? 'alt' : undefined}>
+                <tr key={r.sku} className={i % 2 ? 'alt' : undefined}>
                   <td>{r.sku}</td>
                   <td>{r.title}</td>
-                  <td className="ta-right">{r.inventoryQuantity ?? 0}</td>
-                  <td className="ta-right">{costNum ? `£${fmt(costNum)}` : '—'}</td>
-                  <td className="ta-right">{r.sales30 ?? 0}</td>
-                  <td className="ta-right">{r.sales60 ?? 0}</td>
-                  <td className="ta-right">{(r.avgDaily ?? 0).toFixed(2)}</td>
-                  <td className="ta-right">{Math.ceil(r.forecastQty ?? 0)}</td>
-                  <td className="ta-right">{r.suggestedQty ?? 0}</td>
-                  <td className="ta-right">
+                  <td className="tc">{toNum(r.inventoryQuantity)}</td>
+                  <td className="tc">{cost ? `£${fmt(cost)}` : '—'}</td>
+                  <td className="tc">{toNum(r.sales30)}</td>
+                  <td className="tc">{toNum(r.sales60)}</td>
+                  <td className="tc">{toNum(r.oosDays)}</td>
+                  <td className="tc">{(r.avgDaily ?? 0).toFixed(2)}</td>
+                  <td className="tc">{Math.ceil(r.forecastQty ?? 0)}</td>
+                  <td className="tc">{toNum(r.suggestedQty)}</td>
+                  <td className="tc">
                     <input
                       type="number"
                       className="po-qty"
@@ -336,7 +353,7 @@ export default function PurchaseOrderingPage() {
                       }}
                     />
                   </td>
-                  <td className="ta-right">{lineTotal ? `£${fmt(lineTotal)}` : '—'}</td>
+                  <td className="tc">{lineTotal ? `£${fmt(lineTotal)}` : '—'}</td>
                 </tr>
               );
             })}
@@ -346,17 +363,16 @@ export default function PurchaseOrderingPage() {
         {hasRows && (
           <div className="po-table-foot">
             <div className="note">
-              Sales are from Shopify <em>Fulfillments</em>. If enabled, paid orders are counted when there are no
-              fulfillments (only when “All” locations is selected).
+              Sales counted from Shopify fulfillments; backend includes paid & unpaid orders by default (no drafts).
             </div>
             <div className="total">Grand total: £{fmt(grandTotal)}</div>
           </div>
         )}
       </div>
 
-      {/* Scoped styles (header + table now full-width) */}
+      {/* Scoped styles; force full-page width, keep existing visual style */}
       <style jsx>{`
-        .po-wrap { padding: 24px; width: 100%; max-width: none; margin: 0; }
+        .po-wrap { width: 100%; max-width: none; padding: 24px; margin: 0; }
         .po-card {
           width: 100%;
           border: 1px solid #e5e7eb; background: #fff; border-radius: 12px;
@@ -366,7 +382,7 @@ export default function PurchaseOrderingPage() {
           display: grid; grid-template-columns: repeat(1, minmax(0, 1fr));
           gap: 16px; padding: 16px;
         }
-        @media (min-width: 768px) { .po-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media (min-width: 768px)  { .po-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
         @media (min-width: 1024px) { .po-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 
         .po-field { display: flex; flex-direction: column; font-size: 14px; color: #374151; }
@@ -377,9 +393,6 @@ export default function PurchaseOrderingPage() {
         }
         .po-field input:focus, .po-field select:focus { box-shadow: 0 0 0 2px #9ca3af55; }
         .po-field small { margin-top: 6px; color: #6b7280; font-size: 11px; }
-
-        .po-checkbox { display:flex; align-items:center; gap: 10px; padding: 0 2px; color:#374151; font-size: 14px; }
-        .po-checkbox em { color:#6b7280; font-style: normal; }
 
         .po-actions {
           display:flex; align-items:center; gap: 10px;
@@ -399,32 +412,29 @@ export default function PurchaseOrderingPage() {
 
         .po-error {
           background:#fef2f2; color:#991b1b; border:1px solid #fecaca;
-          padding:10px 12px; border-radius:8px; font-size:14px;
+          padding:10px 12px; border-radius:8px; font-size:14px; margin-top: 8px;
         }
 
         .po-table-wrap {
-          width: 100%;
-          background:#fff; border:1px solid #e5e7eb; border-radius:12px;
-          box-shadow: 0 1px 2px rgba(0,0,0,.04); overflow:hidden; margin-top: 8px;
+          width: 100%; background:#fff; border:1px solid #e5e7eb; border-radius:12px;
+          box-shadow:0 1px 2px rgba(0,0,0,.04); overflow:hidden; margin-top: 12px;
         }
-        .po-table { width:100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+        .po-table { width:100%; border-collapse: separate; border-spacing:0; table-layout: fixed; }
         .po-table thead th {
           position: sticky; top: 0; z-index: 5;
-          background: #f9fafb; color:#374151; text-align:left; padding:12px; font-weight:600;
+          background:#f9fafb; color:#374151; text-align:left; padding:12px; font-weight:600;
           border-bottom:1px solid #e5e7eb;
         }
-        .po-th-link {
-          all: unset; cursor: pointer; color:#374151; font-weight:600;
-        }
+        .po-th-link { all: unset; cursor: pointer; color:#374151; font-weight:600; }
         .po-th-link:hover { text-decoration: underline; }
 
         .po-table tbody td { padding:12px; color:#111827; border-bottom:1px solid #f3f4f6; }
         .po-table tbody tr.alt td { background:#fafafa; }
-        .po-table td.ta-right, .po-table th.ta-right { text-align:right; }
-        .po-table .empty { padding: 16px; color:#6b7280; }
+        .tc { text-align: center; }
+        .po-table .empty { padding: 16px; color:#6b7280; text-align: center; }
 
         .po-qty {
-          width: 92px; padding: 8px 10px; text-align: right; border:1px solid #d1d5db; border-radius:8px;
+          width: 92px; padding: 8px 10px; text-align: center; border:1px solid #d1d5db; border-radius:8px;
           background:#fff; color:#111827; outline:none;
         }
         .po-qty:focus { box-shadow: 0 0 0 2px #9ca3af55; }
