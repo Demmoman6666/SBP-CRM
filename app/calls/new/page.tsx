@@ -47,7 +47,13 @@ export default function NewCallPage() {
   const [reps, setReps] = useState<Rep[]>([]);
   useEffect(() => {
     fetch("/api/sales-reps")
-      .then((r) => r.json())
+      .then(async (r) => {
+        const j = await r.json().catch(() => null);
+        // Accept either an array or { ok, reps: [...] }
+        if (Array.isArray(j)) return j as Rep[];
+        if (j && Array.isArray(j.reps)) return j.reps as Rep[];
+        return [] as Rep[];
+      })
       .then(setReps)
       .catch(() => setReps([]));
   }, []);
@@ -58,12 +64,18 @@ export default function NewCallPage() {
   useEffect(() => {
     const norm = (x: any): BrandOpt => ({ id: String(x.id), name: String(x.name) });
     Promise.all([
-      fetch("/api/settings/visible-stocked-brands", { cache: "no-store" }).then((r) => r.json()).catch(() => []),
-      fetch("/api/settings/visible-competitor-brands", { cache: "no-store" }).then((r) => r.json()).catch(() => []),
+      fetch("/api/settings/visible-stocked-brands", { cache: "no-store" })
+        .then((r) => r.json())
+        .catch(() => []),
+      fetch("/api/settings/visible-competitor-brands", { cache: "no-store" })
+        .then((r) => r.json())
+        .catch(() => []),
     ])
       .then(([s, b]) => {
-        setStockedBrands(Array.isArray(s) ? s.map(norm) : []);
-        setCompetitorBrands(Array.isArray(b) ? b.map(norm) : []);
+        const ss = Array.isArray(s) ? s : Array.isArray((s as any)?.brands) ? (s as any).brands : [];
+        const bb = Array.isArray(b) ? b : Array.isArray((b as any)?.brands) ? (b as any).brands : [];
+        setStockedBrands(ss.map(norm));
+        setCompetitorBrands(bb.map(norm));
       })
       .catch(() => {
         setStockedBrands([]);
@@ -104,8 +116,8 @@ export default function NewCallPage() {
     const t = setTimeout(async () => {
       try {
         const res = await fetch(`/api/customers?search=${encodeURIComponent(q)}&take=8`, { signal: ac.signal });
-        const j = await res.json();
-        setCustHits(Array.isArray(j) ? j : []);
+        const j = await res.json().catch(() => null);
+        setCustHits(Array.isArray(j) ? (j as CustomerHit[]) : []);
         setCustOpen(true);
       } catch {
         setCustHits([]);
@@ -242,9 +254,9 @@ export default function NewCallPage() {
     try {
       setSubmitting(true);
       const res = await fetch("/api/calls", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Failed to save call");
-      if (json.redirectTo) window.location.href = json.redirectTo;
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((json as any)?.error || "Failed to save call");
+      if ((json as any).redirectTo) window.location.href = (json as any).redirectTo;
       else window.location.href = "/";
     } catch (err: any) {
       setError(err?.message || "Failed to save call");
