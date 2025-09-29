@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 export const dynamic = 'force-dynamic';
 
-// ---- TS: let the compiler know about the Google Maps object & our loader promise
+// TS globals for Google maps + our loader promise
 declare global {
   interface Window {
     google?: any;
@@ -13,7 +13,6 @@ declare global {
   }
 }
 
-// Simple loader that injects the Google Maps script once per page
 function loadGoogleMaps(apiKey: string): Promise<void> {
   if (typeof window === 'undefined') return Promise.resolve();
   if (window.google?.maps) return Promise.resolve();
@@ -30,6 +29,20 @@ function loadGoogleMaps(apiKey: string): Promise<void> {
   });
 
   return window.__gmapsLoader;
+}
+
+// ---- NEW: safe JSON fetch helper
+async function fetchJson(url: string) {
+  const res = await fetch(url, { cache: 'no-store' });
+  const ct = res.headers.get('content-type') || '';
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Request failed ${res.status}: ${text.slice(0, 200)}`);
+  }
+  if (!ct.includes('application/json')) {
+    throw new Error(`Expected JSON, got: ${text.slice(0, 200)}`);
+  }
+  return JSON.parse(text);
 }
 
 type Rep = { id: string; name: string };
@@ -60,16 +73,15 @@ export default function CoverageMapPage() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch('/api/sales-reps', { cache: 'no-store' });
-        const data = await r.json();
+        const data = await fetchJson('/api/sales-reps');
         if (Array.isArray(data)) setReps(data);
       } catch (e: any) {
-        console.error(e);
+        setError(String(e?.message ?? e));
       }
     })();
   }, []);
 
-  // Load call points for selected rep (or all)
+  // Load call points
   useEffect(() => {
     (async () => {
       setError(null);
@@ -77,8 +89,7 @@ export default function CoverageMapPage() {
       try {
         const qs = new URLSearchParams();
         if (repId) qs.set('repId', repId);
-        const r = await fetch(`/api/calls/coverage?${qs.toString()}`, { cache: 'no-store' });
-        const j = await r.json();
+        const j = await fetchJson(`/api/calls/coverage?${qs.toString()}`);
         if (!j?.ok) throw new Error(j?.error || 'Failed to load coverage data');
         setPoints(Array.isArray(j.points) ? j.points : []);
       } catch (e: any) {
@@ -89,7 +100,7 @@ export default function CoverageMapPage() {
     })();
   }, [repId]);
 
-  // Init map once & update markers when points change
+  // Init map & place markers
   useEffect(() => {
     if (!apiKey) {
       setError('Missing NEXT_PUBLIC_GOOGLE_MAPS_API_KEY');
@@ -103,10 +114,9 @@ export default function CoverageMapPage() {
         await loadGoogleMaps(apiKey);
         if (cancelled) return;
 
-        // Create the map if needed
         if (!mapObj.current && mapRef.current && window.google?.maps) {
           mapObj.current = new window.google.maps.Map(mapRef.current, {
-            center: { lat: 54.5, lng: -2.5 }, // UK-ish center
+            center: { lat: 54.5, lng: -2.5 },
             zoom: 5,
             mapTypeControl: false,
             streetViewControl: false,
@@ -114,13 +124,12 @@ export default function CoverageMapPage() {
           });
         }
 
-        // Clear old markers
+        // clear old markers
         markersRef.current.forEach(m => m.setMap(null));
         markersRef.current = [];
 
         if (!mapObj.current || !window.google?.maps) return;
 
-        // Add markers
         const bounds = new window.google.maps.LatLngBounds();
         for (const p of points) {
           const pos = { lat: Number(p.latitude), lng: Number(p.longitude) };
@@ -151,20 +160,14 @@ export default function CoverageMapPage() {
           mapObj.current.fitBounds(bounds);
         }
       } catch (e: any) {
-        console.error(e);
         setError(String(e?.message ?? e));
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [apiKey, points]);
 
-  const repOptions = useMemo(
-    () => [{ id: '', name: 'All reps' }, ...reps],
-    [reps]
-  );
+  const repOptions = useMemo(() => [{ id: '', name: 'All reps' }, ...reps], [reps]);
 
   return (
     <div className="grid" style={{ gap: 16 }}>
