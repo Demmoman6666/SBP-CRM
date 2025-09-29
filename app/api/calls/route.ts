@@ -2,7 +2,7 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createCalendarEvent } from "@/lib/google";
 import { getCurrentUser } from "@/lib/auth";
@@ -67,20 +67,32 @@ async function maybeCreateFollowUpEvent(saved: {
 }
 
 /* ---------------- helpers ---------------- */
-async function readBody(req: Request) {
-  const ct = (req.headers.get("content-type") || "").toLowerCase();
-  if (ct.includes("application/json")) return req.json();
-  if (ct.includes("multipart/form-data")) {
-    const fd = await req.formData();
-    return Object.fromEntries(fd.entries());
+/** Parse body defensively without throwing on missing headers.
+ *  We choose ONE parser path (to avoid consuming the stream twice). */
+async function readBody(req: Request | NextRequest) {
+  const ct =
+    ((req as any)?.headers?.get?.("content-type") as string | null | undefined)?.toLowerCase?.() ||
+    "";
+
+  try {
+    if (ct.includes("application/json")) {
+      return await req.json();
+    }
+    if (ct.includes("multipart/form-data")) {
+      const fd = await (req as any).formData?.();
+      if (fd) return Object.fromEntries(fd.entries());
+    }
+    if (ct.includes("application/x-www-form-urlencoded")) {
+      const text = await req.text();
+      return Object.fromEntries(new URLSearchParams(text));
+    }
+
+    // Content-Type missing/unknown: try JSON once, otherwise return empty object
+    try { return await req.json(); } catch { /* ignore */ }
+    return {};
+  } catch {
+    return {};
   }
-  if (ct.includes("application/x-www-form-urlencoded")) {
-    const text = await req.text();
-    return Object.fromEntries(new URLSearchParams(text));
-  }
-  try { return await req.json(); } catch {}
-  try { const text = await req.text(); return Object.fromEntries(new URLSearchParams(text)); } catch {}
-  return {};
 }
 
 const toBool = (v: unknown) => {
@@ -154,7 +166,7 @@ function toArr<T>(v: T | T[] | null | undefined): T[] {
 }
 
 /* --------------- POST /api/calls --------------- */
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
     const body: any = await readBody(req);
 
@@ -333,30 +345,31 @@ export async function POST(req: Request) {
 }
 
 /* --------------- GET /api/calls (filterable) --------------- */
-export async function GET(req: Request) {
-  // 🔒 Robustly construct URL so searchParams is always present
-  let url: URL;
-  try {
-    // In very rare cases req.url can be empty/undefined in some runtimes
-    const raw = (req as any)?.url;
-    url = typeof raw === "string" && raw ? new URL(raw) : new URL("http://local.invalid/");
-  } catch {
-    url = new URL("http://local.invalid/");
-  }
-  const searchParams = url.searchParams ?? new URLSearchParams();
+export async function GET(req: NextRequest) {
+  // Use NextRequest.nextUrl when available; fall back safely.
+  const sp =
+    (req as any)?.nextUrl?.searchParams ??
+    (() => {
+      try {
+        const raw = (req as any)?.url;
+        return new URL(typeof raw === "string" ? raw : "http://local.invalid/").searchParams;
+      } catch {
+        return new URLSearchParams();
+      }
+    })();
 
-  const from = parseDateStart(searchParams.get("from"));
-  const to   = parseDateEnd(searchParams.get("to"));
+  const from = parseDateStart(sp?.get?.("from") ?? null);
+  const to   = parseDateEnd(sp?.get?.("to") ?? null);
 
-  const callType   = searchParams.get("callType") || undefined;
-  const outcome    = searchParams.get("outcome") || undefined;
-  const staff      = searchParams.get("staff") || undefined;
-  const customerId = searchParams.get("customerId") || undefined;
+  const callType   = sp?.get?.("callType") ?? undefined;
+  const outcome    = sp?.get?.("outcome") ?? undefined;
+  const staff      = sp?.get?.("staff") ?? undefined;
+  const customerId = sp?.get?.("customerId") ?? undefined;
 
-  const stageParam  = searchParams.get("stage");
+  const stageParam  = sp?.get?.("stage") ?? null;
   const stageFilter = stageParam ? normalizeStage(stageParam) : null;
 
-  const limit = Math.min(Math.max(Number(searchParams.get("limit") || 100), 1), 200);
+  const limit = Math.min(Math.max(Number(sp?.get?.("limit") || 100), 1), 200);
 
   const where: any = { ...(customerId ? { customerId } : {}) };
   if (from || to) {
