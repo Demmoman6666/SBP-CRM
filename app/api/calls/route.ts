@@ -334,7 +334,16 @@ export async function POST(req: Request) {
 
 /* --------------- GET /api/calls (filterable) --------------- */
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+  // 🔒 Robustly construct URL so searchParams is always present
+  let url: URL;
+  try {
+    // In very rare cases req.url can be empty/undefined in some runtimes
+    const raw = (req as any)?.url;
+    url = typeof raw === "string" && raw ? new URL(raw) : new URL("http://local.invalid/");
+  } catch {
+    url = new URL("http://local.invalid/");
+  }
+  const searchParams = url.searchParams ?? new URLSearchParams();
 
   const from = parseDateStart(searchParams.get("from"));
   const to   = parseDateEnd(searchParams.get("to"));
