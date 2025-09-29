@@ -1,3 +1,4 @@
+// app/saleshub/coverage-map/page.tsx
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
@@ -6,6 +7,7 @@ declare global {
   interface Window {
     google?: any;
     __gmapsLoader?: Promise<void>;
+    __onGMapsReady?: () => void;
   }
 }
 
@@ -18,7 +20,7 @@ function loadGoogleMaps(apiKey: string) {
     const s = document.createElement('script');
     s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&callback=__onGMapsReady`;
     s.async = true;
-    (window as any).__onGMapsReady = () => resolve();
+    window.__onGMapsReady = () => resolve();
     s.onerror = (e) => reject(e);
     document.head.appendChild(s);
   });
@@ -26,8 +28,8 @@ function loadGoogleMaps(apiKey: string) {
 }
 
 type MarkerRow = {
-  lat: number;
-  lng: number;
+  lat: number | string;
+  lng: number | string;
   rep?: string | null;
   infoHtml?: string | null;
 };
@@ -43,7 +45,7 @@ export default function CoverageMapPage() {
 
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
-  // --- Load Google Maps
+  // Load Google Maps
   useEffect(() => {
     (async () => {
       try {
@@ -63,7 +65,7 @@ export default function CoverageMapPage() {
     })();
   }, [apiKey]);
 
-  // --- Load rep options (accept multiple API shapes)
+  // Load rep options (handle multiple API shapes)
   useEffect(() => {
     (async () => {
       try {
@@ -72,42 +74,38 @@ export default function CoverageMapPage() {
 
         let names: string[] = [];
         if (Array.isArray(data)) {
-          // e.g. [{id,name}] or ["Alice","Bob"]
-          if (typeof data[0] === 'string') {
-            names = data as string[];
-          } else {
-            names = (data as any[]).map((r) => r?.name).filter(Boolean);
-          }
+          names = typeof data[0] === 'string' ? (data as string[]) : (data as any[]).map((r) => r?.name);
         } else if (Array.isArray(data?.reps)) {
-          // e.g. { ok:true, reps: [...] }
-          if (typeof data.reps[0] === 'string') {
-            names = data.reps as string[];
-          } else {
-            names = (data.reps as any[]).map((r) => r?.name).filter(Boolean);
-          }
+          names = typeof data.reps[0] === 'string' ? (data.reps as string[]) : (data.reps as any[]).map((r) => r?.name);
         }
 
-        const dedup = Array.from(new Set(names.map((n) => n.trim()).filter(Boolean))).sort((a, b) =>
-          a.localeCompare(b, undefined, { sensitivity: 'base' })
+        const dedup = Array.from(new Set(names.map((n) => String(n || '').trim()).filter(Boolean))).sort((a, b) =>
+          a.localeCompare(b, undefined, { sensitivity: 'base' }),
         );
         setRepOptions(dedup);
       } catch (e) {
         console.error('Failed to load reps:', e);
-        setRepOptions([]); // fallback: empty list (All reps only)
+        setRepOptions([]);
       }
     })();
   }, []);
 
-  // --- Load markers for current filter
+  // Load markers for current filter
   async function loadMarkers(rep: string) {
     try {
       const qs = new URLSearchParams();
-      if (rep) qs.set('rep', rep);
+      if (rep) {
+        qs.set('rep', rep);   // current endpoint
+        qs.set('staff', rep); // compatibility with older endpoints
+      }
+      // Optional, but helps if backend supports time windows:
+      // qs.set('days', '365');
+
       const res = await fetch(`/api/saleshub/calls-geo?${qs.toString()}`, { cache: 'no-store' });
       const json = await res.json();
       const rows: MarkerRow[] = json?.rows ?? [];
 
-      // clear old markers
+      // clear old
       markersRef.current.forEach((m) => m.setMap(null));
       markersRef.current = [];
 
@@ -117,9 +115,12 @@ export default function CoverageMapPage() {
       const info = new window.google.maps.InfoWindow();
 
       for (const r of rows) {
-        if (typeof r.lat !== 'number' || typeof r.lng !== 'number') continue;
+        const lat = Number((r as any).lat);
+        const lng = Number((r as any).lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue; // ← robust coercion
+
         const marker = new window.google.maps.Marker({
-          position: { lat: r.lat, lng: r.lng },
+          position: { lat, lng },
           map: mapRef.current,
         });
         markersRef.current.push(marker);
@@ -127,17 +128,14 @@ export default function CoverageMapPage() {
 
         if (r.infoHtml) {
           marker.addListener('click', () => {
-            info.setContent(r.infoHtml as string);
+            info.setContent(String(r.infoHtml));
             info.open({ map: mapRef.current, anchor: marker });
           });
         }
       }
 
-      if (!rows.length) {
-        // keep current center/zoom
-      } else {
+      if (markersRef.current.length > 0) {
         mapRef.current.fitBounds(bounds);
-        // prevent over-zoom on single marker
         const listener = window.google.maps.event.addListenerOnce(mapRef.current, 'bounds_changed', () => {
           if (mapRef.current.getZoom() > 15) mapRef.current.setZoom(12);
         });
