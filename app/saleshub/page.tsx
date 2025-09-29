@@ -52,6 +52,12 @@ export default function SalesHubPage() {
           <div className="action-sub">Follow-up actions</div>
         </Link>
 
+        {/* Coverage Map (new) */}
+        <Link href="/saleshub/coverage-map" className="action-tile">
+          <div className="action-title">Coverage Map</div>
+          <div className="action-sub">Filter by rep &amp; view pins</div>
+        </Link>
+
         {/* Education (moved from Home) */}
         <Link href="/education" className="action-tile">
           <div className="action-title">Education</div>
