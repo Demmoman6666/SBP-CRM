@@ -14,7 +14,19 @@ export async function GET() {
     });
     const namesFromTbl = repsTbl.map(r => r.name).filter(Boolean);
 
-    // 2) Fallback A: distinct staff names from CallLog
+    // 2) Users with rep-like roles (active people who can log calls)
+    const userRows = await prisma.user.findMany({
+      where: {
+        isActive: true,
+        role: { in: ["REP", "MANAGER", "ADMIN"] },
+        fullName: { not: null },
+      },
+      select: { fullName: true },
+      orderBy: { fullName: "asc" },
+    });
+    const namesFromUsers = userRows.map(u => u.fullName as string).filter(Boolean);
+
+    // 3) Distinct staff names from CallLog
     const staffRows = await prisma.callLog.findMany({
       where: { staff: { not: null } },
       select: { staff: true },
@@ -22,7 +34,7 @@ export async function GET() {
     });
     const namesFromLogs = staffRows.map(s => s.staff as string).filter(Boolean);
 
-    // 3) Fallback B: distinct salesRep from Customer
+    // 4) Distinct salesRep from Customer
     const custRows = await prisma.customer.findMany({
       where: { salesRep: { not: null } },
       select: { salesRep: true },
@@ -30,17 +42,32 @@ export async function GET() {
     });
     const namesFromCustomers = custRows.map(c => c.salesRep as string).filter(Boolean);
 
-    // Dedupe + sort nicely
-    const reps = Array.from(
-      new Set([...namesFromTbl, ...namesFromLogs, ...namesFromCustomers])
-    )
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b));
+    // Normalize, de-dupe (case-insensitive), and sort
+    const norm = (s: string) => s.trim().replace(/\s+/g, " ");
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    for (const name of [
+      ...namesFromTbl,
+      ...namesFromUsers,
+      ...namesFromLogs,
+      ...namesFromCustomers,
+    ]) {
+      const n = norm(name);
+      if (!n) continue;
+      const key = n.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(n);
+      }
+    }
+    merged.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 
-    // Shape that the coverage map page expects
-    return NextResponse.json({ ok: true, reps });
+    return NextResponse.json({ ok: true, reps: merged });
   } catch (err) {
     console.error("GET /api/sales-reps failed:", err);
-    return NextResponse.json({ ok: false, reps: [], error: "Failed to load sales reps" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, reps: [], error: "Failed to load sales reps" },
+      { status: 500 }
+    );
   }
 }
