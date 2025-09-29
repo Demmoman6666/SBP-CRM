@@ -147,6 +147,12 @@ function combineDateTime(anchor: Date, hhmm: string): Date {
   return d;
 }
 
+/* ensure value is always an array (string -> [string]) */
+function toArr<T>(v: T | T[] | null | undefined): T[] {
+  if (v == null) return [];
+  return Array.isArray(v) ? v : [v];
+}
+
 /* --------------- POST /api/calls --------------- */
 export async function POST(req: Request) {
   try {
@@ -244,6 +250,10 @@ export async function POST(req: Request) {
       displayCustomerName = cust?.salonName || cust?.customerName || null;
     }
 
+    // Normalize multi-selects so .map() is always safe
+    const stockedBrandIds = toArr<string>(body.stockedBrandIds ?? body.stocked ?? body.stockedBrands).filter(Boolean);
+    const competitorBrandIds = toArr<string>(body.competitorBrandIds ?? body.competitors ?? body.competitorBrands).filter(Boolean);
+
     const created = await prisma.callLog.create({
       data: {
         isExistingCustomer: !!isExisting,
@@ -272,6 +282,22 @@ export async function POST(req: Request) {
         geoCollectedAt,
 
         ...(hasClientLoggedAt ? { createdAt: anchor } : {}),
+
+        // ✅ optional join-table links (safe whether string or array came in)
+        ...(stockedBrandIds.length
+          ? {
+              stockedBrandLinks: {
+                create: stockedBrandIds.map((brandId) => ({ brandId: String(brandId) })),
+              },
+            }
+          : {}),
+        ...(competitorBrandIds.length
+          ? {
+              competitorBrandLinks: {
+                create: competitorBrandIds.map((brandId) => ({ brandId: String(brandId) })),
+              },
+            }
+          : {}),
       },
       select: { id: true, customerId: true },
     });
