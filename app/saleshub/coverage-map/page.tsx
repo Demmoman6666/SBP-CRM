@@ -1,11 +1,7 @@
-// app/saleshub/coverage-map/page.tsx
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-export const dynamic = 'force-dynamic';
-
-// TS globals for Google maps + our loader promise
 declare global {
   interface Window {
     google?: any;
@@ -13,188 +9,174 @@ declare global {
   }
 }
 
-function loadGoogleMaps(apiKey: string): Promise<void> {
+function loadGoogleMaps(apiKey: string) {
   if (typeof window === 'undefined') return Promise.resolve();
   if (window.google?.maps) return Promise.resolve();
   if (window.__gmapsLoader) return window.__gmapsLoader;
 
   window.__gmapsLoader = new Promise<void>((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}`;
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&callback=__onGMapsReady`;
     s.async = true;
-    s.defer = true;
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error('Failed to load Google Maps JS API'));
+    (window as any).__onGMapsReady = () => resolve();
+    s.onerror = (e) => reject(e);
     document.head.appendChild(s);
   });
-
   return window.__gmapsLoader;
 }
 
-// ---- NEW: safe JSON fetch helper
-async function fetchJson(url: string) {
-  const res = await fetch(url, { cache: 'no-store' });
-  const ct = res.headers.get('content-type') || '';
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Request failed ${res.status}: ${text.slice(0, 200)}`);
-  }
-  if (!ct.includes('application/json')) {
-    throw new Error(`Expected JSON, got: ${text.slice(0, 200)}`);
-  }
-  return JSON.parse(text);
-}
-
-type Rep = { id: string; name: string };
-type CallPoint = {
-  id: string;
-  customerName?: string | null;
-  latitude: number;
-  longitude: number;
-  repId?: string | null;
-  repName?: string | null;
-  createdAt?: string;
+type MarkerRow = {
+  lat: number;
+  lng: number;
+  rep?: string | null;
+  infoHtml?: string | null;
 };
 
 export default function CoverageMapPage() {
-  const [reps, setReps] = useState<Rep[]>([]);
-  const [repId, setRepId] = useState<string>('');
-  const [points, setPoints] = useState<CallPoint[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const mapRef = useRef<HTMLDivElement | null>(null);
-  const mapObj = useRef<any>(null);
+  const mapDivRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
+
+  const [loading, setLoading] = useState(true);
+  const [repOptions, setRepOptions] = useState<string[]>([]);
+  const [repFilter, setRepFilter] = useState<string>(''); // empty = All reps
 
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
-  // Load reps list
+  // --- Load Google Maps
   useEffect(() => {
     (async () => {
       try {
-        const data = await fetchJson('/api/sales-reps');
-        if (Array.isArray(data)) setReps(data);
-      } catch (e: any) {
-        setError(String(e?.message ?? e));
-      }
-    })();
-  }, []);
-
-  // Load call points
-  useEffect(() => {
-    (async () => {
-      setError(null);
-      setLoading(true);
-      try {
-        const qs = new URLSearchParams();
-        if (repId) qs.set('repId', repId);
-        const j = await fetchJson(`/api/calls/coverage?${qs.toString()}`);
-        if (!j?.ok) throw new Error(j?.error || 'Failed to load coverage data');
-        setPoints(Array.isArray(j.points) ? j.points : []);
-      } catch (e: any) {
-        setError(String(e?.message ?? e));
+        await loadGoogleMaps(apiKey);
+        if (!mapDivRef.current) return;
+        mapRef.current = new window.google.maps.Map(mapDivRef.current, {
+          center: { lat: 52.5, lng: -2.5 },
+          zoom: 6,
+          streetViewControl: false,
+          mapTypeControl: false,
+        });
+      } catch (e) {
+        console.error('Google Maps load failed:', e);
       } finally {
         setLoading(false);
       }
     })();
-  }, [repId]);
+  }, [apiKey]);
 
-  // Init map & place markers
+  // --- Load rep options (accept multiple API shapes)
   useEffect(() => {
-    if (!apiKey) {
-      setError('Missing NEXT_PUBLIC_GOOGLE_MAPS_API_KEY');
-      return;
-    }
-
-    let cancelled = false;
-
     (async () => {
       try {
-        await loadGoogleMaps(apiKey);
-        if (cancelled) return;
+        const res = await fetch('/api/sales-reps', { cache: 'no-store' });
+        const data = await res.json();
 
-        if (!mapObj.current && mapRef.current && window.google?.maps) {
-          mapObj.current = new window.google.maps.Map(mapRef.current, {
-            center: { lat: 54.5, lng: -2.5 },
-            zoom: 5,
-            mapTypeControl: false,
-            streetViewControl: false,
-            fullscreenControl: false,
-          });
+        let names: string[] = [];
+        if (Array.isArray(data)) {
+          // e.g. [{id,name}] or ["Alice","Bob"]
+          if (typeof data[0] === 'string') {
+            names = data as string[];
+          } else {
+            names = (data as any[]).map((r) => r?.name).filter(Boolean);
+          }
+        } else if (Array.isArray(data?.reps)) {
+          // e.g. { ok:true, reps: [...] }
+          if (typeof data.reps[0] === 'string') {
+            names = data.reps as string[];
+          } else {
+            names = (data.reps as any[]).map((r) => r?.name).filter(Boolean);
+          }
         }
 
-        // clear old markers
-        markersRef.current.forEach(m => m.setMap(null));
-        markersRef.current = [];
-
-        if (!mapObj.current || !window.google?.maps) return;
-
-        const bounds = new window.google.maps.LatLngBounds();
-        for (const p of points) {
-          const pos = { lat: Number(p.latitude), lng: Number(p.longitude) };
-          if (!Number.isFinite(pos.lat) || !Number.isFinite(pos.lng)) continue;
-
-          const marker = new window.google.maps.Marker({
-            position: pos,
-            map: mapObj.current,
-            title: p.customerName || 'Call',
-          });
-
-          const info = new window.google.maps.InfoWindow({
-            content: `
-              <div style="min-width:200px">
-                <div><strong>${p.customerName ?? 'Call'}</strong></div>
-                ${p.repName ? `<div>Rep: ${p.repName}</div>` : ''}
-                ${p.createdAt ? `<div>${new Date(p.createdAt).toLocaleString()}</div>` : ''}
-              </div>
-            `,
-          });
-          marker.addListener('click', () => info.open({ map: mapObj.current, anchor: marker }));
-
-          markersRef.current.push(marker);
-          bounds.extend(pos);
-        }
-
-        if (points.length > 0) {
-          mapObj.current.fitBounds(bounds);
-        }
-      } catch (e: any) {
-        setError(String(e?.message ?? e));
+        const dedup = Array.from(new Set(names.map((n) => n.trim()).filter(Boolean))).sort((a, b) =>
+          a.localeCompare(b, undefined, { sensitivity: 'base' })
+        );
+        setRepOptions(dedup);
+      } catch (e) {
+        console.error('Failed to load reps:', e);
+        setRepOptions([]); // fallback: empty list (All reps only)
       }
     })();
+  }, []);
 
-    return () => { cancelled = true; };
-  }, [apiKey, points]);
+  // --- Load markers for current filter
+  async function loadMarkers(rep: string) {
+    try {
+      const qs = new URLSearchParams();
+      if (rep) qs.set('rep', rep);
+      const res = await fetch(`/api/saleshub/calls-geo?${qs.toString()}`, { cache: 'no-store' });
+      const json = await res.json();
+      const rows: MarkerRow[] = json?.rows ?? [];
 
-  const repOptions = useMemo(() => [{ id: '', name: 'All reps' }, ...reps], [reps]);
+      // clear old markers
+      markersRef.current.forEach((m) => m.setMap(null));
+      markersRef.current = [];
+
+      if (!mapRef.current || !window.google?.maps) return;
+
+      const bounds = new window.google.maps.LatLngBounds();
+      const info = new window.google.maps.InfoWindow();
+
+      for (const r of rows) {
+        if (typeof r.lat !== 'number' || typeof r.lng !== 'number') continue;
+        const marker = new window.google.maps.Marker({
+          position: { lat: r.lat, lng: r.lng },
+          map: mapRef.current,
+        });
+        markersRef.current.push(marker);
+        bounds.extend(marker.getPosition());
+
+        if (r.infoHtml) {
+          marker.addListener('click', () => {
+            info.setContent(r.infoHtml as string);
+            info.open({ map: mapRef.current, anchor: marker });
+          });
+        }
+      }
+
+      if (!rows.length) {
+        // keep current center/zoom
+      } else {
+        mapRef.current.fitBounds(bounds);
+        // prevent over-zoom on single marker
+        const listener = window.google.maps.event.addListenerOnce(mapRef.current, 'bounds_changed', () => {
+          if (mapRef.current.getZoom() > 15) mapRef.current.setZoom(12);
+        });
+        setTimeout(() => window.google.maps.event.removeListener(listener), 0);
+      }
+    } catch (e) {
+      console.error('Failed to load markers:', e);
+    }
+  }
+
+  // initial + on change
+  useEffect(() => {
+    if (!loading) loadMarkers(repFilter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, repFilter]);
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <h1>Coverage Map</h1>
-        <p className="small">Filter by rep to see where calls have been logged.</p>
+        <h1>Coverage map</h1>
+        <p className="small">View logged calls; filter by sales rep.</p>
       </section>
 
-      <section className="card" style={{ padding: 12 }}>
-        <label className="small" style={{ display: 'inline-block', minWidth: 220 }}>
-          Sales rep
-          <select
-            value={repId}
-            onChange={(e) => setRepId(e.target.value)}
-            style={{ marginLeft: 8, padding: '6px 8px' }}
-          >
-            {repOptions.map(r => (
-              <option key={r.id || 'all'} value={r.id}>{r.name}</option>
+      <section className="card" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        <label className="po-field" style={{ width: 320 }}>
+          <span>Sales rep</span>
+          <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)}>
+            <option value="">All reps</option>
+            {repOptions.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
             ))}
           </select>
         </label>
-        {loading && <span className="small" style={{ marginLeft: 12 }}>Loading…</span>}
-        {error && <div className="small" style={{ color: '#b91c1c', marginTop: 8 }}>{error}</div>}
       </section>
 
-      <section className="card" style={{ padding: 0 }}>
-        <div ref={mapRef} style={{ width: '100%', height: '70vh' }} />
+      <section className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div ref={mapDivRef} style={{ width: '100%', height: 560 }} />
       </section>
     </div>
   );
