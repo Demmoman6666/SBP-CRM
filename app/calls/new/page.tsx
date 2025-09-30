@@ -42,19 +42,28 @@ function nowHHMM() {
   return `${hh}:${mm}`;
 }
 
+/* Normalize reps from either ["Name", ...] or [{id,name}, ...] or { ok, reps: [...] } */
+function normalizeReps(payload: any): Rep[] {
+  const arr = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.reps)
+    ? payload.reps
+    : [];
+
+  return arr.map((r: any): Rep =>
+    typeof r === "string"
+      ? { id: r, name: r }
+      : { id: String(r.id ?? r.name ?? ""), name: String(r.name ?? r.id ?? "") }
+  ).filter((r: Rep) => r.name);
+}
+
 export default function NewCallPage() {
   /* Sales reps */
   const [reps, setReps] = useState<Rep[]>([]);
   useEffect(() => {
-    fetch("/api/sales-reps")
-      .then(async (r) => {
-        const j = await r.json().catch(() => null);
-        // Accept either an array or { ok, reps: [...] }
-        if (Array.isArray(j)) return j as Rep[];
-        if (j && Array.isArray(j.reps)) return j.reps as Rep[];
-        return [] as Rep[];
-      })
-      .then(setReps)
+    fetch("/api/sales-reps", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => setReps(normalizeReps(j)))
       .catch(() => setReps([]));
   }, []);
 
@@ -64,12 +73,8 @@ export default function NewCallPage() {
   useEffect(() => {
     const norm = (x: any): BrandOpt => ({ id: String(x.id), name: String(x.name) });
     Promise.all([
-      fetch("/api/settings/visible-stocked-brands", { cache: "no-store" })
-        .then((r) => r.json())
-        .catch(() => []),
-      fetch("/api/settings/visible-competitor-brands", { cache: "no-store" })
-        .then((r) => r.json())
-        .catch(() => []),
+      fetch("/api/settings/visible-stocked-brands", { cache: "no-store" }).then((r) => r.json()).catch(() => []),
+      fetch("/api/settings/visible-competitor-brands", { cache: "no-store" }).then((r) => r.json()).catch(() => []),
     ])
       .then(([s, b]) => {
         const ss = Array.isArray(s) ? s : Array.isArray((s as any)?.brands) ? (s as any).brands : [];
@@ -346,7 +351,7 @@ export default function NewCallPage() {
             <select name="salesRep" required defaultValue="">
               <option value="" disabled>— Select a Sales Rep —</option>
               {reps.map((r) => (
-                <option key={r.id} value={r.name}>{r.name}</option>
+                <option key={r.id || r.name} value={r.name}>{r.name}</option>
               ))}
             </select>
           </div>
