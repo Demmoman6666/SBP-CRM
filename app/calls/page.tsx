@@ -53,6 +53,7 @@ export default function CallsListPage() {
   const [calls, setCalls] = useState<CallRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // filters
   const [from, setFrom] = useState<string>(""); // yyyy-mm-dd
@@ -66,12 +67,25 @@ export default function CallsListPage() {
 
   // sales reps for dropdown
   const [reps, setReps] = useState<SalesRepLite[]>([]);
-  useEffect(() => { (async () => {
-    try {
-      const r = await fetch("/api/sales-reps", { cache: "no-store" });
-      if (r.ok) setReps(await r.json());
-    } catch {}
-  })(); }, []);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/sales-reps", { cache: "no-store" });
+        const j = await r.json().catch(() => null);
+        if (Array.isArray(j)) {
+          // already [{id,name}]
+          setReps(j as SalesRepLite[]);
+        } else if (j && j.ok && Array.isArray(j.reps)) {
+          // shape { ok:true, reps: string[] }
+          setReps((j.reps as string[]).map((name: string) => ({ id: name, name })));
+        } else {
+          setReps([]);
+        }
+      } catch {
+        setReps([]);
+      }
+    })();
+  }, []);
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
@@ -86,9 +100,18 @@ export default function CallsListPage() {
 
   async function load() {
     setLoading(true);
+    setError(null);
     try {
       const r = await fetch(`/api/calls?${qs}`, { cache: "no-store" });
-      if (r.ok) setCalls(await r.json());
+      const json = await r.json().catch(() => null);
+      if (!r.ok) {
+        throw new Error((json && json.error) || "Failed to load calls");
+      }
+      const arr = Array.isArray(json) ? (json as CallRecord[]) : [];
+      setCalls(arr);
+    } catch (e: any) {
+      setCalls([]); // keep UI stable
+      setError(e?.message || "Failed to load calls");
     } finally {
       setLoading(false);
     }
@@ -106,9 +129,10 @@ export default function CallsListPage() {
 
   // NEW: apply client-side customer search
   const filtered = useMemo(() => {
+    const arr = Array.isArray(calls) ? calls : [];
     const term = q.trim().toLowerCase();
-    if (!term) return calls;
-    return calls.filter((c) => {
+    if (!term) return arr;
+    return arr.filter((c) => {
       const a = `${c.customer?.salonName || ""} ${c.customer?.customerName || ""}`.toLowerCase();
       const b = (c.customerName || "").toLowerCase(); // manual typed name for non-existing customers
       return a.includes(term) || b.includes(term);
@@ -118,7 +142,8 @@ export default function CallsListPage() {
   // quick stats (based on filtered list so it matches what you see)
   const counts = useMemo(() => {
     const byType = new Map<string, number>();
-    for (const c of filtered) {
+    const arr = Array.isArray(filtered) ? filtered : [];
+    for (const c of arr) {
       const k = c.callType || "—";
       byType.set(k, (byType.get(k) || 0) + 1);
     }
@@ -201,6 +226,13 @@ export default function CallsListPage() {
         </div>
       </section>
 
+      {/* Error (if any) */}
+      {error && (
+        <section className="card" style={{ borderColor: "#fecaca", background: "#fef2f2" }}>
+          <div className="small" style={{ color: "#991b1b" }}>{error}</div>
+        </section>
+      )}
+
       {/* Results */}
       <section className="card">
         <table className="table">
@@ -219,7 +251,7 @@ export default function CallsListPage() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((c) => {
+            {(Array.isArray(filtered) ? filtered : []).map((c) => {
               const dur = minutesFor(c);
               return (
                 <tr key={c.id}>
@@ -246,7 +278,7 @@ export default function CallsListPage() {
                 </tr>
               );
             })}
-            {filtered.length === 0 && (
+            {(Array.isArray(filtered) ? filtered : []).length === 0 && (
               <tr><td colSpan={8}><div className="small muted">No results.</div></td></tr>
             )}
           </tbody>
