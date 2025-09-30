@@ -55,6 +55,28 @@ function Chip(props: { onClick: () => void; children: React.ReactNode; title?: s
   );
 }
 
+// Normalize /api/sales-reps which may return either:
+// 1) [{ id, name }, ...]  (old shape)
+// 2) { ok: true, reps: string[] }  (new shape)
+function normalizeRepsResponse(j: any): Rep[] {
+  if (Array.isArray(j)) {
+    return j
+      .map((r: any) =>
+        typeof r === "string"
+          ? { id: r, name: r }
+          : { id: String(r?.id ?? r?.name ?? ""), name: String(r?.name ?? r?.id ?? "") }
+      )
+      .filter((r) => !!r.name);
+  }
+  if (j?.ok && Array.isArray(j.reps)) {
+    return j.reps
+      .map((name: any) => String(name || ""))
+      .filter(Boolean)
+      .map((name: string) => ({ id: name, name }));
+  }
+  return [];
+}
+
 export default function CallReportPage() {
   const today = useMemo(() => new Date(), []);
   const [from, setFrom] = useState<string>(ymdLocal(today));
@@ -69,10 +91,15 @@ export default function CallReportPage() {
   const [repFilter, setRepFilter] = useState<string>(""); // "" = All reps
 
   useEffect(() => {
-    fetch("/api/sales-reps", { cache: "no-store", credentials: "include" })
-      .then(r => (r.ok ? r.json() : []))
-      .then((list: Rep[]) => setReps(Array.isArray(list) ? list : []))
-      .catch(() => setReps([]));
+    (async () => {
+      try {
+        const r = await fetch("/api/sales-reps", { cache: "no-store", credentials: "include" });
+        const j = await r.json().catch(() => null);
+        setReps(normalizeRepsResponse(j));
+      } catch {
+        setReps([]);
+      }
+    })();
   }, []);
 
   async function load(range?: { from: string; to: string; staff?: string }) {
@@ -87,7 +114,7 @@ export default function CallReportPage() {
       if (staff) qs.set("staff", staff);
       const res = await fetch(`/api/reports/calls?${qs.toString()}`, {
         cache: "no-store",
-        credentials: "include", // <-- ensure cookies go with the request
+        credentials: "include",
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to load report");
@@ -153,7 +180,6 @@ export default function CallReportPage() {
       a.remove();
       URL.revokeObjectURL(url);
     } catch {
-      // fall back: just navigate to the CSV
       window.open(csvHref, "_blank");
     }
   }
