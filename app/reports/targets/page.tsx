@@ -19,10 +19,9 @@ function monthStr(d = new Date()) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 function monthRange(month: string) {
-  // month = "YYYY-MM"
   const [y, m] = month.split("-").map(Number);
   const start = `${month}-01`;
-  const lastDay = new Date(y, m, 0).getDate(); // day 0 of next month = last day of month
+  const lastDay = new Date(y, m, 0).getDate();
   const end = `${month}-${String(lastDay).padStart(2, "0")}`;
   return { start, end };
 }
@@ -36,25 +35,32 @@ function money(n: number, c = "GBP") {
     return `${c} ${(n || 0).toFixed(2)}`;
   }
 }
+const isCuid = (s: string) => /^c[a-z0-9]{24,}$/i.test(s);
 
-/** Normalise /api/sales-reps to [{id,name}] so filters don't change */
-function normaliseReps(j: any): Rep[] {
-  if (Array.isArray(j)) {
-    return j.map((r: any) => ({
-      id: String(r?.id ?? r?.name ?? ""),
-      name: String(r?.name ?? r?.id ?? ""),
-    })).filter(r => r.id && r.name);
+// Normalise any of the shapes your /api/sales-reps can return
+function normaliseReps(payload: any): Rep[] {
+  // objects with id/name
+  if (Array.isArray(payload) && payload.length && (payload[0]?.id || payload[0]?.name)) {
+    return payload
+      .map((r: any) => ({ id: String(r.id ?? r.name ?? ""), name: String(r.name ?? r.id ?? "") }))
+      .filter(r => r.id && r.name);
   }
-  if (j?.ok && Array.isArray(j.reps)) {
-    // fallback string list -> use name as id to keep the UI usable
-    return j.reps.map((name: any) => ({ id: String(name || ""), name: String(name || "") })).filter(r => r.id);
+  // { ok:true, reps: string[] }
+  if (payload?.ok && Array.isArray(payload.reps)) {
+    return payload.reps.map((n: any) => ({ id: String(n || ""), name: String(n || "") }));
+  }
+  // plain string[]
+  if (Array.isArray(payload) && (typeof payload[0] === "string")) {
+    return payload.map((n: any) => ({ id: String(n || ""), name: String(n || "") }));
   }
   return [];
 }
 
 export default function TargetsAndScorecards() {
   const [reps, setReps] = useState<Rep[]>([]);
-  const [repId, setRepId] = useState<string>("");
+  const [repId, setRepId] = useState<string>("");   // may be a cuid or a name depending on source
+  const [repName, setRepName] = useState<string>("");
+
   const [month, setMonth] = useState<string>(monthStr());
   const [revTarget, setRevTarget] = useState<string>("");
 
@@ -62,24 +68,53 @@ export default function TargetsAndScorecards() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [score, setScore] = useState<Scorecard | null>(null);
+  const [needsRealId, setNeedsRealId] = useState<boolean>(false);
 
-  // Load reps (no filter changes)
+  // Try to get IDs first (from the SalesRep table), then fall back to the aggregate list
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("/api/sales-reps", { cache: "no-store", credentials: "include" });
-        const j = await r.json().catch(() => null);
-        const list = normaliseReps(j);
-        setReps(list);
-        if (!repId && list.length) setRepId(list[0].id); // keep behaviour the same
+        // Attempt 1: explicit table-only (if the API supports it)
+        const r1 = await fetch("/api/sales-reps?tableOnly=1", { cache: "no-store", credentials: "include" });
+        const j1 = r1.ok ? await r1.json().catch(() => null) : null;
+        const list1 = normaliseReps(j1).filter(r => isCuid(r.id));
+
+        if (list1.length) {
+          setReps(list1);
+          setRepId(list1[0].id);
+          setRepName(list1[0].name);
+          setNeedsRealId(false);
+          return;
+        }
+
+        // Attempt 2: full/aggregate (names only is fine)
+        const r2 = await fetch("/api/sales-reps?full=1", { cache: "no-store", credentials: "include" });
+        const j2 = await r2.json().catch(() => null);
+        const list2 = normaliseReps(j2);
+
+        setReps(list2);
+        if (list2.length) {
+          setRepId(list2[0].id);     // may be a name string
+          setRepName(list2[0].name);
+          setNeedsRealId(!isCuid(list2[0].id));
+        } else {
+          setNeedsRealId(true);
+        }
       } catch {
         setReps([]);
+        setNeedsRealId(true);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load existing target for selected month/rep
+  // Keep repName in sync with selected option
+  useEffect(() => {
+    const found = reps.find(r => r.id === repId);
+    setRepName(found?.name || "");
+    setNeedsRealId(repId ? !isCuid(repId) : false);
+  }, [repId, reps]);
+
+  // Load existing target for the month (send both id and name + concrete start/end)
   useEffect(() => {
     if (!repId || !month) return;
     (async () => {
@@ -89,39 +124,54 @@ export default function TargetsAndScorecards() {
         const qs = new URLSearchParams({
           scope: "REP",
           metric: "REVENUE",
-          repId,        // ← always send repId (as before)
+          repId,                   // preferred
+          repName: repName || repId,
+          staff: repName || repId, // some APIs use 'staff'
           start,
           end,
         });
         const r = await fetch(`/api/targets?${qs.toString()}`, { cache: "no-store", credentials: "include" });
+        if (!r.ok) {
+          // If the API insists on a DB id, keep the inline hint visible
+          setNeedsRealId(!isCuid(repId));
+          return;
+        }
         const j = await r.json();
         const t = Array.isArray(j?.targets) ? j.targets[0] : null;
         setRevTarget(t ? String(t.amount) : "");
       } catch {
-        // keep quiet; user can still enter a target
+        // ignore; user can still set target
       }
     })();
-  }, [repId, month]);
+  }, [repId, repName, month]);
 
   async function saveTarget() {
-    if (!repId || !month) return;
+    if (!repId || !month) { setMsg("Choose a rep and month"); return; }
     setSaving(true);
     setMsg(null);
     try {
+      const { start, end } = monthRange(month);
+      const body: any = {
+        scope: "REP",
+        metric: "REVENUE",
+        month,                    // convenience for servers that accept month
+        start, end,               // and explicit dates for those that require them
+        repId,
+        repName: repName || repId,
+        staff: repName || repId,
+        amount: Number(revTarget || 0),
+        currency: "GBP",
+      };
       const res = await fetch("/api/targets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scope: "REP",
-          metric: "REVENUE",
-          repId,           // ← always send repId
-          month,           // backend can map month -> start/end
-          amount: Number(revTarget || 0),
-          currency: "GBP",
-        }),
+        body: JSON.stringify(body),
       });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error || "Failed to save target");
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (!isCuid(repId)) setNeedsRealId(true);
+        throw new Error(j?.error || "Failed to save target");
+      }
       setMsg("Target saved");
     } catch (e: any) {
       setMsg(e?.message || "Failed");
@@ -131,14 +181,22 @@ export default function TargetsAndScorecards() {
   }
 
   async function loadScorecard() {
-    if (!repId || !month) { setMsg("Please choose a rep and month"); return; }
+    if (!repId || !month) { setMsg("Choose a rep and month"); return; }
     setLoading(true);
     setMsg(null);
     try {
-      const qs = new URLSearchParams({ repId, month }); // ← always send repId + month
+      const qs = new URLSearchParams({
+        repId,
+        repName: repName || repId,
+        staff: repName || repId,
+        month,
+      });
       const r = await fetch(`/api/scorecards/rep?${qs.toString()}`, { cache: "no-store", credentials: "include" });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || "Failed to load scorecard");
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        if (!isCuid(repId)) setNeedsRealId(true);
+        throw new Error(j?.error || "Failed to load scorecard");
+      }
       setScore(j as Scorecard);
     } catch (e: any) {
       setMsg(e?.message || "Failed");
@@ -159,11 +217,20 @@ export default function TargetsAndScorecards() {
         <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
           <div className="field">
             <label>Sales Rep</label>
-            <select value={repId} onChange={(e) => setRepId(e.target.value)}>
+            <select
+              value={repId}
+              onChange={(e) => setRepId(e.target.value)}
+            >
               {reps.map((r) => (
-                <option key={r.id} value={r.id}>{r.name}</option>
+                <option key={`${r.id}-${r.name}`} value={r.id}>{r.name}</option>
               ))}
             </select>
+            {needsRealId && (
+              <div className="small" style={{ color: "#b91c1c", marginTop: 6 }}>
+                Rep not found in the SalesRep table. Actions will also send the rep name, but if your API requires a DB id,
+                add this rep in <b>Settings → Sales Reps</b>.
+              </div>
+            )}
           </div>
           <div className="field">
             <label>Month</label>
@@ -207,7 +274,9 @@ export default function TargetsAndScorecards() {
           <div className="grid grid-3" style={{ gap: 12 }}>
             <div className="card" style={{ padding: 12 }}>
               <div className="small muted">Revenue</div>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>{money(score.metrics.revenue.actual, score.metrics.revenue.currency)}</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>
+                {money(score.metrics.revenue.actual, score.metrics.revenue.currency)}
+              </div>
               <div className="small">Target: {money(score.metrics.revenue.target, score.metrics.revenue.currency)}</div>
               <div className="small">Attainment: {fmtPct(score.metrics.revenue.attainmentPct)}</div>
               <div className="small">Growth vs prev: {fmtPct(score.metrics.revenue.growthPct)}</div>
