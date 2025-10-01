@@ -148,7 +148,13 @@ model Customer {
   daysOpen             String?
   brandsInterestedIn   String?
   notes                String?
+
+  // LEGACY free-text rep (kept for backward compatibility)
   salesRep             String?
+  // ✅ Canonical link to SalesRep
+  salesRepId           String?
+  rep                  SalesRep? @relation(fields: [salesRepId], references: [id], onDelete: SetNull)
+
   customerNumber       String?
   customerTelephone    String?
   customerEmailAddress String?
@@ -185,7 +191,8 @@ model Customer {
   routeDays            RouteDay[]  @default([])
 
   @@index([customerEmailAddress])
-  @@index([salesRep])
+  @@index([salesRep])          // legacy text index
+  @@index([salesRepId])        // ✅ canonical rep index
   @@index([stage])
   @@index([routePlanEnabled, salesRep])
 }
@@ -260,7 +267,13 @@ model CallLog {
   callType             String?
   summary              String?
   outcome              String?
+
+  // LEGACY free-text rep (kept for backward compatibility)
   staff                String?
+
+  // ✅ Canonical link to SalesRep
+  repId                String?
+  rep                  SalesRep? @relation(fields: [repId], references: [id], onDelete: SetNull)
 
   stage                CustomerStage?
 
@@ -283,6 +296,11 @@ model CallLog {
   @@index([createdAt])
   @@index([isExistingCustomer, customerId])
   @@index([stage])
+  // ✅ helpful filters
+  @@index([repId])
+  @@index([staff])
+  @@index([callType])
+  @@index([outcome])
 }
 
 model StockedBrand {
