@@ -29,6 +29,29 @@ function money(n: number, c = "GBP") {
   }
 }
 
+/** Normalize /api/sales-reps which might return:
+ *  - [{ id, name }, ...]
+ *  - { ok: true, reps: string[] }
+ */
+function normalizeRepsResponse(j: any): Rep[] {
+  if (Array.isArray(j)) {
+    return j
+      .map((r: any) =>
+        typeof r === "string"
+          ? { id: r, name: r }
+          : { id: String(r?.id ?? r?.name ?? ""), name: String(r?.name ?? r?.id ?? "") }
+      )
+      .filter((r) => !!r.name);
+  }
+  if (j?.ok && Array.isArray(j.reps)) {
+    return j.reps
+      .map((name: any) => String(name || ""))
+      .filter(Boolean)
+      .map((name: string) => ({ id: name, name }));
+  }
+  return [];
+}
+
 export default function TargetsAndScorecards() {
   const [reps, setReps] = useState<Rep[]>([]);
   const [repId, setRepId] = useState<string>("");
@@ -43,14 +66,18 @@ export default function TargetsAndScorecards() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetch("/api/sales-reps", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((arr: any[]) => {
-        const list = Array.isArray(arr) ? arr : [];
+    (async () => {
+      try {
+        const r = await fetch("/api/sales-reps", { cache: "no-store", credentials: "include" });
+        const j = await r.json().catch(() => null);
+        const list = normalizeRepsResponse(j);
         setReps(list);
-        if (list.length && !repId) setRepId(list[0].id);
-      })
-      .catch(() => setReps([]));
+        if (!repId && list.length) setRepId(list[0].id);
+      } catch {
+        setReps([]);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Load existing target for the chosen month
@@ -148,7 +175,7 @@ export default function TargetsAndScorecards() {
             />
           </div>
 
-          <div className="row" style={{ gap: 8, alignItems: "flex-end" }}>
+        <div className="row" style={{ gap: 8, alignItems: "flex-end" }}>
             <button className="btn" onClick={saveTarget} disabled={saving}>
               {saving ? "Saving…" : "Save Target"}
             </button>
