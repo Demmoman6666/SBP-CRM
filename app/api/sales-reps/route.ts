@@ -6,89 +6,106 @@ import { Role } from "@prisma/client";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+function normName(s: string) {
+  return s.trim().replace(/\s+/g, " ");
+}
+
 export async function GET() {
   try {
-    // 1) SalesRep table
-    let namesFromTbl: string[] = [];
-    try {
-      const repsTbl = await prisma.salesRep.findMany({
-        select: { name: true },
-        orderBy: { name: "asc" },
-      });
-      namesFromTbl = repsTbl.map(r => r.name).filter(Boolean);
-    } catch (e) {
-      console.error("salesRep.findMany failed:", e);
-    }
+    // 1) Read canonical list first
+    let reps = await prisma.salesRep.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    });
 
-    // 2) Active users with rep-like roles
-    let namesFromUsers: string[] = [];
+    // 2) Harvest candidate names from other sources
+    const candidates: string[] = [];
+
+    // 2a) Active users with rep-like roles
     try {
       const userRows = await prisma.user.findMany({
         where: {
           isActive: true,
           role: { in: [Role.REP, Role.MANAGER, Role.ADMIN] },
-          // fullName is non-nullable in your schema, but keep guard anyway:
-          fullName: { not: null },
         },
         select: { fullName: true },
       });
-      namesFromUsers = userRows.map(u => u.fullName as string).filter(Boolean);
+      for (const u of userRows) {
+        const n = normName(String(u.fullName ?? ""));
+        if (n) candidates.push(n);
+      }
     } catch (e) {
       console.error("user.findMany failed:", e);
     }
 
-    // 3) Distinct staff from CallLog
-    let namesFromLogs: string[] = [];
+    // 2b) Distinct staff from CallLog
     try {
       const staffRows = await prisma.callLog.findMany({
         where: { staff: { not: null } },
         select: { staff: true },
         distinct: ["staff"],
       });
-      namesFromLogs = staffRows.map(s => s.staff as string).filter(Boolean);
+      for (const s of staffRows) {
+        const n = normName(String(s.staff ?? ""));
+        if (n) candidates.push(n);
+      }
     } catch (e) {
       console.error("callLog.findMany(distinct staff) failed:", e);
     }
 
-    // 4) Distinct salesRep from Customer
-    let namesFromCustomers: string[] = [];
+    // 2c) Distinct salesRep from Customer
     try {
       const custRows = await prisma.customer.findMany({
         where: { salesRep: { not: null } },
         select: { salesRep: true },
         distinct: ["salesRep"],
       });
-      namesFromCustomers = custRows.map(c => c.salesRep as string).filter(Boolean);
+      for (const c of custRows) {
+        const n = normName(String(c.salesRep ?? ""));
+        if (n) candidates.push(n);
+      }
     } catch (e) {
       console.error("customer.findMany(distinct salesRep) failed:", e);
     }
 
-    // Normalize + de-dupe case-insensitively
-    const norm = (s: string) => s.trim().replace(/\s+/g, " ");
-    const seen = new Set<string>();
-    const merged: string[] = [];
-    for (const name of [
-      ...namesFromTbl,
-      ...namesFromUsers,
-      ...namesFromLogs,
-      ...namesFromCustomers,
-    ]) {
-      const n = norm(name);
-      if (!n) continue;
-      const key = n.toLowerCase();
-      if (!seen.has(key)) {
-        seen.add(key);
-        merged.push(n);
+    // 3) Upsert any candidates that aren't already in SalesRep
+    if (candidates.length) {
+      const have = new Set(reps.map((r) => r.name.toLowerCase()));
+      const seen = new Map<string, string>(); // key -> nicely-cased name
+      for (const raw of candidates) {
+        const n = normName(raw);
+        if (!n) continue;
+        const key = n.toLowerCase();
+        if (!seen.has(key)) seen.set(key, n);
+      }
+      const toCreate = Array.from(seen.entries())
+        .filter(([key]) => !have.has(key))
+        .map(([, name]) => name);
+
+      if (toCreate.length) {
+        await Promise.all(
+          toCreate.map((name) =>
+            prisma.salesRep.upsert({
+              where: { name }, // name is unique in schema
+              update: {},
+              create: { name },
+            })
+          )
+        );
+
+        // Re-read canonical list after upserts
+        reps = await prisma.salesRep.findMany({
+          orderBy: { name: "asc" },
+          select: { id: true, name: true },
+        });
       }
     }
-    merged.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 
-    return NextResponse.json({ ok: true, reps: merged });
+    // 4) Return the flat array (no wrapper), which all pages expect
+    return NextResponse.json(reps);
   } catch (err) {
     console.error("GET /api/sales-reps failed (outer):", err);
-    return NextResponse.json(
-      { ok: false, reps: [], error: "Failed to load sales reps" },
-      { status: 500 }
-    );
+    // Return an empty array so clients don't explode on shape mismatch
+    return NextResponse.json([]);
   }
 }
