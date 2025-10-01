@@ -1,7 +1,7 @@
 // app/reports/targets/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 type Rep = { id: string; name: string };
 type Scorecard = {
@@ -18,6 +18,14 @@ type Scorecard = {
 function monthStr(d = new Date()) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
+function monthRange(month: string) {
+  // month = "YYYY-MM"
+  const [y, m] = month.split("-").map(Number);
+  const start = `${month}-01`;
+  const lastDay = new Date(y, m, 0).getDate(); // day 0 of next month = last day of month
+  const end = `${month}-${String(lastDay).padStart(2, "0")}`;
+  return { start, end };
+}
 function fmtPct(v: number | null | undefined) {
   return v == null ? "—" : `${v.toFixed(1)}%`;
 }
@@ -29,61 +37,41 @@ function money(n: number, c = "GBP") {
   }
 }
 
-/** /api/sales-reps may return:
- *  - [{ id, name }, ...]  OR
- *  - { ok: true, reps: string[] }
- */
-function normalizeRepsResponse(j: any): Rep[] {
+/** Normalise /api/sales-reps to [{id,name}] so filters don't change */
+function normaliseReps(j: any): Rep[] {
   if (Array.isArray(j)) {
-    return j
-      .map((r: any) =>
-        typeof r === "string"
-          ? { id: r, name: r }
-          : { id: String(r?.id ?? r?.name ?? ""), name: String(r?.name ?? r?.id ?? "") }
-      )
-      .filter((r) => !!r.name);
+    return j.map((r: any) => ({
+      id: String(r?.id ?? r?.name ?? ""),
+      name: String(r?.name ?? r?.id ?? ""),
+    })).filter(r => r.id && r.name);
   }
   if (j?.ok && Array.isArray(j.reps)) {
-    return j.reps
-      .map((name: any) => String(name || ""))
-      .filter(Boolean)
-      .map((name: string) => ({ id: name, name }));
+    // fallback string list -> use name as id to keep the UI usable
+    return j.reps.map((name: any) => ({ id: String(name || ""), name: String(name || "") })).filter(r => r.id);
   }
   return [];
 }
 
-function findRepByKey(key: string, reps: Rep[]): Rep | null {
-  if (!key) return null;
-  return reps.find(r => r.id === key) || reps.find(r => r.name === key) || null;
-}
-
-/** Heuristic: only treat as a real DB id if it looks like a Prisma CUID */
-function looksLikeCuid(s: string | undefined): boolean {
-  return !!s && /^c[a-z0-9]{24,}$/i.test(s);
-}
-
 export default function TargetsAndScorecards() {
   const [reps, setReps] = useState<Rep[]>([]);
-  const [repKey, setRepKey] = useState<string>("");
+  const [repId, setRepId] = useState<string>("");
   const [month, setMonth] = useState<string>(monthStr());
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  // targets (revenue)
   const [revTarget, setRevTarget] = useState<string>("");
 
-  const [score, setScore] = useState<Scorecard | null>(null);
+  const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [score, setScore] = useState<Scorecard | null>(null);
 
-  // Load reps
+  // Load reps (no filter changes)
   useEffect(() => {
     (async () => {
       try {
         const r = await fetch("/api/sales-reps", { cache: "no-store", credentials: "include" });
         const j = await r.json().catch(() => null);
-        const list = normalizeRepsResponse(j);
+        const list = normaliseReps(j);
         setReps(list);
-        if (!repKey && list.length) setRepKey(list[0].id);
+        if (!repId && list.length) setRepId(list[0].id); // keep behaviour the same
       } catch {
         setReps([]);
       }
@@ -91,54 +79,46 @@ export default function TargetsAndScorecards() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load existing target for the chosen month
+  // Load existing target for selected month/rep
   useEffect(() => {
-    const sel = findRepByKey(repKey, reps);
-    if (!sel || !month) return;
-
+    if (!repId || !month) return;
     (async () => {
       setMsg(null);
       try {
-        const q = new URLSearchParams({ scope: "REP", metric: "REVENUE", start: month, end: month });
-        // ✅ Always send the name (repName/staff). Only send repId if it looks valid.
-        if (looksLikeCuid(sel.id)) q.set("repId", sel.id);
-        if (sel.name) {
-          q.set("repName", sel.name);
-          q.set("staff", sel.name);
-        }
-
-        const r = await fetch(`/api/targets?${q.toString()}`, { cache: "no-store", credentials: "include" });
+        const { start, end } = monthRange(month);
+        const qs = new URLSearchParams({
+          scope: "REP",
+          metric: "REVENUE",
+          repId,        // ← always send repId (as before)
+          start,
+          end,
+        });
+        const r = await fetch(`/api/targets?${qs.toString()}`, { cache: "no-store", credentials: "include" });
         const j = await r.json();
         const t = Array.isArray(j?.targets) ? j.targets[0] : null;
         setRevTarget(t ? String(t.amount) : "");
-      } catch {}
+      } catch {
+        // keep quiet; user can still enter a target
+      }
     })();
-  }, [repKey, month, reps]);
+  }, [repId, month]);
 
   async function saveTarget() {
-    const sel = findRepByKey(repKey, reps);
-    if (!sel || !month) return;
+    if (!repId || !month) return;
     setSaving(true);
     setMsg(null);
     try {
-      const payload: any = {
-        scope: "REP",
-        metric: "REVENUE",
-        month, // server maps month -> periodStart/End
-        amount: Number(revTarget || 0),
-        currency: "GBP",
-      };
-      // ✅ Include name; include repId only if it’s a real id
-      if (looksLikeCuid(sel.id)) payload.repId = sel.id;
-      if (sel.name) {
-        payload.repName = sel.name;
-        payload.staff = sel.name;
-      }
-
       const res = await fetch("/api/targets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          scope: "REP",
+          metric: "REVENUE",
+          repId,           // ← always send repId
+          month,           // backend can map month -> start/end
+          amount: Number(revTarget || 0),
+          currency: "GBP",
+        }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || "Failed to save target");
@@ -151,23 +131,15 @@ export default function TargetsAndScorecards() {
   }
 
   async function loadScorecard() {
-    const sel = findRepByKey(repKey, reps);
-    if (!sel || !month) return;
+    if (!repId || !month) { setMsg("Please choose a rep and month"); return; }
     setLoading(true);
     setMsg(null);
     try {
-      const q = new URLSearchParams({ month });
-      // ✅ Prefer name matching; only include repId when it’s a real id
-      if (looksLikeCuid(sel.id)) q.set("repId", sel.id);
-      if (sel.name) {
-        q.set("repName", sel.name);
-        q.set("staff", sel.name);
-      }
-
-      const r = await fetch(`/api/scorecards/rep?${q.toString()}`, { cache: "no-store", credentials: "include" });
+      const qs = new URLSearchParams({ repId, month }); // ← always send repId + month
+      const r = await fetch(`/api/scorecards/rep?${qs.toString()}`, { cache: "no-store", credentials: "include" });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || "Failed to load scorecard");
-      setScore(j);
+      setScore(j as Scorecard);
     } catch (e: any) {
       setMsg(e?.message || "Failed");
       setScore(null);
@@ -187,7 +159,7 @@ export default function TargetsAndScorecards() {
         <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
           <div className="field">
             <label>Sales Rep</label>
-            <select value={repKey} onChange={(e) => setRepKey(e.target.value)}>
+            <select value={repId} onChange={(e) => setRepId(e.target.value)}>
               {reps.map((r) => (
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
