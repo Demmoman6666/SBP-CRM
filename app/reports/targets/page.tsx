@@ -29,7 +29,7 @@ function money(n: number, c = "GBP") {
   }
 }
 
-/** Normalize /api/sales-reps which might return:
+/** Normalise /api/sales-reps which might return:
  *  - [{ id, name }, ...]
  *  - { ok: true, reps: string[] }
  */
@@ -64,13 +64,13 @@ export default function TargetsAndScorecards() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // targets (we’ll handle revenue for now)
+  // targets (revenue)
   const [revTarget, setRevTarget] = useState<string>("");
 
   const [score, setScore] = useState<Scorecard | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Load reps (works with either shape)
+  // Load reps
   useEffect(() => {
     (async () => {
       try {
@@ -95,9 +95,12 @@ export default function TargetsAndScorecards() {
       setMsg(null);
       try {
         const q = new URLSearchParams({ scope: "REP", metric: "REVENUE", start: month, end: month });
-        // Send both ID and name so the server can resolve either
+        // 🔑 Send all keys the server might accept
         if (sel.id) q.set("repId", sel.id);
-        if (sel.name) q.set("rep", sel.name);
+        if (sel.name) {
+          q.set("repName", sel.name);
+          q.set("staff", sel.name);
+        }
 
         const r = await fetch(`/api/targets?${q.toString()}`, { cache: "no-store", credentials: "include" });
         const j = await r.json();
@@ -120,9 +123,12 @@ export default function TargetsAndScorecards() {
         amount: Number(revTarget || 0),
         currency: "GBP",
       };
-      // Include both forms; backend can use whichever it supports
+      // 🔑 Include all identifiers (id + name)
       if (sel.id) payload.repId = sel.id;
-      if (sel.name) payload.rep = sel.name;
+      if (sel.name) {
+        payload.repName = sel.name;
+        payload.staff = sel.name;
+      }
 
       const res = await fetch("/api/targets", {
         method: "POST",
@@ -146,9 +152,12 @@ export default function TargetsAndScorecards() {
     setMsg(null);
     try {
       const q = new URLSearchParams({ month });
-      // Send both ID and name
+      // 🔑 Send all identifiers (id + name) for maximum compatibility
       if (sel.id) q.set("repId", sel.id);
-      if (sel.name) q.set("rep", sel.name);
+      if (sel.name) {
+        q.set("repName", sel.name);
+        q.set("staff", sel.name);
+      }
 
       const r = await fetch(`/api/scorecards/rep?${q.toString()}`, { cache: "no-store", credentials: "include" });
       const j = await r.json();
