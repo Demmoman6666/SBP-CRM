@@ -52,9 +52,14 @@ function normalizeRepsResponse(j: any): Rep[] {
   return [];
 }
 
+function findRepByKey(key: string, reps: Rep[]): Rep | null {
+  if (!key) return null;
+  return reps.find(r => r.id === key) || reps.find(r => r.name === key) || null;
+}
+
 export default function TargetsAndScorecards() {
   const [reps, setReps] = useState<Rep[]>([]);
-  const [repId, setRepId] = useState<string>("");
+  const [repKey, setRepKey] = useState<string>("");
   const [month, setMonth] = useState<string>(monthStr());
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -65,6 +70,7 @@ export default function TargetsAndScorecards() {
   const [score, setScore] = useState<Scorecard | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Load reps (works with either shape)
   useEffect(() => {
     (async () => {
       try {
@@ -72,7 +78,7 @@ export default function TargetsAndScorecards() {
         const j = await r.json().catch(() => null);
         const list = normalizeRepsResponse(j);
         setReps(list);
-        if (!repId && list.length) setRepId(list[0].id);
+        if (!repKey && list.length) setRepKey(list[0].id);
       } catch {
         setReps([]);
       }
@@ -82,35 +88,46 @@ export default function TargetsAndScorecards() {
 
   // Load existing target for the chosen month
   useEffect(() => {
-    if (!repId || !month) return;
+    const sel = findRepByKey(repKey, reps);
+    if (!sel || !month) return;
+
     (async () => {
       setMsg(null);
       try {
-        const q = new URLSearchParams({ scope: "REP", metric: "REVENUE", repId, start: month, end: month });
-        const r = await fetch(`/api/targets?${q.toString()}`, { cache: "no-store" });
+        const q = new URLSearchParams({ scope: "REP", metric: "REVENUE", start: month, end: month });
+        // Send both ID and name so the server can resolve either
+        if (sel.id) q.set("repId", sel.id);
+        if (sel.name) q.set("rep", sel.name);
+
+        const r = await fetch(`/api/targets?${q.toString()}`, { cache: "no-store", credentials: "include" });
         const j = await r.json();
         const t = Array.isArray(j?.targets) ? j.targets[0] : null;
         setRevTarget(t ? String(t.amount) : "");
       } catch {}
     })();
-  }, [repId, month]);
+  }, [repKey, month, reps]);
 
   async function saveTarget() {
-    if (!repId || !month) return;
+    const sel = findRepByKey(repKey, reps);
+    if (!sel || !month) return;
     setSaving(true);
     setMsg(null);
     try {
+      const payload: any = {
+        scope: "REP",
+        metric: "REVENUE",
+        month, // server maps month -> periodStart/End
+        amount: Number(revTarget || 0),
+        currency: "GBP",
+      };
+      // Include both forms; backend can use whichever it supports
+      if (sel.id) payload.repId = sel.id;
+      if (sel.name) payload.rep = sel.name;
+
       const res = await fetch("/api/targets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scope: "REP",
-          metric: "REVENUE",
-          repId,
-          month,           // convenience: server maps month -> periodStart/End
-          amount: Number(revTarget || 0),
-          currency: "GBP",
-        }),
+        body: JSON.stringify(payload),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || "Failed to save target");
@@ -123,12 +140,17 @@ export default function TargetsAndScorecards() {
   }
 
   async function loadScorecard() {
-    if (!repId || !month) return;
+    const sel = findRepByKey(repKey, reps);
+    if (!sel || !month) return;
     setLoading(true);
     setMsg(null);
     try {
-      const q = new URLSearchParams({ repId, month });
-      const r = await fetch(`/api/scorecards/rep?${q.toString()}`, { cache: "no-store" });
+      const q = new URLSearchParams({ month });
+      // Send both ID and name
+      if (sel.id) q.set("repId", sel.id);
+      if (sel.name) q.set("rep", sel.name);
+
+      const r = await fetch(`/api/scorecards/rep?${q.toString()}`, { cache: "no-store", credentials: "include" });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || "Failed to load scorecard");
       setScore(j);
@@ -151,7 +173,7 @@ export default function TargetsAndScorecards() {
         <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
           <div className="field">
             <label>Sales Rep</label>
-            <select value={repId} onChange={(e) => setRepId(e.target.value)}>
+            <select value={repKey} onChange={(e) => setRepKey(e.target.value)}>
               {reps.map((r) => (
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
@@ -175,7 +197,7 @@ export default function TargetsAndScorecards() {
             />
           </div>
 
-        <div className="row" style={{ gap: 8, alignItems: "flex-end" }}>
+          <div className="row" style={{ gap: 8, alignItems: "flex-end" }}>
             <button className="btn" onClick={saveTarget} disabled={saving}>
               {saving ? "Saving…" : "Save Target"}
             </button>
@@ -185,7 +207,11 @@ export default function TargetsAndScorecards() {
           </div>
         </div>
 
-        {msg && <div className="small" style={{ color: msg.includes("saved") ? "#15803d" : "#b91c1c" }}>{msg}</div>}
+        {msg && (
+          <div className="small" style={{ color: msg.includes("saved") ? "#15803d" : "#b91c1c" }}>
+            {msg}
+          </div>
+        )}
       </section>
 
       {score && (
