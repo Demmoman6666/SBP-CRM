@@ -29,8 +29,8 @@ function money(n: number, c = "GBP") {
   }
 }
 
-/** Normalise /api/sales-reps which might return:
- *  - [{ id, name }, ...]
+/** /api/sales-reps may return:
+ *  - [{ id, name }, ...]  OR
  *  - { ok: true, reps: string[] }
  */
 function normalizeRepsResponse(j: any): Rep[] {
@@ -55,6 +55,11 @@ function normalizeRepsResponse(j: any): Rep[] {
 function findRepByKey(key: string, reps: Rep[]): Rep | null {
   if (!key) return null;
   return reps.find(r => r.id === key) || reps.find(r => r.name === key) || null;
+}
+
+/** Heuristic: only treat as a real DB id if it looks like a Prisma CUID */
+function looksLikeCuid(s: string | undefined): boolean {
+  return !!s && /^c[a-z0-9]{24,}$/i.test(s);
 }
 
 export default function TargetsAndScorecards() {
@@ -95,8 +100,8 @@ export default function TargetsAndScorecards() {
       setMsg(null);
       try {
         const q = new URLSearchParams({ scope: "REP", metric: "REVENUE", start: month, end: month });
-        // 🔑 Send all keys the server might accept
-        if (sel.id) q.set("repId", sel.id);
+        // ✅ Always send the name (repName/staff). Only send repId if it looks valid.
+        if (looksLikeCuid(sel.id)) q.set("repId", sel.id);
         if (sel.name) {
           q.set("repName", sel.name);
           q.set("staff", sel.name);
@@ -123,8 +128,8 @@ export default function TargetsAndScorecards() {
         amount: Number(revTarget || 0),
         currency: "GBP",
       };
-      // 🔑 Include all identifiers (id + name)
-      if (sel.id) payload.repId = sel.id;
+      // ✅ Include name; include repId only if it’s a real id
+      if (looksLikeCuid(sel.id)) payload.repId = sel.id;
       if (sel.name) {
         payload.repName = sel.name;
         payload.staff = sel.name;
@@ -152,8 +157,8 @@ export default function TargetsAndScorecards() {
     setMsg(null);
     try {
       const q = new URLSearchParams({ month });
-      // 🔑 Send all identifiers (id + name) for maximum compatibility
-      if (sel.id) q.set("repId", sel.id);
+      // ✅ Prefer name matching; only include repId when it’s a real id
+      if (looksLikeCuid(sel.id)) q.set("repId", sel.id);
       if (sel.name) {
         q.set("repName", sel.name);
         q.set("staff", sel.name);
