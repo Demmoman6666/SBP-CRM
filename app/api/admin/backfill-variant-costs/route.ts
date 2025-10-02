@@ -6,68 +6,99 @@ import { fetchVariantCostsOnce } from "@/lib/shopify";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
-  try {
-    const sp = req.nextUrl.searchParams;
-    const limit = Math.min(Math.max(Number(sp.get("limit") || 1000), 1), 5000);
+// Small helper
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
 
-    // 1) Distinct variantIds used in OrderLineItem
-    const raw = await prisma.orderLineItem.findMany({
+export async function GET(req: NextRequest) {
+  try {
+    const confirm = ["1", "true", "yes"].includes(
+      (new URL(req.url).searchParams.get("confirm") || "").toLowerCase()
+    );
+
+    // 1) Collect all variantIds that exist in your order lines
+    const variants = await prisma.orderLineItem.findMany({
       where: { variantId: { not: null } },
       select: { variantId: true },
-      distinct: ["variantId"],
-      take: limit,
     });
 
-    const allVariantIds = raw.map(r => String(r.variantId)).filter(Boolean);
-
-    if (allVariantIds.length === 0) {
-      return NextResponse.json({ ok: true, scanned: 0, upserts: 0, message: "No variantIds found." });
-    }
+    const allVariantIds = Array.from(
+      new Set(
+        variants
+          .map((v) => (v.variantId || "").trim())
+          .filter((v) => v.length > 0)
+      )
+    );
 
     // 2) Which ones are already cached?
     const cached = await prisma.shopifyVariantCost.findMany({
       where: { variantId: { in: allVariantIds } },
       select: { variantId: true },
     });
-    const cachedSet = new Set(cached.map(c => c.variantId));
-    const missing = allVariantIds.filter(id => !cachedSet.has(id));
+    const cachedSet = new Set(cached.map((c) => c.variantId));
 
-    if (missing.length === 0) {
-      return NextResponse.json({ ok: true, scanned: allVariantIds.length, upserts: 0, message: "All variant costs already cached." });
+    // 3) Missing set
+    const missing = allVariantIds.filter((id) => !cachedSet.has(id));
+
+    if (!confirm) {
+      return NextResponse.json({
+        ok: true,
+        dryRun: true,
+        discovered: allVariantIds.length,
+        alreadyCached: cachedSet.size,
+        toFetch: missing.length,
+        message: "Add ?confirm=1 to perform the backfill.",
+      });
     }
 
-    // 3) Batch in chunks of 50 (Shopify nodes limit)
-    const chunks: string[][] = [];
-    for (let i = 0; i < missing.length; i += 50) chunks.push(missing.slice(i, i + 50));
+    // 4) Fetch in chunks and upsert
+    let fetched = 0;
+    let upserted = 0;
 
-    let upserts = 0;
-    for (const chunk of chunks) {
-      const map = await fetchVariantCostsOnce(chunk); // Map<numericVariantId, { unitCost, currency, inventoryItemId }>
-      for (const id of chunk) {
-        const entry = map.get(String(id));
+    const batches = chunk(missing, 50); // GraphQL-friendly batch size
+    for (const batch of batches) {
+      // Fetch costs for this batch
+      const map = await fetchVariantCostsOnce(batch); // Map<variantId, { unitCost, currency, inventoryItemId }>
+      fetched += batch.length;
+
+      for (const id of batch) {
+        const key = `${id}`; // avoid calling global String(); keeps TS happy
+        const entry = map.get(key);
         if (!entry) continue;
+
         await prisma.shopifyVariantCost.upsert({
-          where: { variantId: String(id) },
+          where: { variantId: key },
           create: {
-            variantId: String(id),
-            inventoryItemId: entry.inventoryItemId ?? null,
-            unitCost: entry.unitCost ?? null,
-            currency: entry.currency ?? "GBP",
+            variantId: key,
+            unitCost: entry.unitCost,
+            currency: entry.currency,
+            inventoryItemId: entry.inventoryItemId,
           },
           update: {
-            inventoryItemId: entry.inventoryItemId ?? null,
-            unitCost: entry.unitCost ?? null,
-            currency: entry.currency ?? "GBP",
+            unitCost: entry.unitCost,
+            currency: entry.currency,
+            inventoryItemId: entry.inventoryItemId,
           },
         });
-        upserts++;
+        upserted++;
       }
     }
 
-    return NextResponse.json({ ok: true, scanned: allVariantIds.length, upserts });
-  } catch (e: any) {
-    console.error("backfill-variant-costs error:", e);
-    return NextResponse.json({ ok: false, error: e?.message || "Failed" }, { status: 500 });
+    return NextResponse.json({
+      ok: true,
+      discovered: allVariantIds.length,
+      alreadyCached: cachedSet.size,
+      fetched,
+      upserted,
+    });
+  } catch (err: any) {
+    console.error("Backfill variant costs failed:", err);
+    return NextResponse.json(
+      { ok: false, error: err?.message ?? "Internal error" },
+      { status: 500 }
+    );
   }
 }
