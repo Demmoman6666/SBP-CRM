@@ -36,7 +36,17 @@ function exVatForOrder(o: {
   const sub = num(o.subtotal);
   if (sub != null && isFinite(sub)) return Math.max(0, sub);
 
-  // 2) Sum line totals if present (usually already discount-adjusted, ex-VAT)
+  // 2) Derive net ex-VAT from order-level fields (keeps discounts correct)
+  const tot = num(o.total);
+  const tax = num(o.taxes) ?? 0;
+  const shp = num(o.shipping) ?? 0;
+  const disc = num(o.discounts) ?? 0;
+  if (tot != null && isFinite(tot)) {
+    const derived = Math.max(0, tot - tax - shp - disc);
+    return derived;
+  }
+
+  // 3) Fall back to summing lines: prefer line.total (usually net), else price*qty
   if (o.lineItems && o.lineItems.length) {
     let s = 0;
     for (const li of o.lineItems) {
@@ -51,12 +61,7 @@ function exVatForOrder(o: {
     return Math.max(0, s);
   }
 
-  // 3) Derive: total - taxes - shipping - discounts
-  const tot = num(o.total) ?? 0;
-  const tax = num(o.taxes) ?? 0;
-  const shp = num(o.shipping) ?? 0;
-  const disc = num(o.discounts) ?? 0;
-  return Math.max(0, tot - tax - shp - disc);
+  return 0;
 }
 
 export async function GET(req: Request) {
@@ -128,7 +133,6 @@ export async function GET(req: Request) {
         taxes: true,
         shipping: true,
         discounts: true,
-        // no vendor breakdown needed for prev window
         lineItems: { select: { total: true, price: true, quantity: true } },
       },
     }),
