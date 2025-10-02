@@ -3,12 +3,11 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import {
   verifyShopifyHmac,
-  upsertCustomerFromShopify,
   upsertCustomerFromShopifyById,
   upsertOrderFromShopify,
   parseShopifyTags,
   extractShopifyCustomerId,
-  shopifyGraphql, // ⬅️ add this import
+  shopifyGraphql,
 } from "@/lib/shopify";
 
 export const runtime = "nodejs";
@@ -16,19 +15,29 @@ export const dynamic = "force-dynamic";
 
 const EXPECTED_SHOP = (process.env.SHOPIFY_SHOP_DOMAIN || "").toLowerCase();
 
-function ok(text = "ok", code = 200) { return new NextResponse(text, { status: code }); }
-function bad(msg: string, code = 400) { console.error(msg); return new NextResponse(msg, { status: code }); }
+function ok(text = "ok", code = 200) {
+  return new NextResponse(text, { status: code });
+}
+function bad(msg: string, code = 400) {
+  console.error(msg);
+  return new NextResponse(msg, { status: code });
+}
 
-export async function GET() { return ok(); }
+export async function GET() {
+  return ok();
+}
 
 export async function POST(req: Request) {
   const topic = (req.headers.get("x-shopify-topic") || "").toLowerCase();
-  const shop  = (req.headers.get("x-shopify-shop-domain") || "").toLowerCase();
-  const hmac  = req.headers.get("x-shopify-hmac-sha256");
+  const shop = (req.headers.get("x-shopify-shop-domain") || "").toLowerCase();
+  const hmac = req.headers.get("x-shopify-hmac-sha256");
 
   const raw = await req.arrayBuffer();
   if (!verifyShopifyHmac(raw, hmac)) {
-    return bad(`Shopify webhook HMAC failed { topic: '${topic}', shopDomain: '${shop}' }`, 401);
+    return bad(
+      `Shopify webhook HMAC failed { topic: '${topic}', shopDomain: '${shop}' }`,
+      401
+    );
   }
   if (EXPECTED_SHOP && shop && shop !== EXPECTED_SHOP) {
     return bad(`Unexpected shop domain '${shop}' (expected '${EXPECTED_SHOP}')`, 401);
@@ -44,16 +53,13 @@ export async function POST(req: Request) {
   try {
     // ───────── inventory_items/update → cache unit cost per variant ─────────
     if (topic === "inventory_items/update") {
-      // payload shape: { inventory_item: { id, cost?, ... } } (REST webhooks)
       const invId =
         String(body?.inventory_item?.id ?? body?.id ?? body?.inventory_item_id ?? "") || "";
-
       if (!invId) {
         console.warn("[WEBHOOK] inventory_items/update missing inventory_item.id");
         return ok();
       }
 
-      // Confirm cost + resolve variant via Admin GraphQL
       const q = `
         query InvItem($id: ID!) {
           inventoryItem(id: $id) {
@@ -75,13 +81,13 @@ export async function POST(req: Request) {
 
         const legacyVariantId = data?.inventoryItem?.variant?.legacyResourceId;
         const amountStr = data?.inventoryItem?.unitCost?.amount ?? null;
-        const currency  = data?.inventoryItem?.unitCost?.currencyCode ?? "GBP";
+        const currency = data?.inventoryItem?.unitCost?.currencyCode ?? "GBP";
 
         if (!legacyVariantId || amountStr == null) {
-          // Nothing to store; still 200 so Shopify doesn't retry
-          console.info("[WEBHOOK] inventory_items/update: no variant/cost to upsert", {
-            invId, legacyVariantId, amountStr
-          });
+          console.info(
+            "[WEBHOOK] inventory_items/update: no variant/cost to upsert",
+            { invId, legacyVariantId, amountStr }
+          );
           return ok();
         }
 
@@ -93,21 +99,18 @@ export async function POST(req: Request) {
             variantId: String(legacyVariantId),
             unitCost,
             currency,
-            // If your model DOESN'T have this column, remove the next line.
-            inventoryItemId: String(invId),
           },
           update: {
             unitCost,
             currency,
-            // Remove if you didn't add this column in Prisma.
-            inventoryItemId: String(invId),
           },
         });
 
-        console.log(`[WEBHOOK] cost cached for variant ${legacyVariantId} @ ${unitCost} ${currency}`);
+        console.log(
+          `[WEBHOOK] cost cached for variant ${legacyVariantId} @ ${unitCost} ${currency}`
+        );
       } catch (e) {
         console.error("[WEBHOOK] inventory_items/update GraphQL/upsert error:", e);
-        // Don’t fail the webhook; just log the error
       }
       return ok();
     }
@@ -130,9 +133,13 @@ export async function POST(req: Request) {
     if (topic === "customer.tags_added" || topic === "customer.tags_removed") {
       const shopifyId =
         extractShopifyCustomerId(body) ?? extractShopifyCustomerId(body?.customer);
-      const eventTags = parseShopifyTags(body?.tags ?? body?.added_tags ?? body?.removed_tags);
+      const eventTags = parseShopifyTags(
+        body?.tags ?? body?.added_tags ?? body?.removed_tags
+      );
 
-      console.info(`[WEBHOOK] ${topic} id=${shopifyId ?? "?"} eventTags=${JSON.stringify(eventTags)}`);
+      console.info(
+        `[WEBHOOK] ${topic} id=${shopifyId ?? "?"} eventTags=${JSON.stringify(eventTags)}`
+      );
 
       if (!shopifyId) {
         console.warn(`[WEBHOOK] ${topic} missing customer id; skipping`);
