@@ -18,6 +18,46 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+const toNum = (x: any): number | null => {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** Accepts a Map<string, {unitCost,...}> | Record<string, number | {unitCost,...}> and returns a Map */
+function normalizeCostMap(raw: unknown): Map<string, VariantCostEntry> {
+  const m = new Map<string, VariantCostEntry>();
+  if (!raw) return m;
+
+  const setEntry = (key: string, val: any) => {
+    if (val == null) return;
+    if (typeof val === "number") {
+      m.set(String(key), { unitCost: toNum(val), currency: null, inventoryItemId: null });
+      return;
+    }
+    if (typeof val === "object") {
+      const v = val as any;
+      m.set(String(key), {
+        unitCost: toNum(v.unitCost ?? v.cost ?? v.price),
+        currency: v.currency ?? null,
+        inventoryItemId: v.inventoryItemId ?? null,
+      });
+    }
+  };
+
+  // Map case
+  if (raw instanceof Map) {
+    for (const [k, v] of raw.entries()) setEntry(String(k), v);
+    return m;
+  }
+
+  // Plain object case
+  if (typeof raw === "object") {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) setEntry(k, v);
+  }
+
+  return m;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const confirm = ["1", "true", "yes"].includes(
@@ -46,7 +86,7 @@ export async function GET(req: NextRequest) {
     const cachedSet = new Set(cached.map((c) => c.variantId));
 
     // 3) Missing set
-    const missing = allVariantIds.filter((id) => !cachedSet.has(id));
+    const toFetch = allVariantIds.filter((id) => !cachedSet.has(id));
 
     if (!confirm) {
       return NextResponse.json({
@@ -54,7 +94,7 @@ export async function GET(req: NextRequest) {
         dryRun: true,
         discovered: allVariantIds.length,
         alreadyCached: cachedSet.size,
-        toFetch: missing.length,
+        toFetch: toFetch.length,
         message: "Add ?confirm=1 to perform the backfill.",
       });
     }
@@ -63,15 +103,15 @@ export async function GET(req: NextRequest) {
     let fetched = 0;
     let upserted = 0;
 
-    const batches = chunk(missing, 50); // GraphQL-friendly batch size
+    const batches = chunk(toFetch, 50); // GraphQL-friendly batch size
     for (const batch of batches) {
-      // Ensure TS knows this is a Map so .get(...) is callable
-      const costMap = (await fetchVariantCostsOnce(batch)) as Map<string, VariantCostEntry>;
+      const raw = await fetchVariantCostsOnce(batch);
+      const map = normalizeCostMap(raw);
       fetched += batch.length;
 
       for (const id of batch) {
-        const key = String(id);
-        const entry = costMap.get(key);
+        const key = `${id}`; // avoid calling global String(); keeps TS happy
+        const entry = map.get(key);
         if (!entry) continue;
 
         await prisma.shopifyVariantCost.upsert({
