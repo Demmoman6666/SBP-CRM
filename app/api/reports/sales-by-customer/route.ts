@@ -1,7 +1,7 @@
 // app/api/reports/sales-by-customer/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { fetchVariantUnitCosts } from "@/lib/shopify";
+import { fetchVariantUnitCosts, fetchVariantIdsBySkus } from "@/lib/shopify";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,18 +11,16 @@ type Row = {
   customerName: string;
   orders: number;
 
-  // Explicit values
   grossEx: number;      // ex VAT, before discounts
-  grossInc: number;     // inc VAT (grossEx + taxes)
+  grossInc: number;     // inc VAT = grossEx + taxes
   discounts: number;    // Shopify total_discounts (ex VAT)
   discount: number;     // alias for UI
   netEx: number;        // ex VAT, after discounts
 
-  // UI aliases
-  gross: number;        // = grossInc
-  net: number;          // = netEx
+  gross: number;        // = grossInc (UI alias)
+  net: number;          // = netEx   (UI alias)
 
-  cost: number;         // sum(qty * unitCost)
+  cost: number;         // sum(qtyEffective * unitCost)
   margin: number;       // netEx - cost
   marginPct: number | null;
   currency: string;
@@ -32,17 +30,8 @@ function toNum(v: any): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
-
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
+function startOfDay(d: Date) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
+function endOfDay(d: Date)   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
 
 /** Fallback: sum of line totals (best-effort), ex VAT. */
 function grossFromLines(
@@ -56,7 +45,6 @@ function grossFromLines(
   return Math.max(0, s);
 }
 
-/** Normalize any object or map into Map<string,{unitCost,currency?}> */
 type CostEntry = { unitCost: number | string; currency?: string };
 function normalizeCostMap(input: any): Map<string, CostEntry> {
   if (input && typeof input === "object" && typeof (input as Map<any, any>).entries === "function") {
@@ -92,7 +80,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Invalid date range" }, { status: 400 });
     }
 
-    // Resolve rep display name if id provided
+    // Rep display name (if id given)
     let repNameForFilter: string | null = repNameParam;
     if (repId) {
       const rep = await prisma.salesRep.findUnique({ where: { id: repId } });
@@ -106,12 +94,22 @@ export async function GET(req: Request) {
         id: true,
         processedAt: true,
         currency: true,
+
+        // order linkage
         customerId: true,
         shopifyCustomerId: true,
-        subtotal: true,   // ex VAT AFTER discounts
-        discounts: true,  // Shopify total_discounts (ex VAT)
-        taxes: true,      // VAT amount
-        shipping: true,   // ignored in revenue
+
+        // revenue components (originals)
+        subtotal: true,         // ex VAT AFTER discount
+        discounts: true,        // ex VAT
+        taxes: true,            // VAT
+        shipping: true,         // ignored in revenue
+
+        // refunds (aggregated via webhook)
+        refundedNet: true,      // ex VAT after discounts
+        refundedTax: true,
+        refundedShipping: true, // ignored in revenue
+        refundedTotal: true,    // inc VAT (not used directly)
 
         customer: {
           select: {
@@ -124,7 +122,8 @@ export async function GET(req: Request) {
           },
         },
         lineItems: {
-          select: { variantId: true, quantity: true, price: true, total: true },
+          // include refundedQuantity for cost adjustment + sku for backfill
+          select: { id: true, variantId: true, sku: true, quantity: true, refundedQuantity: true, price: true, total: true },
         },
       },
       orderBy: { processedAt: "asc" },
@@ -182,28 +181,62 @@ export async function GET(req: Request) {
       });
     }
 
-    // 4) Cost map from cache
-    const allVariantIds = Array.from(
-      new Set(filteredOrders.flatMap(o => o.lineItems.map(li => String(li.variantId || "")).filter(Boolean)))
-    );
+    // 4) Collect variantIds; detect lines missing variantId but having SKU (to backfill)
+    const allVariantIds = new Set<string>();
+    const linesMissingVariant: { id: string; sku: string }[] = [];
 
+    for (const o of filteredOrders) {
+      for (const li of o.lineItems) {
+        const vId = (li.variantId ? `${li.variantId}` : "").trim();
+        if (vId) {
+          allVariantIds.add(vId);
+        } else if ((li.sku || "").trim()) {
+          linesMissingVariant.push({ id: li.id, sku: (li.sku || "").trim() });
+        }
+      }
+    }
+
+    // 4a) Backfill missing variantIds by SKU (cap)
+    if (linesMissingVariant.length) {
+      const BACKFILL_SKU_LIMIT = 100;
+      const uniqueSkus = Array.from(new Set(linesMissingVariant.map(x => x.sku))).slice(0, BACKFILL_SKU_LIMIT);
+
+      try {
+        const skuToVariant = await fetchVariantIdsBySkus(uniqueSkus); // Map<sku, variantId>
+        const toUpdate: Array<{ id: string; variantId: string }> = [];
+        for (const rec of linesMissingVariant) {
+          const vId = skuToVariant.get(rec.sku);
+          if (vId) {
+            toUpdate.push({ id: rec.id, variantId: vId });
+            allVariantIds.add(vId);
+          }
+        }
+        for (const u of toUpdate) {
+          await prisma.orderLineItem.update({ where: { id: u.id }, data: { variantId: u.variantId } });
+        }
+      } catch (e) {
+        console.error("[report] variantId backfill by SKU failed:", e);
+      }
+    }
+
+    // 4b) Pull cached unit costs
     const costMap = new Map<string, number>();
-    if (allVariantIds.length) {
+    if (allVariantIds.size) {
       const costs = await prisma.shopifyVariantCost.findMany({
-        where: { variantId: { in: allVariantIds } },
+        where: { variantId: { in: Array.from(allVariantIds) } },
         select: { variantId: true, unitCost: true },
       });
       for (const c of costs) {
-        const key = String(c.variantId);
+        const key = `${c.variantId}`;
         if (!costMap.has(key)) costMap.set(key, toNum(c.unitCost));
       }
     }
 
-    // 4b) Backfill any missing costs from Shopify and cache
-    const missingVariantIds = allVariantIds.filter(id => !costMap.has(id));
+    // 4c) Backfill missing costs from Shopify and cache
+    const missingVariantIds = Array.from(allVariantIds).filter(id => !costMap.has(id));
     if (missingVariantIds.length) {
-      const BACKFILL_LIMIT = 200;
-      const toFetch = missingVariantIds.slice(0, BACKFILL_LIMIT);
+      const BACKFILL_COST_LIMIT = 200;
+      const toFetch = missingVariantIds.slice(0, BACKFILL_COST_LIMIT);
       try {
         const fetchedRaw = await fetchVariantUnitCosts(toFetch);
         const fetched = normalizeCostMap(fetchedRaw);
@@ -222,7 +255,7 @@ export async function GET(req: Request) {
       }
     }
 
-    // 5) Aggregate by customer
+    // 5) Aggregate by customer (subtract refunds; adjust cost for refunded qty)
     const rowsMap = new Map<string, Row>();
     const currency = filteredOrders.find(o => o.currency)?.currency || "GBP";
 
@@ -232,37 +265,38 @@ export async function GET(req: Request) {
       const name = (cust?.salonName || cust?.customerName || "Unlinked customer").trim();
       const key = customerId || `unlinked:${name}`;
 
-      // Prefer Shopify’s canonical fields
+      // base amounts
       const taxes = toNum(o.taxes);
-
-      let netEx = toNum(o.subtotal);                       // ex VAT, after discounts
-      let discounts = toNum(o.discounts);                  // ex VAT
-      // Fallbacks if either is missing:
-      if (!Number.isFinite(netEx) || netEx === 0) {
-        const lineGross = grossFromLines(o.lineItems);     // may already be net of discounts; best-effort
-        netEx = Math.max(0, lineGross - discounts);        // if discounts is still 0, this equals lineGross
-      }
-      if (!Number.isFinite(discounts) || discounts === 0) {
-        // If subtotal exists but discounts is 0, infer from lines as a last resort
+      const netExOriginal = toNum(o.subtotal);      // ex VAT after discounts
+      let discounts = toNum(o.discounts);           // ex VAT
+      if (!discounts) {
         const lineGross = grossFromLines(o.lineItems);
-        const inferred = Math.max(0, lineGross - netEx);
-        // Only use inferred if it’s positive
+        const inferred = Math.max(0, lineGross - netExOriginal);
         discounts = inferred > 0 ? inferred : 0;
       }
+      const grossExOriginal = Math.max(0, netExOriginal + discounts);
+      const grossIncOriginal = Math.max(0, grossExOriginal + taxes);
 
-      // Gross ex VAT (pre-discount) + Gross inc VAT
-      const grossEx = Math.max(0, netEx + discounts);
-      const grossInc = Math.max(0, grossEx + taxes);
+      // refunds
+      const refundedNet = toNum(o.refundedNet);   // ex VAT after discounts
+      const refundedTax = toNum(o.refundedTax);
 
-      // Cost = sum(qty * unitCostByVariant)
+      // effective revenue after refunds
+      const netEx = Math.max(0, netExOriginal - refundedNet);
+      const grossEx = Math.max(0, grossExOriginal - refundedNet); // discount already baked in via netEx
+      const grossInc = Math.max(0, grossIncOriginal - (refundedNet + refundedTax));
+
+      // cost = sum(unitCost * (qty - refundedQty))
       let cost = 0;
       for (const li of o.lineItems) {
-        const vId = String(li.variantId || "");
+        const vId = (li.variantId ? `${li.variantId}` : "").trim();
         if (!vId) continue;
         const unitCost = costMap.get(vId);
         if (unitCost == null) continue;
         const qty = Number(li.quantity ?? 0) || 0;
-        cost += unitCost * qty;
+        const refundedQty = Number(li.refundedQuantity ?? 0) || 0;
+        const effectiveQty = Math.max(0, qty - refundedQty);
+        cost += unitCost * effectiveQty;
       }
 
       const prev = rowsMap.get(key);
@@ -276,11 +310,11 @@ export async function GET(req: Request) {
           grossEx,
           grossInc,
           discounts,
-          discount: discounts, // alias
+          discount: discounts,
           netEx,
 
-          gross: grossInc,     // alias for UI
-          net: netEx,          // alias for UI
+          gross: grossInc,
+          net: netEx,
 
           cost,
           margin,
@@ -293,10 +327,10 @@ export async function GET(req: Request) {
         prev.grossEx += grossEx;
         prev.grossInc += grossInc;
         prev.discounts += discounts;
-        prev.discount = prev.discounts; // keep alias in sync
+        prev.discount = prev.discounts;
         prev.netEx += netEx;
 
-        prev.gross = prev.grossInc; // keep UI aliases in sync
+        prev.gross = prev.grossInc;
         prev.net = prev.netEx;
 
         prev.cost += cost;
