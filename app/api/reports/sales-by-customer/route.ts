@@ -1,203 +1,252 @@
 // app/api/reports/sales-by-customer/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import type { Prisma } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-function parseDateStart(raw?: string | null): Date | null {
-  if (!raw) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(`${raw}T00:00:00`);
-  const d = new Date(raw);
-  return isNaN(+d) ? null : d;
+type Row = {
+  customerId: string | null;
+  customerName: string;
+  orders: number;
+  grossEx: number;
+  discounts: number;
+  netEx: number;
+  cost: number;
+  margin: number;
+  marginPct: number | null;
+  currency: string;
+};
+
+function toNum(v: any): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
-function parseDateEnd(raw?: string | null): Date | null {
-  if (!raw) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(`${raw}T23:59:59.999`);
-  const d = new Date(raw);
-  return isNaN(+d) ? null : d;
+
+function startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function endOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
 }
 
-/** Line-based ex-VAT math (ignores taxes/shipping; discounts reflected in line.total). */
-function addLineAgg(
-  agg: { gross: number; net: number; discount: number; cost: number },
-  li: { price: any | null; total: any | null; quantity: number | null; variantId?: string | null },
-  costByVariant: Map<string, number>
-) {
-  const price = li.price != null ? Number(li.price) : null;
-  const qty = Number(li.quantity ?? 0) || 0;
-  const lineGross = price != null && isFinite(price) ? Math.max(0, price * qty) : 0;
-
-  const lineNetRaw =
-    li.total != null && isFinite(Number(li.total))
-      ? Number(li.total)
-      : lineGross;
-
-  const lineNet = Math.max(0, lineNetRaw);
-  const lineDiscount = Math.max(0, lineGross - lineNet);
-
-  let unitCost = 0;
-  if (li.variantId && costByVariant.has(String(li.variantId))) {
-    unitCost = costByVariant.get(String(li.variantId)) || 0;
+/** sum of line totals (pre-discount), ex VAT */
+function grossFromLines(lines: { total: any | null; price: any | null; quantity: number | null }[]): number {
+  let s = 0;
+  for (const li of lines) {
+    if (li.total != null) {
+      s += toNum(li.total);
+    } else {
+      s += toNum(li.price) * (Number(li.quantity ?? 0) || 0);
+    }
   }
-  const lineCost = Math.max(0, unitCost * qty);
+  return Math.max(0, s);
+}
 
-  agg.gross += lineGross;
-  agg.net += lineNet;
-  agg.discount += lineDiscount;
-  agg.cost += lineCost;
+/** net ex VAT, after discounts, before shipping. Prefer Order.subtotal. */
+function netExFromOrder(o: {
+  subtotal: any | null;
+  discounts: any | null;
+  shipping: any | null;
+}, grossEx: number): number {
+  const sub = o.subtotal != null ? toNum(o.subtotal) : null;
+  if (sub != null && Number.isFinite(sub)) return Math.max(0, sub);
+  const disc = toNum(o.discounts);
+  // shipping is ex-VAT too, but we exclude it from revenue calc entirely
+  return Math.max(0, grossEx - disc);
 }
 
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+  try {
+    const { searchParams } = new URL(req.url);
+    const repId = (searchParams.get("repId") || "").trim() || null;
+    const repNameParam = (searchParams.get("repName") || searchParams.get("staff") || "").trim() || null;
 
-  const from = parseDateStart(searchParams.get("from"));
-  const to = parseDateEnd(searchParams.get("to"));
+    const fromRaw = searchParams.get("from");
+    const toRaw = searchParams.get("to");
+    if (!fromRaw || !toRaw) {
+      return NextResponse.json({ error: "from and to are required (YYYY-MM-DD)" }, { status: 400 });
+    }
+    const from = startOfDay(new Date(fromRaw));
+    const to = endOfDay(new Date(toRaw));
+    if (isNaN(+from) || isNaN(+to)) {
+      return NextResponse.json({ error: "Invalid date range" }, { status: 400 });
+    }
 
-  const repId = searchParams.get("repId") || undefined;
-  const staffName = searchParams.get("staff") || searchParams.get("repName") || undefined;
+    // Resolve rep name if an id was provided (for legacy name fallback filters)
+    let repNameForFilter: string | null = repNameParam;
+    if (repId) {
+      const rep = await prisma.salesRep.findUnique({ where: { id: repId } });
+      repNameForFilter = rep?.name || repNameForFilter;
+    }
 
-  const limit = Math.min(Math.max(Number(searchParams.get("limit") || 500), 1), 5000);
-
-  const where: Prisma.OrderWhereInput = {
-    ...(from || to
-      ? {
-          processedAt: {
-            ...(from ? { gte: from } : {}),
-            ...(to ? { lte: to } : {}),
+    // 1) Pull all orders in range (paid + unpaid), with line items & lightweight customer info
+    const orders = await prisma.order.findMany({
+      where: {
+        processedAt: { gte: from, lte: to },
+      },
+      select: {
+        id: true,
+        processedAt: true,
+        currency: true,
+        customerId: true,
+        shopifyCustomerId: true,
+        subtotal: true,
+        discounts: true,
+        shipping: true,
+        customer: {
+          select: {
+            id: true,
+            salonName: true,
+            customerName: true,
+            salesRepId: true,
+            salesRep: true, // legacy text
           },
-        }
-      : {}),
-    // include all (paid + unpaid)
-    ...(repId || staffName
-      ? {
-          OR: [
-            ...(repId ? [{ customer: { rep: { id: repId } } }] as Prisma.OrderWhereInput[] : []),
-            ...(staffName ? [{ customer: { salesRep: staffName } }] as Prisma.OrderWhereInput[] : []),
-          ],
-        }
-      : {}),
-  };
+        },
+        lineItems: {
+          select: { variantId: true, quantity: true, price: true, total: true },
+        },
+      },
+      orderBy: { processedAt: "asc" },
+    });
 
-  // Pull orders + line items + customer display names
-  const orders = await prisma.order.findMany({
-    where,
-    orderBy: { processedAt: "desc" },
-    take: limit,
-    select: {
-      id: true,
-      processedAt: true,
-      currency: true,
-      customerId: true,
-      customer: { select: { salonName: true, customerName: true, salesRep: true, rep: { select: { id: true, name: true } } } },
-      lineItems: { select: { price: true, total: true, quantity: true, variantId: true } },
-      subtotal: true,
-      total: true,
-      taxes: true,
-      shipping: true,
-      discounts: true,
-    },
-  });
+    if (!orders.length) {
+      return NextResponse.json({ rows: [], total: { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 }, currency: "GBP" });
+    }
 
-  // Gather all variantIds present to load cached costs
-  const variantIds = Array.from(
-    new Set(
-      orders.flatMap((o) => o.lineItems.map((li) => li.variantId)).filter((v): v is string => !!v)
-    )
-  );
+    // 2) For orders without a customer relation, try to link by shopifyCustomerId
+    const orphanShopIds = Array.from(
+      new Set(
+        orders
+          .filter(o => !o.customerId && o.shopifyCustomerId)
+          .map(o => String(o.shopifyCustomerId))
+      )
+    );
+    const orphanMap: Map<string, { id: string; salonName: string | null; customerName: string | null; salesRepId: string | null; salesRep: string | null }> =
+      orphanShopIds.length
+        ? new Map(
+            (await prisma.customer.findMany({
+              where: { shopifyCustomerId: { in: orphanShopIds } },
+              select: { id: true, salonName: true, customerName: true, salesRepId: true, salesRep: true },
+            })).map(c => [String((c as any).shopifyCustomerId ?? ""), c])
+          )
+        : new Map();
 
-  // Load cached costs
-  const costs = await prisma.shopifyVariantCost.findMany({
-    where: { variantId: { in: variantIds } },
-    select: { variantId: true, unitCost: true },
-  });
-  const costByVariant = new Map<string, number>();
-  for (const c of costs) {
-    if (c.unitCost != null) costByVariant.set(c.variantId, Number(c.unitCost));
-  }
+    // 3) If a rep filter is present, apply it now using canonical id OR legacy name
+    const filteredOrders = orders.filter(o => {
+      const c = o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
+      if (!repId && !repNameForFilter) return true;
+      if (!c) return false;
+      const idMatch = repId && c.salesRepId ? c.salesRepId === repId : false;
+      const nameMatch = repNameForFilter && c.salesRep ? (c.salesRep || "").trim().toLowerCase() === repNameForFilter.trim().toLowerCase() : false;
+      return Boolean(idMatch || nameMatch);
+    });
 
-  type Row = {
-    customerId: string;
-    customer: string;
-    repName: string | null;
-    orders: number;
-    gross: number;
-    discount: number;
-    net: number;
-    marginPct: number | null;
-    currency: string;
-  };
+    if (!filteredOrders.length) {
+      return NextResponse.json({ rows: [], total: { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 }, currency: orders[0]?.currency || "GBP" });
+    }
 
-  const byCustomer = new Map<string, Row>();
-
-  for (const o of orders) {
-    const cid = o.customerId ?? "unknown";
-    const cname = o.customer?.salonName || o.customer?.customerName || "—";
-    const repName = o.customer?.rep?.name || o.customer?.salesRep || null;
-    const currency = o.currency || "GBP";
-
-    if (!byCustomer.has(cid)) {
-      byCustomer.set(cid, {
-        customerId: cid,
-        customer: cname,
-        repName,
-        orders: 0,
-        gross: 0,
-        discount: 0,
-        net: 0,
-        marginPct: null,
-        currency,
+    // 4) Build a cost map from cached ShopifyVariantCost (latest per variantId)
+    const allVariantIds = Array.from(
+      new Set(
+        filteredOrders.flatMap(o =>
+          o.lineItems.map(li => String(li.variantId || "")).filter(Boolean)
+        )
+      )
+    );
+    const costMap = new Map<string, number>();
+    if (allVariantIds.length) {
+      const costs = await prisma.shopifyVariantCost.findMany({
+        where: { variantId: { in: allVariantIds } },
+        orderBy: { recordedAt: "desc" },
+        select: { variantId: true, unitCost: true, recordedAt: true },
       });
+      for (const c of costs) {
+        const key = String(c.variantId);
+        if (!costMap.has(key)) costMap.set(key, toNum(c.unitCost));
+      }
     }
-    const row = byCustomer.get(cid)!;
 
-    row.orders += 1;
+    // 5) Aggregate by customer
+    const rowsMap = new Map<string, Row>();
+    let currency = filteredOrders[0]?.currency || "GBP";
 
-    if (o.lineItems && o.lineItems.length > 0) {
-      const agg = { gross: 0, net: 0, discount: 0, cost: 0 };
+    for (const o of filteredOrders) {
+      const cust = o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
+
+      const customerId = cust?.id ?? null;
+      const name = (cust?.salonName || cust?.customerName || "Unlinked customer").trim();
+      const key = customerId || `unlinked:${name}`;
+
+      const grossEx = grossFromLines(o.lineItems);
+      const netEx = netExFromOrder({ subtotal: o.subtotal, discounts: o.discounts, shipping: o.shipping }, grossEx);
+      const discounts = Math.max(0, grossEx - netEx);
+
+      // Cost = sum(lineQty * unitCostByVariant)
+      let cost = 0;
       for (const li of o.lineItems) {
-        addLineAgg(agg, li, costByVariant);
+        const vId = String(li.variantId || "");
+        if (!vId) continue;
+        const unitCost = costMap.get(vId);
+        if (unitCost == null) continue;
+        const qty = Number(li.quantity ?? 0) || 0;
+        cost += unitCost * qty;
       }
-      row.gross += agg.gross;
-      row.net += agg.net;
-      row.discount += agg.discount;
 
-      // compute margin% when we have at least some cost; if none, leave as null
-      if (agg.cost > 0 && row.net + agg.net >= 0) {
-        const netForCalc = agg.net;
-        const marginPct = netForCalc > 0 ? ((netForCalc - agg.cost) / netForCalc) * 100 : null;
-        // blend with previous (weighted by net)
-        if (row.marginPct == null) {
-          row.marginPct = marginPct;
-        } else if (marginPct != null) {
-          const prevNet = row.net;
-          const prevMarginVal = (row.marginPct / 100) * (prevNet || 0);
-          const thisMarginVal = ((marginPct || 0) / 100) * (netForCalc || 0);
-          const combinedNet = prevNet + netForCalc;
-          row.marginPct = combinedNet > 0 ? ((prevMarginVal + thisMarginVal) / combinedNet) * 100 : null;
-        }
+      const prev = rowsMap.get(key);
+      if (!prev) {
+        const margin = Math.max(0, netEx - cost);
+        rowsMap.set(key, {
+          customerId,
+          customerName: name,
+          orders: 1,
+          grossEx,
+          discounts,
+          netEx,
+          cost,
+          margin,
+          marginPct: netEx > 0 ? (margin / netEx) * 100 : null,
+          currency: o.currency || currency,
+        });
+      } else {
+        prev.orders += 1;
+        prev.grossEx += grossEx;
+        prev.discounts += discounts;
+        prev.netEx += netEx;
+        prev.cost += cost;
+        prev.margin = Math.max(0, prev.netEx - prev.cost);
+        prev.marginPct = prev.netEx > 0 ? (prev.margin / prev.netEx) * 100 : null;
       }
-    } else {
-      // Fallback using order-level fields if no lines: net ~ subtotal; gross ~ subtotal+discounts
-      const subtotal = o.subtotal != null ? Number(o.subtotal) : 0;
-      const discounts = o.discounts != null ? Number(o.discounts) : 0;
-      const grossApprox = Math.max(0, subtotal + Math.max(0, discounts));
-
-      row.gross += grossApprox;
-      row.net += Math.max(0, subtotal);
-      row.discount += Math.max(0, discounts);
-      // No cost without line variants; margin remains null
     }
+
+    const rows = Array.from(rowsMap.values()).sort((a, b) => b.netEx - a.netEx);
+
+    const totals = rows.reduce(
+      (acc, r) => {
+        acc.grossEx += r.grossEx;
+        acc.discounts += r.discounts;
+        acc.netEx += r.netEx;
+        acc.cost += r.cost;
+        acc.margin += r.margin;
+        return acc;
+      },
+      { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 }
+    );
+
+    return NextResponse.json({
+      ok: true,
+      from: from.toISOString(),
+      to: to.toISOString(),
+      currency,
+      rows,
+      total: totals,
+    });
+  } catch (err: any) {
+    console.error("sales-by-customer error:", err);
+    return NextResponse.json({ error: err?.message || "Internal error" }, { status: 500 });
   }
-
-  const rows = Array.from(byCustomer.values())
-    .sort((a, b) => b.net - a.net);
-
-  return NextResponse.json({
-    ok: true,
-    from: from?.toISOString() || null,
-    to: to?.toISOString() || null,
-    count: rows.length,
-    rows,
-  });
 }
