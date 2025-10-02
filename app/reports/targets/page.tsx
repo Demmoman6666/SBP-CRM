@@ -273,7 +273,7 @@ export default function TargetsAndScorecards() {
 
           <div className="grid grid-3" style={{ gap: 12 }}>
             <div className="card" style={{ padding: 12 }}>
-              <div className="small muted">Revenue</div>
+              <div className="small muted">Revenue (ex VAT)</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
                 {money(score.metrics.revenue.actual, score.metrics.revenue.currency)}
               </div>
