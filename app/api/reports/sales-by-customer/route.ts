@@ -61,6 +61,30 @@ function netExFromOrder(
   return Math.max(0, grossEx - disc);
 }
 
+/** ────────────────────────────────────────────────────────────────
+ *  Normalize cost response to a Map<string, { unitCost, currency? }>
+ *  Works whether fetchVariantUnitCosts returns a Map or a plain object.
+ *  ──────────────────────────────────────────────────────────────── */
+type CostEntry = { unitCost: number | string; currency?: string };
+function normalizeCostMap(input: any): Map<string, CostEntry> {
+  // Already a Map?
+  if (input && typeof input === "object" && typeof (input as Map<any, any>).entries === "function") {
+    return input as Map<string, CostEntry>;
+  }
+  // Otherwise assume record: { [variantId]: { unitCost, currency } | number }
+  const m = new Map<string, CostEntry>();
+  if (input && typeof input === "object") {
+    for (const [k, v] of Object.entries(input)) {
+      if (v && typeof v === "object" && "unitCost" in (v as any)) {
+        m.set(k, v as CostEntry);
+      } else if (typeof v === "number" || typeof v === "string") {
+        m.set(k, { unitCost: v as number | string });
+      }
+    }
+  }
+  return m;
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -87,9 +111,7 @@ export async function GET(req: Request) {
 
     // 1) Pull orders in range (paid + unpaid) with line items & lightweight customer info
     const orders = await prisma.order.findMany({
-      where: {
-        processedAt: { gte: from, lte: to },
-      },
+      where: { processedAt: { gte: from, lte: to } },
       select: {
         id: true,
         processedAt: true,
@@ -210,7 +232,9 @@ export async function GET(req: Request) {
       const toFetch = missingVariantIds.slice(0, BACKFILL_LIMIT);
 
       try {
-        const fetched = await fetchVariantUnitCosts(toFetch); // Map<string,{unitCost,currency}>
+        const fetchedRaw = await fetchVariantUnitCosts(toFetch); // Map OR plain object
+        const fetched = normalizeCostMap(fetchedRaw);
+
         for (const [variantId, entry] of fetched.entries()) {
           const unitCostNum = Number(entry.unitCost);
           if (!Number.isFinite(unitCostNum)) continue;
@@ -233,7 +257,7 @@ export async function GET(req: Request) {
 
     // 5) Aggregate by customer
     const rowsMap = new Map<string, Row>();
-    const currency = filteredOrders[0]?.currency || "GBP";
+    const currency = filteredOrders.find(o => o.currency)?.currency || "GBP";
 
     for (const o of filteredOrders) {
       const cust =
