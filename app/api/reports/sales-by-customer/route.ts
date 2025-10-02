@@ -1,6 +1,7 @@
 // app/api/reports/sales-by-customer/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { fetchVariantUnitCosts } from "@/lib/shopify";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -9,24 +10,14 @@ type Row = {
   customerId: string | null;
   customerName: string;
   orders: number;
-  grossEx: number;        // now holds Gross (inc VAT), name kept for backwards compatibility
-  discounts: number;      // Shopify order.total_discounts (ex VAT)
-  netEx: number;          // ex VAT, after discounts
-  cost: number;
-  margin: number;
+  grossEx: number;     // ex VAT, before discounts
+  discounts: number;   // absolute discount amount
+  netEx: number;       // ex VAT, after discounts
+  cost: number;        // sum of qty * unitCost
+  margin: number;      // netEx - cost (floored at 0)
   marginPct: number | null;
   currency: string;
 };
-
-// Frontend compatibility aliases it’s expecting
-type APIRow = Row & {
-  gross: number;     // alias -> grossEx (which is Gross inc VAT)
-  discount: number;  // alias -> discounts
-  net: number;       // alias -> netEx
-};
-
-type Totals = { grossEx: number; discounts: number; netEx: number; cost: number; margin: number };
-type APITotals = Totals & { gross: number; discount: number; net: number };
 
 function toNum(v: any): number {
   const n = Number(v);
@@ -45,11 +36,16 @@ function endOfDay(d: Date) {
 }
 
 /** Sum of line totals (pre-discount), ex VAT. */
-function grossFromLines(lines: { total: any | null; price: any | null; quantity: number | null }[]): number {
+function grossFromLines(
+  lines: { total: any | null; price: any | null; quantity: number | null }[]
+): number {
   let s = 0;
   for (const li of lines) {
-    if (li.total != null) s += toNum(li.total);
-    else s += toNum(li.price) * (Number(li.quantity ?? 0) || 0);
+    if (li.total != null) {
+      s += toNum(li.total);
+    } else {
+      s += toNum(li.price) * (Number(li.quantity ?? 0) || 0);
+    }
   }
   return Math.max(0, s);
 }
@@ -89,45 +85,65 @@ export async function GET(req: Request) {
       repNameForFilter = rep?.name || repNameForFilter;
     }
 
-    // 1) Pull orders (paid + unpaid)
+    // 1) Pull orders in range (paid + unpaid) with line items & lightweight customer info
     const orders = await prisma.order.findMany({
-      where: { processedAt: { gte: from, lte: to } },
+      where: {
+        processedAt: { gte: from, lte: to },
+      },
       select: {
         id: true,
         processedAt: true,
         currency: true,
         customerId: true,
         shopifyCustomerId: true,
-        subtotal: true,     // ex VAT, after discounts
-        discounts: true,    // Shopify total_discounts (ex VAT)
-        taxes: true,        // VAT to build Gross(inc VAT)
-        shipping: true,     // not used in revenue
+        subtotal: true,
+        discounts: true,
+        shipping: true,
         customer: {
           select: {
             id: true,
             salonName: true,
             customerName: true,
             salesRepId: true,
-            salesRep: true, // legacy free-text
+            salesRep: true, // legacy text
             shopifyCustomerId: true,
           },
         },
-        lineItems: { select: { variantId: true, quantity: true, price: true, total: true } },
+        lineItems: {
+          select: { variantId: true, quantity: true, price: true, total: true },
+        },
       },
       orderBy: { processedAt: "asc" },
     });
 
     if (!orders.length) {
-      const emptyTotals: APITotals = { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0, gross: 0, discount: 0, net: 0 };
-      return NextResponse.json({ rows: [] as APIRow[], total: emptyTotals, currency: "GBP" });
+      return NextResponse.json({
+        rows: [],
+        total: { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 },
+        currency: "GBP",
+      });
     }
 
-    // 2) Link by shopifyCustomerId if no relation
+    // 2) For orders without a customer relation, try to link by shopifyCustomerId
     const orphanShopIds = Array.from(
-      new Set(orders.filter(o => !o.customerId && o.shopifyCustomerId).map(o => String(o.shopifyCustomerId)))
+      new Set(
+        orders
+          .filter((o) => !o.customerId && o.shopifyCustomerId)
+          .map((o) => String(o.shopifyCustomerId))
+      )
     );
 
-    const orphanMap =
+    const orphanMap: Map<
+      string,
+      {
+        id: string;
+        salonName: string | null;
+        customerName: string | null;
+        salesRepId: string | null;
+        salesRep: string | null;
+        shopifyCustomerId: string | null;
+      }
+    > =
       orphanShopIds.length
         ? new Map(
             (
@@ -142,11 +158,11 @@ export async function GET(req: Request) {
                   shopifyCustomerId: true,
                 },
               })
-            ).map(c => [String(c.shopifyCustomerId ?? ""), c])
+            ).map((c) => [String(c.shopifyCustomerId ?? ""), c])
           )
-        : new Map<string, any>();
+        : new Map();
 
-    // 3) Rep filter (id or legacy name)
+    // 3) Apply rep filter (canonical id OR legacy name); if no filter, keep all
     const filteredOrders = orders.filter((o) => {
       const c = o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
       if (!repId && !repNameForFilter) return true;
@@ -160,17 +176,18 @@ export async function GET(req: Request) {
     });
 
     if (!filteredOrders.length) {
-      const emptyTotals: APITotals = { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0, gross: 0, discount: 0, net: 0 };
       return NextResponse.json({
-        rows: [] as APIRow[],
-        total: emptyTotals,
+        rows: [],
+        total: { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 },
         currency: orders[0]?.currency || "GBP",
       });
     }
 
-    // 4) Build cost map from ShopifyVariantCost
+    // 4) Build a cost map from cached ShopifyVariantCost.
     const allVariantIds = Array.from(
-      new Set(filteredOrders.flatMap(o => o.lineItems.map(li => String(li.variantId || "")).filter(Boolean)))
+      new Set(
+        filteredOrders.flatMap((o) => o.lineItems.map((li) => String(li.variantId || "")).filter(Boolean))
+      )
     );
 
     const costMap = new Map<string, number>();
@@ -185,24 +202,52 @@ export async function GET(req: Request) {
       }
     }
 
+    // 4b) 🔁 Auto-backfill missing costs (pull from Shopify GraphQL, cache, then use)
+    const missingVariantIds = allVariantIds.filter((id) => !costMap.has(id));
+    if (missingVariantIds.length) {
+      // cap to avoid huge bursts
+      const BACKFILL_LIMIT = 200;
+      const toFetch = missingVariantIds.slice(0, BACKFILL_LIMIT);
+
+      try {
+        const fetched = await fetchVariantUnitCosts(toFetch); // Map<string,{unitCost,currency}>
+        for (const [variantId, entry] of fetched.entries()) {
+          const unitCostNum = Number(entry.unitCost);
+          if (!Number.isFinite(unitCostNum)) continue;
+
+          // cache to DB
+          await prisma.shopifyVariantCost.upsert({
+            where: { variantId },
+            create: { variantId, unitCost: unitCostNum, currency: entry.currency || "GBP" },
+            update: { unitCost: unitCostNum, currency: entry.currency || "GBP" },
+          });
+
+          // use immediately in this response
+          costMap.set(variantId, unitCostNum);
+        }
+      } catch (e) {
+        // Non-fatal: just log; rows will still render with whatever we had
+        console.error("[report] variant cost backfill failed:", e);
+      }
+    }
+
     // 5) Aggregate by customer
     const rowsMap = new Map<string, Row>();
     const currency = filteredOrders[0]?.currency || "GBP";
 
     for (const o of filteredOrders) {
-      const cust = o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
+      const cust =
+        o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
 
       const customerId = cust?.id ?? null;
       const name = (cust?.salonName || cust?.customerName || "Unlinked customer").trim();
       const key = customerId || `unlinked:${name}`;
 
-      const grossExFallback = grossFromLines(o.lineItems); // ex VAT, pre-discount
-      const netEx = netExFromOrder({ subtotal: o.subtotal, discounts: o.discounts }, grossExFallback); // ex VAT
-      const discounts = toNum(o.discounts);                // ex VAT
-      const taxes = toNum((o as any).taxes);               // VAT
-      const grossInc = Math.max(0, netEx + taxes);         // inc VAT (excl shipping)
+      const grossEx = grossFromLines(o.lineItems);
+      const netEx = netExFromOrder({ subtotal: o.subtotal, discounts: o.discounts }, grossEx);
+      const discounts = Math.max(0, grossEx - netEx);
 
-      // Cost = sum(qty * unitCost)
+      // Cost = sum(lineQty * unitCostByVariant)
       let cost = 0;
       for (const li of o.lineItems) {
         const vId = String(li.variantId || "");
@@ -220,7 +265,7 @@ export async function GET(req: Request) {
           customerId,
           customerName: name,
           orders: 1,
-          grossEx: grossInc,  // store Gross (inc VAT)
+          grossEx,
           discounts,
           netEx,
           cost,
@@ -230,7 +275,7 @@ export async function GET(req: Request) {
         });
       } else {
         prev.orders += 1;
-        prev.grossEx += grossInc;
+        prev.grossEx += grossEx;
         prev.discounts += discounts;
         prev.netEx += netEx;
         prev.cost += cost;
@@ -241,11 +286,11 @@ export async function GET(req: Request) {
 
     const rows = Array.from(rowsMap.values()).sort((a, b) => b.netEx - a.netEx);
 
-    const totals = rows.reduce<Totals>(
+    const totals = rows.reduce(
       (acc, r) => {
-        acc.grossEx += r.grossEx;     // Gross (inc VAT)
-        acc.discounts += r.discounts; // ex VAT
-        acc.netEx += r.netEx;         // ex VAT
+        acc.grossEx += r.grossEx;
+        acc.discounts += r.discounts;
+        acc.netEx += r.netEx;
         acc.cost += r.cost;
         acc.margin += r.margin;
         return acc;
@@ -253,28 +298,13 @@ export async function GET(req: Request) {
       { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 }
     );
 
-    // 🔁 Add aliases the table expects
-    const rowsOut: APIRow[] = rows.map(r => ({
-      ...r,
-      gross: r.grossEx,
-      discount: r.discounts,
-      net: r.netEx,
-    }));
-
-    const totalOut: APITotals = {
-      ...totals,
-      gross: totals.grossEx,
-      discount: totals.discounts,
-      net: totals.netEx,
-    };
-
     return NextResponse.json({
       ok: true,
       from: from.toISOString(),
       to: to.toISOString(),
       currency,
-      rows: rowsOut,
-      total: totalOut,
+      rows,
+      total: totals,
     });
   } catch (err: any) {
     console.error("sales-by-customer error:", err);
