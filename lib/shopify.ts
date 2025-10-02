@@ -1,761 +1,721 @@
-// prisma/schema.prisma
-generator client {
-  provider = "prisma-client-js"
+// lib/shopify.ts
+import { prisma } from "@/lib/prisma";
+import crypto from "crypto";
+
+/** ───────────────── Env ───────────────── */
+const RAW_SHOP_DOMAIN = (process.env.SHOPIFY_SHOP_DOMAIN || "").trim();
+const SHOP_DOMAIN = RAW_SHOP_DOMAIN.replace(/^https?:\/\//i, "");
+const SHOP_ADMIN_TOKEN = (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "").trim();
+export const SHOPIFY_API_VERSION = (process.env.SHOPIFY_API_VERSION || "2024-07").trim();
+
+// Tag we’ll apply to Draft Orders created via CRM (can be comma-separated for multiple)
+const DEFAULT_DRAFT_TAG = (process.env.SHOPIFY_DRAFT_TAG || "CRM").trim();
+
+const WEBHOOK_SECRET = (process.env.SHOPIFY_WEBHOOK_SECRET || "").trim();
+const ALT_SECRET_1 = (process.env.SHOPIFY_API_SECRET_KEY || "").trim();
+const ALT_SECRET_2 = (process.env.SHOPIFY_CLIENT_SECRET || "").trim();
+const DISABLE_HMAC = (process.env.SHOPIFY_DISABLE_HMAC || "") === "1";
+
+/** ───────────────── Small utils ───────────────── */
+function toNumber(v: any): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+export function parseShopifyTags(input: any): string[] {
+  if (Array.isArray(input)) return input.map(String).map(s => s.trim()).filter(Boolean);
+  if (typeof input === "string") return input.split(",").map(s => s.trim()).filter(Boolean);
+  return [];
+}
+function tagsToString(tags: string[]): string {
+  return Array.from(new Set(tags.map(t => t.trim()).filter(Boolean))).join(", ");
 }
 
-// ---------------- Settings & Permissions ----------------
-enum Role {
-  ADMIN
-  MANAGER
-  REP
-  VIEWER
+/** Convert a GraphQL gid (e.g. gid://shopify/Product/123456789) → "123456789" */
+export function gidToNumericId(gid?: string | null): string | null {
+  if (!gid || typeof gid !== "string") return null;
+  const m = gid.match(/\/(\d+)$/);
+  return m ? m[1] : null;
+}
+/** Convert a numeric id to a ProductVariant GID */
+export function numericVariantIdToGid(id: string | number): string {
+  return `gid://shopify/ProductVariant/${id}`;
 }
 
-enum Permission {
-  VIEW_SALES_HUB
-  VIEW_REPORTS
-  VIEW_CUSTOMERS
-  EDIT_CUSTOMERS
-  VIEW_CALLS
-  EDIT_CALLS
-  VIEW_PROFIT_CALC
-  VIEW_SETTINGS
+/** ───────────────── REST Admin helper ───────────────── */
+export async function shopifyRest(path: string, init: RequestInit = {}) {
+  if (!SHOP_DOMAIN || !SHOP_ADMIN_TOKEN) {
+    throw new Error("Missing SHOPIFY_SHOP_DOMAIN or SHOPIFY_ADMIN_ACCESS_TOKEN");
+  }
+  const url = `https://${SHOP_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}${path}`;
+  const headers = new Headers(init.headers as any);
+  headers.set("X-Shopify-Access-Token", SHOP_ADMIN_TOKEN);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  headers.set("Accept", "application/json");
+  return fetch(url, { ...init, headers, cache: "no-store" });
 }
 
-// Targets enums
-enum TargetScope {
-  COMPANY
-  REP
-  VENDOR
+/** ───────────────── GraphQL Admin helper ───────────────── */
+export async function shopifyGraphql<T = any>(query: string, variables?: Record<string, any>): Promise<T> {
+  if (!SHOP_DOMAIN || !SHOP_ADMIN_TOKEN) {
+    throw new Error("Missing SHOPIFY_SHOP_DOMAIN or SHOPIFY_ADMIN_ACCESS_TOKEN");
+  }
+  const url = `https://${SHOP_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
+  const res = await fetch(url, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "X-Shopify-Access-Token": SHOP_ADMIN_TOKEN,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  const json = await res.json();
+  if (!res.ok || json?.errors) {
+    throw new Error(`Shopify GraphQL error: ${res.status} ${JSON.stringify(json?.errors || json)}`);
+  }
+  return json.data as T;
 }
 
-enum TargetMetric {
-  REVENUE
-  ORDERS
-  NEW_CUSTOMERS
+/* ➕ Alias export to satisfy imports that use `shopifyGraphQL` (capital QL) */
+export { shopifyGraphql as shopifyGraphQL };
+
+/** ✅ Minimal helper used by API routes to fail fast if env is missing */
+export function requireShopifyEnv() {
+  if (!SHOP_DOMAIN) throw new Error("Missing SHOPIFY_SHOP_DOMAIN");
+  if (!SHOP_ADMIN_TOKEN) throw new Error("Missing SHOPIFY_ADMIN_ACCESS_TOKEN");
 }
 
-// Customer lifecycle/stage
-enum CustomerStage {
-  LEAD
-  APPOINTMENT_BOOKED
-  SAMPLING
-  CUSTOMER
+/** ───────────────── HMAC ───────────────── */
+function verifyWithSecret(secret: string, rawBytes: Buffer, hmacHeader: string) {
+  if (!secret) return false;
+  const providedBytes = Buffer.from(hmacHeader, "base64");
+  const digestBytes = crypto.createHmac("sha256", secret).update(rawBytes).digest();
+  try {
+    return providedBytes.length === digestBytes.length && crypto.timingSafeEqual(providedBytes, digestBytes);
+  } catch {
+    return false;
+  }
+}
+export function verifyShopifyHmac(rawBody: ArrayBuffer | Buffer | string, hmacHeader?: string | null) {
+  if (DISABLE_HMAC) return true;
+  if (!hmacHeader) return false;
+  const bodyBuf =
+    typeof rawBody === "string"
+      ? Buffer.from(rawBody, "utf8")
+      : Buffer.isBuffer(rawBody)
+      ? rawBody
+      : Buffer.from(rawBody as ArrayBuffer);
+  const secrets = [WEBHOOK_SECRET, ALT_SECRET_1, ALT_SECRET_2].filter(Boolean);
+  for (const s of secrets) if (verifyWithSecret(s, bodyBuf, hmacHeader)) return true;
+  return false;
 }
 
-// NEW: Education request status
-enum EducationRequestStatus {
-  REQUESTED
-  BOOKED
-  CANCELLED
+/** ───────────────── Sales Rep mapping ───────────────── */
+export async function getSalesRepForTags(tags: string[]): Promise<string | null> {
+  if (!tags?.length) return null;
+  const norm = tags.map(t => t.trim()).filter(Boolean);
+
+  // 1) Rule table: allows aliases (e.g., “Colin” → “Colin Barber”)
+  const rule = await prisma.salesRepTagRule.findFirst({
+    where: { tag: { in: norm } },
+    include: { salesRep: true },
+    orderBy: { createdAt: "asc" },
+  });
+  if (rule?.salesRep?.name) return rule.salesRep.name;
+
+  // 2) Fallback: direct match to SalesRep.name
+  const reps = await prisma.salesRep.findMany({ select: { name: true } });
+  const byLower = new Map(reps.map(r => [r.name.toLowerCase(), r.name]));
+  for (const t of norm) {
+    const hit = byLower.get(t.toLowerCase());
+    if (hit) return hit;
+  }
+  return null;
 }
 
-// NEW: Education type multi-select
-enum EducationType {
-  PERMANENT_COLOUR
-  SEMI_PERMANENT_COLOUR
-  CARE_RANGE
-  STYLING_RANGE
+/** ───────────────── Customer fetch / id helpers ───────────────── */
+async function fetchShopifyCustomerById(shopifyId: string): Promise<any | null> {
+  if (!shopifyId) return null;
+  const res = await shopifyRest(`/customers/${shopifyId}.json`, { method: "GET" });
+  if (!res.ok) return null;
+  const json = await res.json();
+  return json?.customer ?? null;
 }
 
-// ---------------- Route Planning ----------------
-enum RouteDay {
-  MONDAY
-  TUESDAY
-  WEDNESDAY
-  THURSDAY
-  FRIDAY
+/** Extract numeric Shopify customer id from various payload shapes */
+export function extractShopifyCustomerId(payload: any): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  if (payload.customer_id != null) return String(payload.customer_id);               // tag webhooks
+  if (payload.customer?.id != null) return String(payload.customer.id);             // nested
+  if (payload.id != null && typeof payload.id !== "object") return String(payload.id); // direct
+  const gid: string | undefined =
+    payload.admin_graphql_api_id || payload.customer?.admin_graphql_api_id;
+  if (gid && typeof gid === "string") {
+    const m = gid.match(/\/Customer\/(\d+)$/);
+    if (m) return m[1];
+  }
+  return null;
 }
 
-// ---------------- Purchase Ordering / Linnworks ----------------
-enum PlanStatus {
-  DRAFT
-  ORDERED
-  CANCELLED
-  ARCHIVED
+/** ───────────────── Inbound upserts (Shopify → CRM) ───────────────── */
+type UpsertOpts = {
+  updateOnly?: boolean; // if true, do not create CRM customers when no match found
+  matchBy?: "shopifyIdOnly" | "shopifyIdOrEmail";
+};
+
+export async function upsertCustomerFromShopifyById(
+  shopCustomerId: string,
+  _shopDomain: string,
+  opts?: UpsertOpts
+) {
+  const full = await fetchShopifyCustomerById(shopCustomerId);
+  if (!full) {
+    console.warn(`[WEBHOOK] fetch failed for Shopify customer ${shopCustomerId}`);
+    return;
+  }
+  await upsertCustomerFromShopify(full, _shopDomain, opts);
 }
 
-model User {
-  id           String           @id @default(cuid())
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+export async function upsertCustomerFromShopify(
+  shop: any,
+  _shopDomain: string,
+  opts?: UpsertOpts
+) {
+  const shopifyId = extractShopifyCustomerId(shop);
+  const email: string | null = (shop.email || "").toLowerCase() || null;
 
-  fullName     String
-  email        String           @unique
-  phone        String?
-  passwordHash String
+  const addr = shop.default_address || {};
+  const fullName = [shop.first_name, shop.last_name].filter(Boolean).join(" ").trim();
+  const company = addr.company || "";
+  const phone = shop.phone || addr.phone || null;
 
-  role         Role             @default(REP)
-  isActive     Boolean          @default(true)
+  // If Shopify didn't include tags on this webhook, treat as empty array (we won’t clear CRM tags unless we fetched full record)
+  const tags = "tags" in shop ? parseShopifyTags(shop.tags) : [];
+  const repName = await getSalesRepForTags(tags);
 
-  // Google OAuth / Calendar
-  googleEmail          String?  @unique
-  googleAccessToken    String?
-  googleRefreshToken   String?
-  googleTokenExpiresAt DateTime?
-  googleCalendarId     String?  @default("primary")
+  const base = {
+    salonName: company || fullName || "Shopify Customer",
+    customerName: fullName || company || "Unknown",
+    addressLine1: addr.address1 || "",
+    addressLine2: addr.address2 || null,
+    town: addr.city || null,
+    county: addr.province || null,
+    postCode: addr.zip || null,
+    country: addr.country || null,
+    customerEmailAddress: email,
+    customerTelephone: phone,
+    shopifyCustomerId: shopifyId || null,
+  };
 
-  // fine-grained overrides in addition to role
-  overrides    UserPermission[]
-  // back-relation for AuditLog.user
-  auditLogs    AuditLog[]
+  const matchMode = opts?.matchBy ?? "shopifyIdOrEmail";
+  let existing: { id: string } | null = null;
+  if (shopifyId) {
+    existing = await prisma.customer.findFirst({ where: { shopifyCustomerId: shopifyId } });
+  }
+  if (!existing && matchMode === "shopifyIdOrEmail" && email) {
+    existing = await prisma.customer.findFirst({ where: { customerEmailAddress: email } });
+  }
 
-  // purchase plans created by this user
-  purchasePlans PurchasePlan[]
+  if (existing) {
+    const data: any = { ...base };
+    if ("tags" in shop) data.shopifyTags = { set: tags };
+    if (repName) data.salesRep = repName;
+    await prisma.customer.update({ where: { id: existing.id }, data });
+    return;
+  }
 
-  @@index([role])
+  if (opts?.updateOnly) return;
+
+  const createData: any = { ...base };
+  if ("tags" in shop) createData.shopifyTags = tags;
+  if (repName) createData.salesRep = repName;
+  await prisma.customer.create({ data: createData });
 }
 
-model UserPermission {
-  id        String     @id @default(cuid())
-  userId    String
-  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  perm      Permission
-  createdAt DateTime   @default(now())
+/** Orders (Shopify → CRM) */
+export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
+  const orderId = String(order.id);
+  const custShopId = order.customer ? String(order.customer.id) : null;
 
-  @@unique([userId, perm])
-  @@index([perm])
+  const linkedCustomer =
+    custShopId ? await prisma.customer.findFirst({ where: { shopifyCustomerId: custShopId } }) : null;
+
+  const shippingFromSet =
+    order?.total_shipping_price_set?.shop_money?.amount ??
+    order?.total_shipping_price_set?.presentment_money?.amount ?? null;
+  const shipping = toNumber(shippingFromSet) ?? toNumber(order?.shipping_lines?.[0]?.price) ?? null;
+
+  const ord = await prisma.order.upsert({
+    where: { shopifyOrderId: orderId },
+    create: {
+      shopifyOrderId: orderId,
+      shopifyOrderNumber: order.order_number ?? null,
+      shopifyName: order.name ?? null,
+      shopifyCustomerId: custShopId ?? null,
+      customerId: linkedCustomer ? linkedCustomer.id : null,
+      processedAt: order.processed_at ? new Date(order.processed_at)
+        : order.created_at ? new Date(order.created_at) : null,
+      currency: order.currency ?? null,
+      financialStatus: order.financial_status ?? null,
+      fulfillmentStatus: order.fulfillment_status ?? null,
+      subtotal: toNumber(order.subtotal_price),
+      total: toNumber(order.total_price),
+      taxes: toNumber(order.total_tax),
+      discounts: toNumber(order.total_discounts),
+      shipping,
+    },
+    update: {
+      shopifyOrderNumber: order.order_number ?? null,
+      shopifyName: order.name ?? null,
+      shopifyCustomerId: custShopId ?? null,
+      customerId: linkedCustomer ? linkedCustomer.id : null,
+      processedAt: order.processed_at ? new Date(order.processed_at)
+        : order.created_at ? new Date(order.created_at) : null,
+      currency: order.currency ?? null,
+      financialStatus: order.financial_status ?? null,
+      fulfillmentStatus: order.fulfillment_status ?? null,
+      subtotal: toNumber(order.subtotal_price),
+      total: toNumber(order.total_price),
+      taxes: toNumber(order.total_tax),
+      discounts: toNumber(order.total_discounts),
+      shipping,
+    },
+  });
+
+  // Recreate line items
+  await prisma.orderLineItem.deleteMany({ where: { orderId: ord.id } });
+
+  const itemsData = (order.line_items || []).map((li: any) => {
+    const qty = Number(li.quantity ?? 0);
+    const unit = toNumber(li.price);
+    return {
+      orderId: ord.id,
+      shopifyLineItemId: li.id ? String(li.id) : null,
+      productId: li.product_id ? String(li.product_id) : null,
+      productTitle: li.title ?? null,
+      variantId: li.variant_id ? String(li.variant_id) : null,
+      variantTitle: li.variant_title ?? null,
+      sku: li.sku ?? null,
+      productVendor: li.vendor ?? null,
+      quantity: qty,
+      price: unit,
+      total: unit != null ? (qty ? unit * qty : unit) : null,
+    };
+  });
+
+  if (itemsData.length) await prisma.orderLineItem.createMany({ data: itemsData });
+
+  return ord;
 }
 
-model AuditLog {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  action    String
-  details   Json?
+/** ───────────────── Outbound push (CRM → Shopify) ───────────────── */
+async function tagForSalesRepName(repName: string): Promise<string> {
+  const rep = await prisma.salesRep.findFirst({ where: { name: repName }, select: { id: true, name: true } });
+  if (!rep) return repName;
+  const rule = await prisma.salesRepTagRule.findFirst({ where: { salesRepId: rep.id }, select: { tag: true } });
+  return (rule?.tag?.trim()) || rep.name;
+}
+async function allRepTagsToStripLower(): Promise<Set<string>> {
+  const [rules, reps] = await Promise.all([
+    prisma.salesRepTagRule.findMany({ select: { tag: true } }),
+    prisma.salesRep.findMany({ select: { name: true } }),
+  ]);
+  const s = new Set<string>();
+  for (const r of rules) if (r.tag) s.add(r.tag.toLowerCase().trim());
+  for (const r of reps) if (r.name) s.add(r.name.toLowerCase().trim());
+  return s;
+}
+async function fetchShopifyCustomerTags(shopifyId: string): Promise<string[]> {
+  const res = await shopifyRest(`/customers/${shopifyId}.json`, { method: "GET" });
+  if (!res.ok) return [];
+  const json = await res.json();
+  return parseShopifyTags(json?.customer?.tags);
 }
 
-// ---------------- Existing CRM models ----------------
-model Customer {
-  id                   String    @id @default(cuid())
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+/** Keep this export because your /api/customers/[id] route imports it */
+export async function pushCustomerToShopifyById(crmCustomerId: string) {
+  const c = await prisma.customer.findUnique({ where: { id: crmCustomerId } });
+  if (!c) return;
 
-  salonName            String
-  customerName         String
-  addressLine1         String
-  addressLine2         String?
-  town                 String?
-  county               String?
-  postCode             String?
-  country              String?
-  daysOpen             String?
-  brandsInterestedIn   String?
-  notes                String?
+  const parts = (c.customerName || "").trim().split(/\s+/);
+  const first_name = parts[0] || "";
+  const last_name = parts.slice(1).join(" ") || "";
 
-  // LEGACY free-text rep (kept for backward compatibility)
-  salesRep             String?
-  // ✅ Canonical link to SalesRep
-  salesRepId           String?
-  rep                  SalesRep? @relation("CustomerRep", fields: [salesRepId], references: [id], onDelete: SetNull)
+  const baseAddress = {
+    default: true,
+    company: c.salonName || undefined,
+    address1: c.addressLine1 || undefined,
+    address2: c.addressLine2 || undefined,
+    city: c.town || undefined,
+    province: c.county || undefined,
+    country: c.country || undefined,
+    zip: c.postCode || undefined,
+  };
 
-  customerNumber       String?
-  customerTelephone    String?
-  customerEmailAddress String?
-  openingHours         String?
-  numberOfChairs       Int?
+  const currentRep = (c.salesRep || "").trim();
+  const repTag = currentRep ? (await tagForSalesRepName(currentRep)) : null;
 
-  // lifecycle stage
-  stage                CustomerStage @default(LEAD)
+  let existingShopifyId = c.shopifyCustomerId || null;
+  let existingTags: string[] = [];
+  if (existingShopifyId) {
+    try { existingTags = await fetchShopifyCustomerTags(existingShopifyId); } catch { existingTags = []; }
+  }
 
-  visits               Visit[]
-  notesLog             Note[]
-  callLogs             CallLog[]
+  const repUniverse = await allRepTagsToStripLower();
+  const kept = existingTags.filter(t => !repUniverse.has(t.toLowerCase().trim()));
+  const newTags = repTag ? [...kept, repTag] : kept;
 
-  // NEW: education relations
-  educationRequests    EducationRequest[]
-  educationBookings    EducationBooking[]
+  const payload: any = {
+    customer: {
+      email: c.customerEmailAddress || undefined,
+      phone: c.customerTelephone || undefined,
+      first_name,
+      last_name,
+      addresses: [baseAddress],
+      tags: tagsToString(newTags),
+    },
+  };
 
-  // Shopify sync fields
-  shopifyCustomerId    String?   @unique
-  shopifyTags          String[]  @default([])
-  shopifyLastSyncedAt  DateTime?
-
-  // --- NEW: Payment terms (applied to Shopify draft orders) ---
-  paymentDueLater       Boolean  @default(false)
-  paymentTermsName      String?
-  paymentTermsDueInDays Int?
-
-  // Orders relationship
-  orders               Order[]
-
-  // ---------------- Route Planning ----------------
-  routePlanEnabled     Boolean     @default(false)
-  routeWeeks           Int[]       @default([])
-  routeDays            RouteDay[]  @default([])
-
-  @@index([customerEmailAddress])
-  @@index([salesRep])          // legacy text index
-  @@index([salesRepId])        // ✅ canonical rep index
-  @@index([stage])
-  @@index([routePlanEnabled, salesRep])
+  if (!existingShopifyId) {
+    const res = await shopifyRest(`/customers.json`, { method: "POST", body: JSON.stringify(payload) });
+    if (!res.ok) throw new Error(`Shopify create failed: ${res.status} ${await res.text().catch(()=>"")}`);
+    const json = await res.json();
+    const shopifyId = String(json?.customer?.id ?? "");
+    if (shopifyId) {
+      await prisma.customer.update({
+        where: { id: c.id },
+        data: {
+          shopifyCustomerId: shopifyId,
+          shopifyLastSyncedAt: new Date(),
+          shopifyTags: parseShopifyTags(json?.customer?.tags),
+        },
+      });
+    }
+  } else {
+    const res = await shopifyRest(`/customers/${existingShopifyId}.json`, {
+      method: "PUT",
+      body: JSON.stringify({ customer: { id: Number(existingShopifyId), ...payload.customer } }),
+    });
+    if (!res.ok) throw new Error(`Shopify update failed: ${res.status} ${await res.text().catch(()=>"")}`);
+    const json = await res.json();
+    await prisma.customer.update({
+      where: { id: c.id },
+      data: {
+        shopifyLastSyncedAt: new Date(),
+        shopifyTags: parseShopifyTags(json?.customer?.tags),
+      },
+    });
+  }
 }
 
-model Visit {
-  id               String    @id @default(cuid())
-  customerId       String
-  customer         Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+/* ──────────────────────────────────────────────────────────────────
+   Product Search (Admin GraphQL) for “Create Order”
+   - searchShopifyCatalog(term) returns flattened variants + product info
+   - createDraftOrderForCustomer(...) to stage an order in Shopify
+   - fetchVariantUnitCosts(...) to retrieve cost-per-item for variants
+   - fetchLineCostsForOrderPayload(...) to map an *order JSON* to costs
+   ────────────────────────────────────────────────────────────────── */
 
-  date             DateTime  @default(now())
-  startTime        DateTime?
-  endTime          DateTime?
-  durationMinutes  Int?
+export type ShopifySearchVariant = {
+  productGid: string;
+  productId: string | null;
+  productTitle: string;
+  vendor: string | null;
+  imageUrl: string | null;
+  status: string | null;
 
-  summary          String?
-  staff            String?
+  variantGid: string;
+  variantId: string | null;
+  variantTitle: string;
+  sku: string | null;
+  barcode: string | null;
 
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  priceAmount: string | null;
+  currencyCode: string | null;
 
-  @@index([customerId, date])
+  /** ➕ cost fields (if “Cost per item” is set in Shopify) */
+  unitCostAmount?: string | null;
+  unitCostCurrencyCode?: string | null;
+
+  availableForSale: boolean | null;
+  inventoryQuantity: number | null;
+};
+
+function buildProductQueryString(term: string): string {
+  const t = term.replace(/"/g, '\\"').trim();
+  if (!t) return "";
+  return `title:*${t}* OR sku:*${t}* OR vendor:*${t}*`;
 }
 
-model Note {
-  id          String    @id @default(cuid())
-  customerId  String
-  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+export async function searchShopifyCatalog(term: string, first = 15): Promise<ShopifySearchVariant[]> {
+  const q = buildProductQueryString(term);
+  if (!q) return [];
 
-  text        String
-  staff       String?
-  createdAt   DateTime  @default(now())
+  const query = `
+    query SearchProducts($q: String!, $first: Int!) {
+      products(first: $first, query: $q) {
+        edges {
+          node {
+            id
+            title
+            vendor
+            status
+            images(first: 1) { edges { node { url } } }
+            variants(first: 50) {
+              edges {
+                node {
+                  id
+                  title
+                  sku
+                  barcode
+                  availableForSale
+                  inventoryQuantity
+                  price { amount currencyCode }
+                  inventoryItem {
+                    unitCost { amount currencyCode }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
 
-  @@index([customerId, createdAt])
+  type Gx = {
+    products: {
+      edges: Array<{
+        node: {
+          id: string;
+          title: string;
+          vendor?: string | null;
+          status?: string | null;
+          images?: { edges: { node: { url: string } }[] } | null;
+          variants: {
+            edges: Array<{
+              node: {
+                id: string;
+                title: string;
+                sku?: string | null;
+                barcode?: string | null;
+                availableForSale?: boolean | null;
+                inventoryQuantity?: number | null;
+                price?: { amount: string; currencyCode: string } | null;
+                inventoryItem?: { unitCost?: { amount: string; currencyCode: string } | null } | null;
+              };
+            }>;
+          };
+        };
+      }>;
+    };
+  };
+
+  const data = await shopifyGraphql<Gx>(query, { q, first });
+  const out: ShopifySearchVariant[] = [];
+  for (const pe of data?.products?.edges || []) {
+    const p = pe.node;
+    const productId = gidToNumericId(p.id);
+    const img = p.images?.edges?.[0]?.node?.url || null;
+
+    for (const ve of p.variants?.edges || []) {
+      const v = ve.node;
+      out.push({
+        productGid: p.id,
+        productId,
+        productTitle: p.title,
+        vendor: p.vendor ?? null,
+        imageUrl: img,
+        status: p.status ?? null,
+
+        variantGid: v.id,
+        variantId: gidToNumericId(v.id),
+        variantTitle: v.title,
+        sku: v.sku ?? null,
+        barcode: v.barcode ?? null,
+
+        priceAmount: v.price?.amount ?? null,
+        currencyCode: v.price?.currencyCode ?? null,
+
+        unitCostAmount: v.inventoryItem?.unitCost?.amount ?? null,
+        unitCostCurrencyCode: v.inventoryItem?.unitCost?.currencyCode ?? null,
+
+        availableForSale: v.availableForSale ?? null,
+        inventoryQuantity: typeof v.inventoryQuantity === "number" ? v.inventoryQuantity : null,
+      });
+    }
+  }
+  return out;
 }
 
-model SalesRep {
-  id        String   @id @default(cuid())
-  name      String   @unique
-  email     String?
-  createdAt DateTime @default(now())
-
-  tagRules  SalesRepTagRule[]
-
-  // back-relations
-  targets   Target[]   @relation("TargetRep")
-  customers Customer[] @relation("CustomerRep")
-  callLogs  CallLog[]  @relation("CallLogRep")
+/** Normalize any incoming tags shape to a comma-separated string */
+function normalizeTagsToString(input?: string | string[] | null): string | undefined {
+  if (input == null) return undefined;
+  if (Array.isArray(input)) return tagsToString(input);
+  const s = String(input).trim();
+  if (!s) return undefined;
+  // If someone passes a JSON array string like '["A","B"]', parse it
+  if (s.startsWith("[") && s.endsWith("]")) {
+    try {
+      const arr = JSON.parse(s);
+      if (Array.isArray(arr)) return tagsToString(arr.map(String));
+    } catch {}
+  }
+  return s;
 }
 
-model Brand {
-  id               String   @id @default(cuid())
-  name             String   @unique
-  createdAt        DateTime @default(now())
+/** Create a Draft Order in Shopify for a CRM customer by their id */
+export async function createDraftOrderForCustomer(
+  crmCustomerId: string,
+  items: Array<{ variantId: string; quantity: number }>,
+  note?: string,
+  tags?: string | string[],
+) {
+  // We require a Shopify customer id on the CRM record
+  const customer = await prisma.customer.findUnique({
+    where: { id: crmCustomerId },
+    select: { shopifyCustomerId: true, customerEmailAddress: true, salonName: true, customerName: true },
+  });
+  if (!customer) throw new Error("Customer not found");
+  if (!customer.shopifyCustomerId) throw new Error("This customer is not linked to a Shopify customer");
 
-  visibleInCallLog Boolean  @default(false)
+  // Draft order line items (REST expects numeric variant_id)
+  const line_items = items.map((li) => ({
+    variant_id: Number(li.variantId),
+    quantity: li.quantity,
+  }));
 
-  competitorLinks  CallLogCompetitorBrand[]
+  // Combine provided tags with default tag and normalize to string
+  const provided = normalizeTagsToString(tags);
+  const defaults = normalizeTagsToString(DEFAULT_DRAFT_TAG);
+  const combined = tagsToString([
+    ...parseShopifyTags(provided || ""),
+    ...parseShopifyTags(defaults || ""),
+  ]);
+
+  const payload: any = {
+    draft_order: {
+      customer: { id: Number(customer.shopifyCustomerId) },
+      line_items,
+      note: note || undefined,
+      use_customer_default_address: true,
+      note_attributes: [{ name: "Source", value: "CRM" }],
+    },
+  };
+
+  if (combined) {
+    // Ensure this is always a STRING for Shopify REST
+    payload.draft_order.tags = combined;
+  }
+
+  // Final guard: never send an array as tags
+  if (payload?.draft_order?.tags && Array.isArray(payload.draft_order.tags)) {
+    payload.draft_order.tags = tagsToString(payload.draft_order.tags);
+  }
+
+  const res = await shopifyRest(`/draft_orders.json`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Draft order create failed: ${res.status} ${text}`);
+  }
+
+  const json = await res.json();
+  return json?.draft_order || null;
 }
 
-model CallLog {
-  id                   String   @id @default(cuid())
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+/* ──────────────────────────────────────────────────────────────
+   ➕ Cost-per-item helpers (no schema changes required)
+   These allow reports to fetch costs from Shopify when needed.
+   ────────────────────────────────────────────────────────────── */
 
-  isExistingCustomer   Boolean
+/** Fetch unit cost for a list of numeric ProductVariant IDs.
+ *  Returns a map: { [variantNumericId]: number|null } (cost in shop currency)
+ */
+export async function fetchVariantUnitCosts(variantNumericIds: Array<string | number>) {
+  const ids = (variantNumericIds || []).map(v => String(v)).filter(Boolean);
+  if (!ids.length) return {} as Record<string, number | null>;
 
-  customerId           String?
-  customer             Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100));
 
-  customerName         String?
-  contactPhone         String?
-  contactEmail         String?
+  const out: Record<string, number | null> = {};
 
-  callType             String?
-  summary              String?
-  outcome              String?
+  const query = `
+    query VariantCosts($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on ProductVariant {
+          id
+          inventoryItem {
+            unitCost { amount currencyCode }
+          }
+        }
+      }
+    }
+  `;
 
-  // LEGACY free-text rep (kept for backward compatibility)
-  staff                String?
+  for (const bucket of chunks) {
+    const variables = { ids: bucket.map(numericVariantIdToGid) };
+    const data = await shopifyGraphql<{
+      nodes: Array<
+        | { id: string; inventoryItem?: { unitCost?: { amount: string; currencyCode: string } | null } | null }
+        | null
+      >;
+    }>(query, variables);
 
-  // ✅ Canonical link to SalesRep
-  repId                String?
-  rep                  SalesRep? @relation("CallLogRep", fields: [repId], references: [id], onDelete: SetNull)
+    for (const node of data?.nodes || []) {
+      if (!node || !("id" in node) || !node.id) continue;
+      const numeric = gidToNumericId(node.id);
+      const amt = node?.inventoryItem?.unitCost?.amount;
+      out[numeric || ""] = amt != null ? Number(amt) : null;
+    }
+  }
 
-  stage                CustomerStage?
-
-  followUpRequired     Boolean   @default(false)
-  followUpAt           DateTime?
-
-  startTime            DateTime?
-  endTime              DateTime?
-  durationMinutes      Int?
-  appointmentBooked    Boolean?  @default(false)
-
-  latitude             Float?
-  longitude            Float?
-  accuracyM            Float?
-  geoCollectedAt       DateTime?
-
-  stockedBrandLinks    CallLogStockedBrand[]
-  competitorBrandLinks CallLogCompetitorBrand[]
-
-  @@index([createdAt])
-  @@index([isExistingCustomer, customerId])
-  @@index([stage])
-  // ✅ helpful filters
-  @@index([repId])
-  @@index([staff])
-  @@index([callType])
-  @@index([outcome])
+  return out;
 }
 
-model StockedBrand {
-  id               String   @id @default(cuid())
-  name             String   @unique
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+/** Given a raw Shopify Order payload (as received from webhook/REST),
+ *  return a per-line cost breakdown based on variant_id and quantity.
+ *  Shape: { lines: { [shopifyLineItemId]: { unitCost: number|null, extendedCost: number|null } }, totalCost: number }
+ */
+export async function fetchLineCostsForOrderPayload(order: any) {
+  const lines = Array.isArray(order?.line_items) ? order.line_items : [];
+  const varIds: string[] = [];
+  const keyByLineId: Record<string, string> = {}; // shopify line id -> variant id
 
-  visibleInCallLog Boolean  @default(false)
+  for (const li of lines) {
+    const vid = li?.variant_id != null ? String(li.variant_id) : "";
+    const lid = li?.id != null ? String(li.id) : "";
+    if (vid) varIds.push(vid);
+    if (lid && vid) keyByLineId[lid] = vid;
+  }
 
-  callLinks        CallLogStockedBrand[]
+  const costMap = await fetchVariantUnitCosts(varIds);
+  const result: Record<string, { unitCost: number | null; extendedCost: number | null }> = {};
+  let totalCost = 0;
 
-  targets          Target[]  @relation("TargetVendor")
+  for (const li of lines) {
+    const lid = li?.id != null ? String(li.id) : "";
+    const vid = keyByLineId[lid];
+    const unit = vid ? costMap[vid] ?? null : null;
+    const qty = Number(li?.quantity ?? 0) || 0;
+    const ext = unit != null ? unit * qty : null;
+    result[lid] = { unitCost: unit, extendedCost: ext };
+    if (ext != null) totalCost += ext;
+  }
+
+  return { lines: result, totalCost };
 }
 
-model Order {
-  id                 String     @id @default(cuid())
-  createdAt          DateTime   @default(now())
-  updatedAt          DateTime   @updatedAt
-
-  // Shopify identifiers
-  shopifyOrderId     String?    @unique
-  shopifyOrderNumber Int?
-  shopifyName        String?
-  shopifyCustomerId  String?
-
-  // Customer link
-  customerId         String?
-  customer           Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
-
-  // Timestamps & status
-  processedAt        DateTime?
-  currency           String?
-  financialStatus    String?
-  fulfillmentStatus  String?
-
-  // Money
-  subtotal           Decimal?   @db.Decimal(12, 2)
-  total              Decimal?   @db.Decimal(12, 2)
-  taxes              Decimal?   @db.Decimal(12, 2)
-  discounts          Decimal?   @db.Decimal(12, 2)
-  shipping           Decimal?   @db.Decimal(12, 2)
-
-  lineItems          OrderLineItem[]
-
-  @@index([customerId, processedAt])
-  @@index([shopifyCustomerId])
-}
-
-model OrderLineItem {
-  id                String   @id @default(cuid())
-  orderId           String
-  order             Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-
-  shopifyLineItemId String?  @unique
-  productId         String?
-  productTitle      String?
-  variantId         String?
-  variantTitle      String?
-  sku               String?
-
-  productVendor     String?
-
-  quantity          Int      @default(1)
-  price             Decimal? @db.Decimal(12, 2)
-  total             Decimal? @db.Decimal(12, 2)
-
-  createdAt         DateTime @default(now())
-
-  @@index([orderId])
-  @@index([productVendor])
-}
-
-model SalesRepTagRule {
-  id          String   @id @default(cuid())
-  tag         String   @unique
-  salesRepId  String
-  salesRep    SalesRep @relation(fields: [salesRepId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
-}
-
-model ShopifySyncState {
-  id                    Int      @id @default(1)
-  lastCustomersSyncedAt DateTime?
-  lastOrdersSyncedAt    DateTime?
-  lastWebhookReceivedAt DateTime?
-  updatedAt             DateTime @updatedAt
-}
-
-model WebhookLog {
-  id        String   @id @default(cuid())
-  topic     String
-  shopifyId String?
-  payload   Json
-  createdAt DateTime @default(now())
-
-  @@index([topic, createdAt])
-}
-
-// Targets model
-model Target {
-  id           String        @id @default(cuid())
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-
-  scope        TargetScope
-  metric       TargetMetric
-
-  periodStart  DateTime
-  periodEnd    DateTime
-
-  amount       Decimal       @db.Decimal(12, 2)
-  currency     String?       @default("GBP")
-
-  // Optional dimensions per scope
-  repId        String?
-  rep          SalesRep?     @relation("TargetRep", fields: [repId], references: [id], onDelete: SetNull)
-
-  vendorId     String?
-  vendor       StockedBrand? @relation("TargetVendor", fields: [vendorId], references: [id], onDelete: SetNull)
-
-  notes        String?
-
-  @@index([scope, metric, periodStart, periodEnd])
-  @@index([repId])
-  @@index([vendorId])
-  @@unique([scope, metric, periodStart, periodEnd, repId, vendorId], map: "scope_metric_periodStart_periodEnd_repId_vendorId")
-}
-
-// ---------------- Many-to-many join tables for CallLog x Brands ----------------
-model CallLogStockedBrand {
-  id        String       @id @default(cuid())
-  callLogId String
-  brandId   String
-  createdAt DateTime     @default(now())
-
-  callLog   CallLog      @relation(fields: [callLogId], references: [id], onDelete: Cascade)
-  brand     StockedBrand @relation(fields: [brandId], references: [id], onDelete: Cascade)
-
-  @@unique([callLogId, brandId])
-  @@index([brandId])
-}
-
-model CallLogCompetitorBrand {
-  id        String   @id @default(cuid())
-  callLogId String
-  brandId   String
-  createdAt DateTime @default(now())
-
-  callLog   CallLog  @relation(fields: [callLogId], references: [id], onDelete: Cascade)
-  brand     Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
-
-  @@unique([callLogId, brandId])
-  @@index([brandId])
-}
-
-// ---------------- Education Requests & Bookings ----------------
-model EducationRequest {
-  id           String                 @id @default(cuid())
-  createdAt    DateTime               @default(now())
-  updatedAt    DateTime               @updatedAt
-
-  customerId   String
-  customer     Customer               @relation(fields: [customerId], references: [id], onDelete: Cascade)
-
-  status       EducationRequestStatus @default(REQUESTED)
-
-  // Snapshot of contact/location details at the time of request
-  salonName    String?
-  contactName  String?
-  phone        String?
-  email        String?
-  addressLine1 String?
-  addressLine2 String?
-  town         String?
-  county       String?
-  postCode     String?
-  country      String?
-
-  // Captured from the form
-  brands          String[]        @default([])
-  educationTypes  EducationType[] @default([])
-
-  notes        String?
-
-  // 1:1 link to a created booking
-  booking      EducationBooking?  @relation("RequestBooking")
-
-  @@index([customerId, createdAt])
-  @@index([status])
-}
-
-model EducationBooking {
-  id             String            @id @default(cuid())
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-
-  // 1:1 back to the request — FK must be unique
-  requestId      String?           @unique
-  request        EducationRequest? @relation("RequestBooking", fields: [requestId], references: [id], onDelete: SetNull)
-
-  customerId     String
-  customer       Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
-
-  title          String?
-  startAt        DateTime?
-  endAt          DateTime?
-  location       String?
-
-  brand          String?
-  educationTypes EducationType[]   @default([])
-
-  notes          String?
-
-  @@index([customerId, startAt])
-}
-
-// ---------------- Purchase Ordering & Linnworks Integration ----------------
-
-// Linnworks stock item GUID mapping (SKU <-> pkStockItemId)
-model LwStockItemMap {
-  id            String   @id @default(cuid())
-  sku           String   @unique
-  stockItemId   String   @unique // Linnworks pkStockItemId (GUID)
-  title         String?
-  barcode       String?
-  supplierId    String?
-  supplier      LwSupplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  @@index([stockItemId])
-  @@index([supplierId])
-}
-
-// Linnworks suppliers cache + defaults (optional overrides)
-model LwSupplier {
-  id                  String   @id              // Linnworks SupplierId (GUID)
-  name                String   @unique
-  defaultLeadTimeDays Int?
-  defaultPackSize     Int?
-  defaultMoq          Int?
-  defaultCurrency     String?  @default("GBP")
-  defaultPurchasePrice Decimal? @db.Decimal(12, 4)
-
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-
-  // back-relations
-  skuOverrides  SkuOverride[]
-  stockItemMaps LwStockItemMap[]
-  purchasePlans PurchasePlan[]
-  planLines     PurchasePlanLine[]
-  poSyncs       PurchaseOrderSync[]
-}
-
-// Linnworks stock locations cache
-model LwLocation {
-  id        String   @id        // Linnworks LocationId (GUID)
-  name      String   @unique
-  isDefault Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // back-relations
-  purchasePlans PurchasePlan[]
-  poSyncs       PurchaseOrderSync[]
-}
-
-// Presets for forecasting behaviour
-model ForecastPreset {
-  id          String   @id @default(cuid())
-  name        String   @unique
-  reviewDays  Int      @default(7)
-  bufferDays  Int      @default(2)
-  serviceZ    Float    @default(1.64) // ~95% service level
-  horizonDays Int      @default(14)
-  isDefault   Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
-
-// Per-SKU overrides to augment Linnworks supplier stats
-model SkuOverride {
-  id             String      @id @default(cuid())
-  sku            String      @unique
-  supplierId     String?
-  supplier       LwSupplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  leadTimeDays   Int?
-  packSize       Int?
-  moq            Int?
-  blockAuto      Boolean     @default(false)
-  notes          String?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
-}
-
-// A planning run/snapshot for a given location and horizon
-model PurchasePlan {
-  id            String     @id @default(cuid())
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-
-  title         String?
-  notes         String?
-
-  createdById   String?
-  createdBy     User?      @relation(fields: [createdById], references: [id], onDelete: SetNull)
-
-  status        PlanStatus @default(DRAFT)
-
-  // location to plan against (stock levels are location-scoped in Linnworks)
-  locationId    String
-  location      LwLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
-
-  // planning parameters
-  horizonDays   Int
-  lookbackDays  Int
-  reviewDays    Int        @default(7)
-  bufferDays    Int        @default(0)
-  serviceZ      Float      @default(1.64)
-  currency      String?    @default("GBP")
-
-  // optional supplier focus (null means all suppliers)
-  supplierId    String?
-  supplier      LwSupplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-
-  // relations
-  lines         PurchasePlanLine[]
-  poSyncs       PurchaseOrderSync[]   // <— back-relation added
-
-  @@index([status, createdAt])
-  @@index([locationId])
-  @@index([supplierId])
-}
-
-// Lines produced by a planning run (pre-PO and post-PO snapshot)
-model PurchasePlanLine {
-  id            String     @id @default(cuid())
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-
-  planId        String
-  plan          PurchasePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-
-  // identification
-  sku           String
-  stockItemId   String                 // Linnworks pkStockItemId (GUID)
-  supplierId    String?
-  supplier      LwSupplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-
-  // demand inputs
-  avgDaily      Float
-  dailyStdDev   Float?
-  leadTimeDays  Int?
-  packSize      Int?
-  moq           Int?
-
-  // stock context (location-scoped)
-  onHand        Int?
-  inOrderBook   Int?
-  due           Int?
-
-  // computed metrics
-  safety        Float?
-  rop           Float?
-  target        Float?
-  netPos        Float?
-
-  // suggestions
-  suggestedQty  Int
-  adjustedQty   Int?
-
-  // costing
-  unitCost      Decimal? @db.Decimal(12, 4)
-  extendedCost  Decimal? @db.Decimal(12, 2)
-
-  // linkage to actual PO (if created)
-  poId          String?   // Linnworks pkPurchaseId (GUID)
-  poNumber      String?
-  poStatus      String?
-
-  // raw payloads for audit/debug
-  source        Json?
-  calc          Json?
-
-  @@index([planId])
-  @@index([supplierId])
-  @@index([stockItemId])
-  @@index([poId])
-  @@unique([planId, sku], map: "plan_sku_unique")
-}
-
-// Record of POs created in Linnworks from the planner (one row per LW PO)
-model PurchaseOrderSync {
-  id               String     @id @default(cuid())
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
-
-  planId           String?
-  plan             PurchasePlan? @relation(fields: [planId], references: [id], onDelete: SetNull)
-
-  supplierId       String?
-  supplier         LwSupplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-
-  locationId       String
-  location         LwLocation  @relation(fields: [locationId], references: [id], onDelete: Restrict)
-
-  lwPurchaseId     String     @unique // pkPurchaseId from Linnworks
-  purchaseOrderNumber String?
-  status           String?
-  currency         String?    @default("GBP")
-  deliveryDate     DateTime?
-  linesCount       Int?
-  totalCost        Decimal?   @db.Decimal(12, 2)
-
-  // store full LW responses for traceability
-  requestPayload   Json?
-  responsePayload  Json?
-
-  @@index([supplierId, createdAt])
-  @@index([locationId, createdAt])
-}
-
-// ---------------- Inventory snapshots (Shopify) ----------------
-// Daily snapshot of available inventory per SKU (optionally per location).
-// Enables exact "Days Out of Stock" by counting days with available === 0.
-
-model InventoryDay {
-  id           String   @id @default(cuid())
-  date         DateTime
-  sku          String
-  locationId   String
-  locationName String?
-  available    Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  @@unique([sku, date, locationId], map: "invday_sku_date_location")
-  @@index([date])
-  @@index([sku])
-  @@index([locationId])
-}
-
-// ---------------- Shopify Variant Cost Cache ----------------
-// Minimal cache so routes can read/write prisma.shopifyVariantCost
-model ShopifyVariantCost {
-  id        String   @id @default(cuid())
-  variantId String   @unique        // numeric Shopify ProductVariant ID
-  unitCost  Decimal? @db.Decimal(12, 4)
-  currency  String?  @default("GBP")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([variantId])
+/** 🔧 Backfill endpoint compatibility:
+ *  Some routes import `fetchVariantCostsOnce`. Provide a thin alias so those continue to work.
+ */
+export async function fetchVariantCostsOnce(variantNumericIds: Array<string | number>) {
+  return fetchVariantUnitCosts(variantNumericIds);
 }
