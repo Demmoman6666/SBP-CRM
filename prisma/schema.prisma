@@ -346,6 +346,12 @@ model Order {
   discounts          Decimal?   @db.Decimal(12, 2)
   shipping           Decimal?   @db.Decimal(12, 2)
 
+  // --- Refund aggregates (from refunds/create webhook) ---
+  refundedNet       Decimal?   @db.Decimal(12, 2) // ex VAT, after discounts
+  refundedTax       Decimal?   @db.Decimal(12, 2)
+  refundedShipping  Decimal?   @db.Decimal(12, 2)
+  refundedTotal     Decimal?   @db.Decimal(12, 2) // inc VAT = net + tax + shipping
+
   lineItems          OrderLineItem[]
 
   @@index([customerId, processedAt])
@@ -369,6 +375,9 @@ model OrderLineItem {
   quantity          Int      @default(1)
   price             Decimal? @db.Decimal(12, 2)
   total             Decimal? @db.Decimal(12, 2)
+
+  // Quantity refunded (sum of refund_line_items for this Shopify line)
+  refundedQuantity  Int?     @default(0)
 
   createdAt         DateTime @default(now())
 
