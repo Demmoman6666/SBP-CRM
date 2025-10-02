@@ -34,7 +34,7 @@ function endOfDay(d: Date) {
   return x;
 }
 
-/** sum of line totals (pre-discount), ex VAT */
+/** Sum of line totals (pre-discount), ex VAT. */
 function grossFromLines(lines: { total: any | null; price: any | null; quantity: number | null }[]): number {
   let s = 0;
   for (const li of lines) {
@@ -47,16 +47,14 @@ function grossFromLines(lines: { total: any | null; price: any | null; quantity:
   return Math.max(0, s);
 }
 
-/** net ex VAT, after discounts, before shipping. Prefer Order.subtotal. */
-function netExFromOrder(o: {
-  subtotal: any | null;
-  discounts: any | null;
-  shipping: any | null;
-}, grossEx: number): number {
+/** Net ex VAT, after discounts, before shipping. Prefer Order.subtotal. */
+function netExFromOrder(
+  o: { subtotal: any | null; discounts: any | null },
+  grossEx: number
+): number {
   const sub = o.subtotal != null ? toNum(o.subtotal) : null;
   if (sub != null && Number.isFinite(sub)) return Math.max(0, sub);
   const disc = toNum(o.discounts);
-  // shipping is ex-VAT too, but we exclude it from revenue calc entirely
   return Math.max(0, grossEx - disc);
 }
 
@@ -84,7 +82,7 @@ export async function GET(req: Request) {
       repNameForFilter = rep?.name || repNameForFilter;
     }
 
-    // 1) Pull all orders in range (paid + unpaid), with line items & lightweight customer info
+    // 1) Pull orders in range (paid + unpaid), with line items & lightweight customer info
     const orders = await prisma.order.findMany({
       where: {
         processedAt: { gte: from, lte: to },
@@ -97,7 +95,7 @@ export async function GET(req: Request) {
         shopifyCustomerId: true,
         subtotal: true,
         discounts: true,
-        shipping: true,
+        shipping: true, // excluded from revenue but kept for completeness
         customer: {
           select: {
             id: true,
@@ -105,6 +103,7 @@ export async function GET(req: Request) {
             customerName: true,
             salesRepId: true,
             salesRep: true, // legacy text
+            shopifyCustomerId: true,
           },
         },
         lineItems: {
@@ -115,75 +114,107 @@ export async function GET(req: Request) {
     });
 
     if (!orders.length) {
-      return NextResponse.json({ rows: [], total: { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 }, currency: "GBP" });
+      return NextResponse.json({
+        rows: [],
+        total: { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 },
+        currency: "GBP",
+      });
     }
 
     // 2) For orders without a customer relation, try to link by shopifyCustomerId
     const orphanShopIds = Array.from(
       new Set(
         orders
-          .filter(o => !o.customerId && o.shopifyCustomerId)
-          .map(o => String(o.shopifyCustomerId))
+          .filter((o) => !o.customerId && o.shopifyCustomerId)
+          .map((o) => String(o.shopifyCustomerId))
       )
     );
-    const orphanMap: Map<string, { id: string; salonName: string | null; customerName: string | null; salesRepId: string | null; salesRep: string | null }> =
+
+    const orphanMap: Map<
+      string,
+      {
+        id: string;
+        salonName: string | null;
+        customerName: string | null;
+        salesRepId: string | null;
+        salesRep: string | null;
+        shopifyCustomerId: string | null;
+      }
+    > =
       orphanShopIds.length
         ? new Map(
-            (await prisma.customer.findMany({
-              where: { shopifyCustomerId: { in: orphanShopIds } },
-              select: { id: true, salonName: true, customerName: true, salesRepId: true, salesRep: true },
-            })).map(c => [String((c as any).shopifyCustomerId ?? ""), c])
+            (
+              await prisma.customer.findMany({
+                where: { shopifyCustomerId: { in: orphanShopIds } },
+                select: {
+                  id: true,
+                  salonName: true,
+                  customerName: true,
+                  salesRepId: true,
+                  salesRep: true,
+                  shopifyCustomerId: true,
+                },
+              })
+            ).map((c) => [String(c.shopifyCustomerId ?? ""), c])
           )
         : new Map();
 
-    // 3) If a rep filter is present, apply it now using canonical id OR legacy name
-    const filteredOrders = orders.filter(o => {
+    // 3) Apply rep filter (canonical id OR legacy name); if no filter, keep all
+    const filteredOrders = orders.filter((o) => {
       const c = o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
       if (!repId && !repNameForFilter) return true;
       if (!c) return false;
       const idMatch = repId && c.salesRepId ? c.salesRepId === repId : false;
-      const nameMatch = repNameForFilter && c.salesRep ? (c.salesRep || "").trim().toLowerCase() === repNameForFilter.trim().toLowerCase() : false;
+      const nameMatch =
+        repNameForFilter && c.salesRep
+          ? (c.salesRep || "").trim().toLowerCase() === repNameForFilter.trim().toLowerCase()
+          : false;
       return Boolean(idMatch || nameMatch);
     });
 
     if (!filteredOrders.length) {
-      return NextResponse.json({ rows: [], total: { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 }, currency: orders[0]?.currency || "GBP" });
+      return NextResponse.json({
+        rows: [],
+        total: { grossEx: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 },
+        currency: orders[0]?.currency || "GBP",
+      });
     }
 
-    // 4) Build a cost map from cached ShopifyVariantCost (latest per variantId)
+    // 4) Build a cost map from cached ShopifyVariantCost (latest per variantId if multiples exist).
+    // Your schema may have only one row per variant; we don't depend on recordedAt.
     const allVariantIds = Array.from(
       new Set(
-        filteredOrders.flatMap(o =>
-          o.lineItems.map(li => String(li.variantId || "")).filter(Boolean)
-        )
+        filteredOrders.flatMap((o) => o.lineItems.map((li) => String(li.variantId || "")).filter(Boolean))
       )
     );
+
     const costMap = new Map<string, number>();
     if (allVariantIds.length) {
       const costs = await prisma.shopifyVariantCost.findMany({
         where: { variantId: { in: allVariantIds } },
-        orderBy: { recordedAt: "desc" },
-        select: { variantId: true, unitCost: true, recordedAt: true },
+        select: { variantId: true, unitCost: true }, // keep it simple & schema-agnostic
       });
       for (const c of costs) {
         const key = String(c.variantId);
+        // If duplicates exist we keep the first seen; change logic here if you later add timestamps
         if (!costMap.has(key)) costMap.set(key, toNum(c.unitCost));
       }
     }
 
     // 5) Aggregate by customer
     const rowsMap = new Map<string, Row>();
-    let currency = filteredOrders[0]?.currency || "GBP";
+    const currency = filteredOrders[0]?.currency || "GBP";
 
     for (const o of filteredOrders) {
-      const cust = o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
+      const cust =
+        o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
 
       const customerId = cust?.id ?? null;
       const name = (cust?.salonName || cust?.customerName || "Unlinked customer").trim();
       const key = customerId || `unlinked:${name}`;
 
       const grossEx = grossFromLines(o.lineItems);
-      const netEx = netExFromOrder({ subtotal: o.subtotal, discounts: o.discounts, shipping: o.shipping }, grossEx);
+      const netEx = netExFromOrder({ subtotal: o.subtotal, discounts: o.discounts }, grossEx);
       const discounts = Math.max(0, grossEx - netEx);
 
       // Cost = sum(lineQty * unitCostByVariant)
@@ -210,7 +241,7 @@ export async function GET(req: Request) {
           cost,
           margin,
           marginPct: netEx > 0 ? (margin / netEx) * 100 : null,
-          currency: o.currency || currency,
+          currency,
         });
       } else {
         prev.orders += 1;
