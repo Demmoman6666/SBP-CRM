@@ -712,3 +712,10 @@ export async function fetchLineCostsForOrderPayload(order: any) {
 
   return { lines: result, totalCost };
 }
+
+/** 🔧 Backfill endpoint compatibility:
+ *  Some routes import `fetchVariantCostsOnce`. Provide a thin alias so those continue to work.
+ */
+export async function fetchVariantCostsOnce(variantNumericIds: Array<string | number>) {
+  return fetchVariantUnitCosts(variantNumericIds);
+}
