@@ -632,7 +632,7 @@ model PurchasePlan {
 
   // relations
   lines         PurchasePlanLine[]
-  poSyncs       PurchaseOrderSync[]
+  poSyncs       PurchaseOrderSync[]   // <— back-relation added
 
   @@index([status, createdAt])
   @@index([locationId])
@@ -641,9 +641,9 @@ model PurchasePlan {
 
 // Lines produced by a planning run (pre-PO and post-PO snapshot)
 model PurchasePlanLine {
-  id            String       @id @default(cuid())
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  id            String     @id @default(cuid())
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
 
   planId        String
   plan          PurchasePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
@@ -730,6 +730,7 @@ model PurchaseOrderSync {
 // ---------------- Inventory snapshots (Shopify) ----------------
 // Daily snapshot of available inventory per SKU (optionally per location).
 // Enables exact "Days Out of Stock" by counting days with available === 0.
+
 model InventoryDay {
   id           String   @id @default(cuid())
   date         DateTime
@@ -744,4 +745,17 @@ model InventoryDay {
   @@index([date])
   @@index([sku])
   @@index([locationId])
+}
+
+// ---------------- Shopify Variant Cost Cache ----------------
+// Minimal cache so routes can read/write prisma.shopifyVariantCost
+model ShopifyVariantCost {
+  id        String   @id @default(cuid())
+  variantId String   @unique        // numeric Shopify ProductVariant ID
+  unitCost  Decimal? @db.Decimal(12, 4)
+  currency  String?  @default("GBP")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([variantId])
 }
