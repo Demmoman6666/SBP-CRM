@@ -1,7 +1,6 @@
 // app/api/scorecards/rep/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { TargetScope, TargetMetric } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +21,43 @@ function addDays(d: Date, n: number) {
   return x;
 }
 
+/** Compute ex-VAT, after discounts, before shipping for a single order. */
+function exVatForOrder(o: {
+  subtotal: any | null;
+  total: any | null;
+  taxes: any | null;
+  shipping: any | null;
+  discounts: any | null;
+  lineItems?: { total: any | null; price: any | null; quantity: number | null }[];
+}): number {
+  const num = (x: any) => (x == null ? null : Number(x));
+  // 1) Prefer Shopify/ETL subtotal (typically after discounts, before taxes/shipping)
+  const sub = num(o.subtotal);
+  if (sub != null && isFinite(sub)) return Math.max(0, sub);
+
+  // 2) Sum line totals if present (usually already discount-adjusted, ex-VAT)
+  if (o.lineItems && o.lineItems.length) {
+    let s = 0;
+    for (const li of o.lineItems) {
+      const lt = num(li.total);
+      if (lt != null) s += lt;
+      else {
+        const p = num(li.price) ?? 0;
+        const q = Number(li.quantity ?? 0) || 0;
+        s += p * q;
+      }
+    }
+    return Math.max(0, s);
+  }
+
+  // 3) Derive: total - taxes - shipping - discounts
+  const tot = num(o.total) ?? 0;
+  const tax = num(o.taxes) ?? 0;
+  const shp = num(o.shipping) ?? 0;
+  const disc = num(o.discounts) ?? 0;
+  return Math.max(0, tot - tax - shp - disc);
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const repId = searchParams.get("repId");
@@ -33,7 +69,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "repId, start/month, and end are required" }, { status: 400 });
   }
 
-  // get rep name for customer matching
+  // canonical rep (needed for legacy-name fallback too)
   const rep = await prisma.salesRep.findUnique({ where: { id: repId } });
   if (!rep) return NextResponse.json({ error: "Rep not found" }, { status: 404 });
 
@@ -46,36 +82,59 @@ export async function GET(req: Request) {
   const prevEnd = addDays(curStart, -1);
   const prevStart = addDays(prevEnd, -(days - 1));
 
-  // Fetch orders (current & prev), include line items for vendor breakdown
+  // Common WHERE with canonical repId and legacy name fallback
+  const whereByRepCurrent = {
+    processedAt: { gte: curStart, lte: curEnd },
+    OR: [
+      { customer: { repId } },              // ✅ new canonical link
+      { customer: { salesRep: rep.name } }, // ↩︎ legacy safety-net
+    ],
+  } as const;
+
+  const whereByRepPrev = {
+    processedAt: { gte: prevStart, lte: prevEnd },
+    OR: [
+      { customer: { repId } },
+      { customer: { salesRep: rep.name } },
+    ],
+  } as const;
+
+  // Fetch orders (current & prev) with fields needed for ex-VAT calc + vendor breakdown
   const [curOrders, prevOrders] = await Promise.all([
     prisma.order.findMany({
-      where: {
-        processedAt: { gte: curStart, lte: curEnd },
-        customer: { salesRep: rep.name }, // match your Customer.salesRep string
-      },
+      where: whereByRepCurrent,
       select: {
         id: true,
-        total: true,
         processedAt: true,
         currency: true,
-        lineItems: { select: { productVendor: true, total: true } },
+        subtotal: true,
+        total: true,
+        taxes: true,
+        shipping: true,
+        discounts: true,
+        lineItems: { select: { productVendor: true, total: true, price: true, quantity: true } },
         customerId: true,
       },
     }),
     prisma.order.findMany({
-      where: {
-        processedAt: { gte: prevStart, lte: prevEnd },
-        customer: { salesRep: rep.name },
+      where: whereByRepPrev,
+      select: {
+        id: true,
+        processedAt: true,
+        currency: true,
+        subtotal: true,
+        total: true,
+        taxes: true,
+        shipping: true,
+        discounts: true,
+        lineItems: { select: { total: true, price: true, quantity: true } },
       },
-      select: { id: true, total: true, processedAt: true, currency: true },
     }),
   ]);
 
-  // revenue totals
-  const sum = (arr: any[]) =>
-    arr.reduce((a, o) => a + (o.total ? Number(o.total) : 0), 0);
-  const revenue = sum(curOrders);
-  const revenuePrev = sum(prevOrders);
+  // revenue totals (ex-VAT & after discounts)
+  const revenue = curOrders.reduce((a, o) => a + exVatForOrder(o), 0);
+  const revenuePrev = prevOrders.reduce((a, o) => a + exVatForOrder(o), 0);
   const currency = curOrders[0]?.currency || "GBP";
 
   // orders count
@@ -88,7 +147,13 @@ export async function GET(req: Request) {
   if (customerIds.length) {
     const earliest = await prisma.order.groupBy({
       by: ["customerId"],
-      where: { customerId: { in: customerIds }, customer: { salesRep: rep.name } },
+      where: {
+        customerId: { in: customerIds },
+        OR: [
+          { customer: { repId } },
+          { customer: { salesRep: rep.name } },
+        ],
+      },
       _min: { processedAt: true },
     });
     newCustomers = earliest.filter((g) => {
@@ -97,20 +162,23 @@ export async function GET(req: Request) {
     }).length;
   }
 
-  // vendor breakdown for current window
+  // vendor breakdown (sum line ex-VAT totals)
   const vendorMap: Record<string, number> = {};
   for (const o of curOrders) {
     for (const li of o.lineItems) {
       const v = (li.productVendor || "").trim();
       if (!v) continue;
-      vendorMap[v] = (vendorMap[v] || 0) + (li.total ? Number(li.total) : 0);
+      const lineTotal =
+        li.total != null ? Number(li.total) :
+        (Number(li.price ?? 0) * (Number(li.quantity ?? 0) || 0));
+      vendorMap[v] = (vendorMap[v] || 0) + (isFinite(lineTotal) ? lineTotal : 0);
     }
   }
   const vendors = Object.entries(vendorMap)
     .sort((a, b) => b[1] - a[1])
-    .map(([vendor, total]) => ({ vendor, revenue: total }));
+    .map(([vendor, revenue]) => ({ vendor, revenue }));
 
-  // pull targets for this rep & period
+  // targets for this exact period & rep
   const targets = await prisma.target.findMany({
     where: {
       scope: "REP",
