@@ -13,8 +13,7 @@ function parseStart(v: string | null): Date | null {
   return isNaN(+d) ? null : d;
 }
 function endOfMonth(d: Date) {
-  const e = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0, 23, 59, 59, 999));
-  return e;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0, 23, 59, 59, 999));
 }
 function addDays(d: Date, n: number) {
   const x = new Date(d);
@@ -32,6 +31,7 @@ function exVatForOrder(o: {
   lineItems?: { total: any | null; price: any | null; quantity: number | null }[];
 }): number {
   const num = (x: any) => (x == null ? null : Number(x));
+
   // 1) Prefer Shopify/ETL subtotal (typically after discounts, before taxes/shipping)
   const sub = num(o.subtotal);
   if (sub != null && isFinite(sub)) return Math.max(0, sub);
@@ -41,7 +41,7 @@ function exVatForOrder(o: {
     let s = 0;
     for (const li of o.lineItems) {
       const lt = num(li.total);
-      if (lt != null) s += lt;
+      if (lt != null && isFinite(lt)) s += lt;
       else {
         const p = num(li.price) ?? 0;
         const q = Number(li.quantity ?? 0) || 0;
@@ -83,22 +83,22 @@ export async function GET(req: Request) {
   const prevEnd = addDays(curStart, -1);
   const prevStart = addDays(prevEnd, -(days - 1));
 
-// Common WHERE with canonical repId and legacy name fallback
-const whereByRepCurrent: Prisma.OrderWhereInput = {
-  processedAt: { gte: curStart, lte: curEnd },
-  OR: [
-    { customer: { repId } },              // ✅ canonical
-    { customer: { salesRep: rep.name } }, // ↩︎ legacy fallback
-  ],
-};
+  // WHERE with canonical salesRepId and legacy text fallback
+  const whereByRepCurrent: Prisma.OrderWhereInput = {
+    processedAt: { gte: curStart, lte: curEnd },
+    OR: [
+      { customer: { is: { salesRepId: repId } } },   // ✅ canonical FK on Customer
+      { customer: { is: { salesRep: rep.name } } },  // ↩︎ legacy text fallback
+    ],
+  };
 
-const whereByRepPrev: Prisma.OrderWhereInput = {
-  processedAt: { gte: prevStart, lte: prevEnd },
-  OR: [
-    { customer: { repId } },
-    { customer: { salesRep: rep.name } },
-  ],
-};
+  const whereByRepPrev: Prisma.OrderWhereInput = {
+    processedAt: { gte: prevStart, lte: prevEnd },
+    OR: [
+      { customer: { is: { salesRepId: repId } } },
+      { customer: { is: { salesRep: rep.name } } },
+    ],
+  };
 
   // Fetch orders (current & prev) with fields needed for ex-VAT calc + vendor breakdown
   const [curOrders, prevOrders] = await Promise.all([
@@ -128,6 +128,7 @@ const whereByRepPrev: Prisma.OrderWhereInput = {
         taxes: true,
         shipping: true,
         discounts: true,
+        // no vendor breakdown needed for prev window
         lineItems: { select: { total: true, price: true, quantity: true } },
       },
     }),
@@ -136,7 +137,7 @@ const whereByRepPrev: Prisma.OrderWhereInput = {
   // revenue totals (ex-VAT & after discounts)
   const revenue = curOrders.reduce((a, o) => a + exVatForOrder(o), 0);
   const revenuePrev = prevOrders.reduce((a, o) => a + exVatForOrder(o), 0);
-  const currency = curOrders[0]?.currency || "GBP";
+  const currency = curOrders[0]?.currency ?? prevOrders[0]?.currency ?? "GBP";
 
   // orders count
   const orders = curOrders.length;
@@ -151,8 +152,8 @@ const whereByRepPrev: Prisma.OrderWhereInput = {
       where: {
         customerId: { in: customerIds },
         OR: [
-          { customer: { repId } },
-          { customer: { salesRep: rep.name } },
+          { customer: { is: { salesRepId: repId } } },
+          { customer: { is: { salesRep: rep.name } } },
         ],
       },
       _min: { processedAt: true },
@@ -172,7 +173,9 @@ const whereByRepPrev: Prisma.OrderWhereInput = {
       const lineTotal =
         li.total != null ? Number(li.total) :
         (Number(li.price ?? 0) * (Number(li.quantity ?? 0) || 0));
-      vendorMap[v] = (vendorMap[v] || 0) + (isFinite(lineTotal) ? lineTotal : 0);
+      if (isFinite(lineTotal)) {
+        vendorMap[v] = (vendorMap[v] || 0) + lineTotal;
+      }
     }
   }
   const vendors = Object.entries(vendorMap)
