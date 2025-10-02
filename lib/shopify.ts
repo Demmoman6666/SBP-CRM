@@ -38,6 +38,10 @@ export function gidToNumericId(gid?: string | null): string | null {
   const m = gid.match(/\/(\d+)$/);
   return m ? m[1] : null;
 }
+/** Convert a numeric id to a ProductVariant GID */
+export function numericVariantIdToGid(id: string | number): string {
+  return `gid://shopify/ProductVariant/${id}`;
+}
 
 /** ───────────────── REST Admin helper ───────────────── */
 export async function shopifyRest(path: string, init: RequestInit = {}) {
@@ -281,6 +285,7 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
     },
   });
 
+  // Recreate line items
   await prisma.orderLineItem.deleteMany({ where: { orderId: ord.id } });
 
   const itemsData = (order.line_items || []).map((li: any) => {
@@ -410,6 +415,8 @@ export async function pushCustomerToShopifyById(crmCustomerId: string) {
    Product Search (Admin GraphQL) for “Create Order”
    - searchShopifyCatalog(term) returns flattened variants + product info
    - createDraftOrderForCustomer(...) to stage an order in Shopify
+   - fetchVariantUnitCosts(...) to retrieve cost-per-item for variants
+   - fetchLineCostsForOrderPayload(...) to map an *order JSON* to costs
    ────────────────────────────────────────────────────────────────── */
 
 export type ShopifySearchVariant = {
@@ -428,6 +435,10 @@ export type ShopifySearchVariant = {
 
   priceAmount: string | null;
   currencyCode: string | null;
+
+  /** ➕ cost fields (if “Cost per item” is set in Shopify) */
+  unitCostAmount?: string | null;
+  unitCostCurrencyCode?: string | null;
 
   availableForSale: boolean | null;
   inventoryQuantity: number | null;
@@ -463,6 +474,9 @@ export async function searchShopifyCatalog(term: string, first = 15): Promise<Sh
                   availableForSale
                   inventoryQuantity
                   price { amount currencyCode }
+                  inventoryItem {
+                    unitCost { amount currencyCode }
+                  }
                 }
               }
             }
@@ -491,6 +505,7 @@ export async function searchShopifyCatalog(term: string, first = 15): Promise<Sh
                 availableForSale?: boolean | null;
                 inventoryQuantity?: number | null;
                 price?: { amount: string; currencyCode: string } | null;
+                inventoryItem?: { unitCost?: { amount: string; currencyCode: string } | null } | null;
               };
             }>;
           };
@@ -524,6 +539,9 @@ export async function searchShopifyCatalog(term: string, first = 15): Promise<Sh
 
         priceAmount: v.price?.amount ?? null,
         currencyCode: v.price?.currencyCode ?? null,
+
+        unitCostAmount: v.inventoryItem?.unitCost?.amount ?? null,
+        unitCostCurrencyCode: v.inventoryItem?.unitCost?.currencyCode ?? null,
 
         availableForSale: v.availableForSale ?? null,
         inventoryQuantity: typeof v.inventoryQuantity === "number" ? v.inventoryQuantity : null,
@@ -610,4 +628,87 @@ export async function createDraftOrderForCustomer(
 
   const json = await res.json();
   return json?.draft_order || null;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   ➕ Cost-per-item helpers (no schema changes required)
+   These allow reports to fetch costs from Shopify when needed.
+   ────────────────────────────────────────────────────────────── */
+
+/** Fetch unit cost for a list of numeric ProductVariant IDs.
+ *  Returns a map: { [variantNumericId]: number|null } (cost in shop currency)
+ */
+export async function fetchVariantUnitCosts(variantNumericIds: Array<string | number>) {
+  const ids = (variantNumericIds || []).map(v => String(v)).filter(Boolean);
+  if (!ids.length) return {} as Record<string, number | null>;
+
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100));
+
+  const out: Record<string, number | null> = {};
+
+  const query = `
+    query VariantCosts($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on ProductVariant {
+          id
+          inventoryItem {
+            unitCost { amount currencyCode }
+          }
+        }
+      }
+    }
+  `;
+
+  for (const bucket of chunks) {
+    const variables = { ids: bucket.map(numericVariantIdToGid) };
+    const data = await shopifyGraphql<{
+      nodes: Array<
+        | { id: string; inventoryItem?: { unitCost?: { amount: string; currencyCode: string } | null } | null }
+        | null
+      >;
+    }>(query, variables);
+
+    for (const node of data?.nodes || []) {
+      if (!node || !("id" in node) || !node.id) continue;
+      const numeric = gidToNumericId(node.id);
+      const amt = node?.inventoryItem?.unitCost?.amount;
+      out[numeric || ""] = amt != null ? Number(amt) : null;
+    }
+  }
+
+  return out;
+}
+
+/** Given a raw Shopify Order payload (as received from webhook/REST),
+ *  return a per-line cost breakdown based on variant_id and quantity.
+ *  Shape: { lines: { [shopifyLineItemId]: { unitCost: number|null, extendedCost: number|null } }, totalCost: number }
+ */
+export async function fetchLineCostsForOrderPayload(order: any) {
+  const lines = Array.isArray(order?.line_items) ? order.line_items : [];
+  const varIds: string[] = [];
+  const keyByLineId: Record<string, string> = {}; // shopify line id -> variant id
+
+  for (const li of lines) {
+    const vid = li?.variant_id != null ? String(li.variant_id) : "";
+    const lid = li?.id != null ? String(li.id) : "";
+    if (vid) varIds.push(vid);
+    if (lid && vid) keyByLineId[lid] = vid;
+  }
+
+  const costMap = await fetchVariantUnitCosts(varIds);
+  const result: Record<string, { unitCost: number | null; extendedCost: number | null }> = {};
+  let totalCost = 0;
+
+  for (const li of lines) {
+    const lid = li?.id != null ? String(li.id) : "";
+    const vid = keyByLineId[lid];
+    const unit = vid ? costMap[vid] ?? null : null;
+    const qty = Number(li?.quantity ?? 0) || 0;
+    const ext = unit != null ? unit * qty : null;
+    result[lid] = { unitCost: unit, extendedCost: ext };
+    if (ext != null) totalCost += ext;
+  }
+
+  return { lines: result, totalCost };
 }
