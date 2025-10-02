@@ -9,9 +9,9 @@ type Row = {
   customerId: string | null;
   customerName: string;
   orders: number;
-  grossEx: number;
-  discounts: number;
-  netEx: number;
+  grossEx: number;        // now holds Gross (inc VAT), kept name for UI compatibility
+  discounts: number;      // from Shopify order.total_discounts
+  netEx: number;          // ex VAT, after discounts
   cost: number;
   margin: number;
   marginPct: number | null;
@@ -82,7 +82,7 @@ export async function GET(req: Request) {
       repNameForFilter = rep?.name || repNameForFilter;
     }
 
-    // 1) Pull orders in range (paid + unpaid), with line items & lightweight customer info
+    // 1) Pull orders in range (paid + unpaid)
     const orders = await prisma.order.findMany({
       where: {
         processedAt: { gte: from, lte: to },
@@ -93,9 +93,10 @@ export async function GET(req: Request) {
         currency: true,
         customerId: true,
         shopifyCustomerId: true,
-        subtotal: true,
-        discounts: true,
-        shipping: true, // excluded from revenue but kept for completeness
+        subtotal: true,     // ex VAT, after discounts (preferred for Net)
+        discounts: true,    // Shopify total_discounts (ex VAT)
+        taxes: true,        // ⬅️ add VAT to compute Gross (inc VAT)
+        shipping: true,     // excluded from revenue
         customer: {
           select: {
             id: true,
@@ -121,7 +122,7 @@ export async function GET(req: Request) {
       });
     }
 
-    // 2) For orders without a customer relation, try to link by shopifyCustomerId
+    // 2) Link "orphan" orders by shopifyCustomerId
     const orphanShopIds = Array.from(
       new Set(
         orders
@@ -159,7 +160,7 @@ export async function GET(req: Request) {
           )
         : new Map();
 
-    // 3) Apply rep filter (canonical id OR legacy name); if no filter, keep all
+    // 3) Rep filter (canonical id OR legacy name)
     const filteredOrders = orders.filter((o) => {
       const c = o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
       if (!repId && !repNameForFilter) return true;
@@ -180,8 +181,7 @@ export async function GET(req: Request) {
       });
     }
 
-    // 4) Build a cost map from cached ShopifyVariantCost (latest per variantId if multiples exist).
-    // Your schema may have only one row per variant; we don't depend on recordedAt.
+    // 4) Cost map from ShopifyVariantCost cache
     const allVariantIds = Array.from(
       new Set(
         filteredOrders.flatMap((o) => o.lineItems.map((li) => String(li.variantId || "")).filter(Boolean))
@@ -192,11 +192,10 @@ export async function GET(req: Request) {
     if (allVariantIds.length) {
       const costs = await prisma.shopifyVariantCost.findMany({
         where: { variantId: { in: allVariantIds } },
-        select: { variantId: true, unitCost: true }, // keep it simple & schema-agnostic
+        select: { variantId: true, unitCost: true },
       });
       for (const c of costs) {
         const key = String(c.variantId);
-        // If duplicates exist we keep the first seen; change logic here if you later add timestamps
         if (!costMap.has(key)) costMap.set(key, toNum(c.unitCost));
       }
     }
@@ -213,9 +212,18 @@ export async function GET(req: Request) {
       const name = (cust?.salonName || cust?.customerName || "Unlinked customer").trim();
       const key = customerId || `unlinked:${name}`;
 
-      const grossEx = grossFromLines(o.lineItems);
-      const netEx = netExFromOrder({ subtotal: o.subtotal, discounts: o.discounts }, grossEx);
-      const discounts = Math.max(0, grossEx - netEx);
+      // Net ex VAT (discounted), prefer Order.subtotal
+      const grossExFallback = grossFromLines(o.lineItems);
+      const netEx = netExFromOrder({ subtotal: o.subtotal, discounts: o.discounts }, grossExFallback);
+
+      // Discounts: use Shopify order.total_discounts directly (ex VAT)
+      const discounts = toNum(o.discounts);
+
+      // Taxes: VAT portion from Shopify order.total_tax
+      const taxes = toNum((o as any).taxes);
+
+      // Gross (inc VAT, excl shipping)
+      const grossInc = Math.max(0, netEx + taxes);
 
       // Cost = sum(lineQty * unitCostByVariant)
       let cost = 0;
@@ -235,7 +243,7 @@ export async function GET(req: Request) {
           customerId,
           customerName: name,
           orders: 1,
-          grossEx,
+          grossEx: grossInc, // ⬅️ store Gross (inc VAT)
           discounts,
           netEx,
           cost,
@@ -245,7 +253,7 @@ export async function GET(req: Request) {
         });
       } else {
         prev.orders += 1;
-        prev.grossEx += grossEx;
+        prev.grossEx += grossInc; // ⬅️ accumulate Gross (inc VAT)
         prev.discounts += discounts;
         prev.netEx += netEx;
         prev.cost += cost;
@@ -258,9 +266,9 @@ export async function GET(req: Request) {
 
     const totals = rows.reduce(
       (acc, r) => {
-        acc.grossEx += r.grossEx;
-        acc.discounts += r.discounts;
-        acc.netEx += r.netEx;
+        acc.grossEx += r.grossEx;     // Gross (inc VAT)
+        acc.discounts += r.discounts; // ex VAT
+        acc.netEx += r.netEx;         // ex VAT
         acc.cost += r.cost;
         acc.margin += r.margin;
         return acc;
