@@ -5,48 +5,48 @@ import type { Prisma } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 
-// Parse YYYY-MM or full ISO, return start-of-month if YYYY-MM
+// Parse YYYY-MM or full ISO; for YYYY-MM use local month start (no Z)
 function parseStart(v: string | null): Date | null {
   if (!v) return null;
-  if (/^\d{4}-\d{2}$/.test(v)) return new Date(`${v}-01T00:00:00Z`);
+  if (/^\d{4}-\d{2}$/.test(v)) return new Date(`${v}-01T00:00:00`);
   const d = new Date(v);
   return isNaN(+d) ? null : d;
 }
-function endOfMonth(d: Date) {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+function endOfMonthLocal(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
 }
 function addDays(d: Date, n: number) {
   const x = new Date(d);
-  x.setUTCDate(x.getUTCDate() + n);
+  x.setDate(x.getDate() + n);
   return x;
 }
 
-/** Compute ex-VAT, after discounts, before shipping for a single order. */
+/** Ex-VAT net revenue for an order (discounts applied, taxes & shipping excluded) */
 function exVatForOrder(o: {
   subtotal: any | null;
   total: any | null;
   taxes: any | null;
   shipping: any | null;
-  discounts: any | null;
+  discounts: any | null; // kept for completeness; not double-counted
   lineItems?: { total: any | null; price: any | null; quantity: number | null }[];
 }): number {
   const num = (x: any) => (x == null ? null : Number(x));
-
-  // 1) Prefer Shopify/ETL subtotal (typically after discounts, before taxes/shipping)
   const sub = num(o.subtotal);
-  if (sub != null && isFinite(sub)) return Math.max(0, sub);
-
-  // 2) Derive net ex-VAT from order-level fields (keeps discounts correct)
-  const tot = num(o.total);
   const tax = num(o.taxes) ?? 0;
   const shp = num(o.shipping) ?? 0;
-  const disc = num(o.discounts) ?? 0;
-  if (tot != null && isFinite(tot)) {
-    const derived = Math.max(0, tot - tax - shp - disc);
-    return derived;
+  const tot = num(o.total);
+
+  // Preferred: Shopify subtotal_price minus taxes (discounts are already in subtotal)
+  if (sub != null && isFinite(sub)) {
+    return Math.max(0, sub - (tax || 0));
   }
 
-  // 3) Fall back to summing lines: prefer line.total (usually net), else price*qty
+  // Fallback: total - shipping - taxes (discounts already included in total)
+  if (tot != null && isFinite(tot)) {
+    return Math.max(0, tot - shp - tax);
+  }
+
+  // Last resort: sum line totals (assumed discount-adjusted) or price*qty
   if (o.lineItems && o.lineItems.length) {
     let s = 0;
     for (const li of o.lineItems) {
@@ -69,7 +69,7 @@ export async function GET(req: Request) {
   const repId = searchParams.get("repId");
   const start = parseStart(searchParams.get("start") || searchParams.get("month"));
   let end = searchParams.get("end") ? new Date(String(searchParams.get("end"))) : null;
-  if (start && !end) end = endOfMonth(start);
+  if (start && !end) end = endOfMonthLocal(start);
 
   if (!repId || !start || !end || isNaN(+end)) {
     return NextResponse.json({ error: "repId, start/month, and end are required" }, { status: 400 });
@@ -88,20 +88,20 @@ export async function GET(req: Request) {
   const prevEnd = addDays(curStart, -1);
   const prevStart = addDays(prevEnd, -(days - 1));
 
-  // WHERE with canonical salesRepId and legacy text fallback
+  // ✅ Include ALL financial statuses (paid + unpaid). No filter here.
   const whereByRepCurrent: Prisma.OrderWhereInput = {
     processedAt: { gte: curStart, lte: curEnd },
     OR: [
-      { customer: { is: { salesRepId: repId } } },   // ✅ canonical FK on Customer
-      { customer: { is: { salesRep: rep.name } } },  // ↩︎ legacy text fallback
+      { customer: { repId } },              // canonical
+      { customer: { salesRep: rep.name } }, // legacy fallback
     ],
   };
 
   const whereByRepPrev: Prisma.OrderWhereInput = {
     processedAt: { gte: prevStart, lte: prevEnd },
     OR: [
-      { customer: { is: { salesRepId: repId } } },
-      { customer: { is: { salesRep: rep.name } } },
+      { customer: { repId } },
+      { customer: { salesRep: rep.name } },
     ],
   };
 
@@ -141,7 +141,7 @@ export async function GET(req: Request) {
   // revenue totals (ex-VAT & after discounts)
   const revenue = curOrders.reduce((a, o) => a + exVatForOrder(o), 0);
   const revenuePrev = prevOrders.reduce((a, o) => a + exVatForOrder(o), 0);
-  const currency = curOrders[0]?.currency ?? prevOrders[0]?.currency ?? "GBP";
+  const currency = curOrders[0]?.currency || "GBP";
 
   // orders count
   const orders = curOrders.length;
@@ -156,8 +156,8 @@ export async function GET(req: Request) {
       where: {
         customerId: { in: customerIds },
         OR: [
-          { customer: { is: { salesRepId: repId } } },
-          { customer: { is: { salesRep: rep.name } } },
+          { customer: { repId } },
+          { customer: { salesRep: rep.name } },
         ],
       },
       _min: { processedAt: true },
@@ -168,17 +168,22 @@ export async function GET(req: Request) {
     }).length;
   }
 
-  // vendor breakdown (sum line ex-VAT totals)
+  // Vendor breakdown: distribute each order's ex-VAT across its lines proportionally
   const vendorMap: Record<string, number> = {};
   for (const o of curOrders) {
-    for (const li of o.lineItems) {
-      const v = (li.productVendor || "").trim();
-      if (!v) continue;
-      const lineTotal =
-        li.total != null ? Number(li.total) :
-        (Number(li.price ?? 0) * (Number(li.quantity ?? 0) || 0));
-      if (isFinite(lineTotal)) {
-        vendorMap[v] = (vendorMap[v] || 0) + lineTotal;
+    const orderExVat = exVatForOrder(o);
+    // sum line "amounts" to get proportions
+    let lineSum = 0;
+    const lines = (o.lineItems || []).map((li) => {
+      const amt = li.total != null ? Number(li.total) : (Number(li.price ?? 0) * (Number(li.quantity ?? 0) || 0));
+      const safeAmt = isFinite(amt) ? Math.max(0, amt) : 0;
+      lineSum += safeAmt;
+      return { vendor: (li.productVendor || "").trim() || "—", amt: safeAmt };
+    });
+    if (orderExVat > 0 && lineSum > 0) {
+      for (const li of lines) {
+        const share = (li.amt / lineSum) * orderExVat;
+        vendorMap[li.vendor] = (vendorMap[li.vendor] || 0) + share;
       }
     }
   }
