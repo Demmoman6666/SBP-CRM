@@ -117,45 +117,58 @@ export async function POST(req: Request) {
       return ok();
     }
 
-    // ───────── products/update → also refresh costs for all variants on the product ─────────
-    if (topic === "products/update") {
-      const variants = Array.isArray(body?.variants)
-        ? body.variants
-        : Array.isArray(body?.product?.variants)
-        ? body.product.variants
-        : [];
+// ───────── products/update → also refresh costs for all variants on the product ─────────
+if (topic === "products/update") {
+  const variants = Array.isArray(body?.variants)
+    ? body.variants
+    : Array.isArray(body?.product?.variants)
+    ? body.product.variants
+    : [];
 
-      const variantIds = (variants as any[])
-        .map((v) => {
-          if (v?.id != null && typeof v.id !== "object") return String(v.id);
-          if (v?.admin_graphql_api_id) {
-            const n = gidToNumericId(String(v.admin_graphql_api_id));
-            if (n) return n;
-          }
-          return null;
-        })
-        .filter(Boolean) as string[];
-
-      if (!variantIds.length) {
-        console.log("[WEBHOOK] products/update: no variants in payload");
-        return ok();
+  const variantIds = (variants as any[])
+    .map((v) => {
+      // prefer numeric variant id if present
+      if (v?.id != null && typeof v.id !== "object") return `${v.id}`;
+      // fallback to GraphQL gid
+      if (v?.admin_graphql_api_id) {
+        const n = gidToNumericId(String(v.admin_graphql_api_id));
+        if (n) return n;
       }
+      return null;
+    })
+    .filter(Boolean) as string[];
 
-      try {
-        const costMap = await fetchVariantUnitCosts(variantIds); // Map<string, { unitCost, currency }>
-        for (const [variantId, entry] of costMap.entries()) {
-          await prisma.shopifyVariantCost.upsert({
-            where: { variantId },
-            create: { variantId, unitCost: entry.unitCost, currency: entry.currency },
-            update: { unitCost: entry.unitCost, currency: entry.currency },
-          });
-        }
-        console.log(`[WEBHOOK] products/update: cached ${costMap.size} variant costs`);
-      } catch (e) {
-        console.error("[WEBHOOK] products/update cost-refresh error:", e);
-      }
-      return ok();
+  if (!variantIds.length) {
+    console.log("[WEBHOOK] products/update: no variants in payload");
+    return ok();
+  }
+
+  try {
+    // Might be a Map or a plain object depending on type inference/import location.
+    const rawMap: any = await fetchVariantUnitCosts(variantIds);
+
+    // Normalize to [key, value][] so the loop is always safe.
+    const pairs: [string, { unitCost: number; currency: string }][] =
+      rawMap && typeof rawMap === "object" && typeof rawMap.entries === "function"
+        ? Array.from(rawMap.entries())
+        : (Object.entries(rawMap || {}) as [string, { unitCost: number; currency: string }][]);
+
+    let upserts = 0;
+    for (const [variantId, entry] of pairs) {
+      await prisma.shopifyVariantCost.upsert({
+        where: { variantId: `${variantId}` },
+        create: { variantId: `${variantId}`, unitCost: entry.unitCost, currency: entry.currency },
+        update: { unitCost: entry.unitCost, currency: entry.currency },
+      });
+      upserts++;
     }
+
+    console.log(`[WEBHOOK] products/update: cached ${upserts} variant costs`);
+  } catch (e) {
+    console.error("[WEBHOOK] products/update cost-refresh error:", e);
+  }
+  return ok();
+}
 
     // ───────── customers (CREATE / UPDATE) ─────────
     if (topic === "customers/create" || topic === "customers/update") {
