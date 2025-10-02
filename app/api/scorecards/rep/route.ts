@@ -1,6 +1,7 @@
 // app/api/scorecards/rep/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 
@@ -82,22 +83,22 @@ export async function GET(req: Request) {
   const prevEnd = addDays(curStart, -1);
   const prevStart = addDays(prevEnd, -(days - 1));
 
-  // Common WHERE with canonical repId and legacy name fallback
-  const whereByRepCurrent = {
-    processedAt: { gte: curStart, lte: curEnd },
-    OR: [
-      { customer: { repId } },              // ✅ new canonical link
-      { customer: { salesRep: rep.name } }, // ↩︎ legacy safety-net
-    ],
-  } as const;
+// Common WHERE with canonical repId and legacy name fallback
+const whereByRepCurrent: Prisma.OrderWhereInput = {
+  processedAt: { gte: curStart, lte: curEnd },
+  OR: [
+    { customer: { repId } },              // ✅ canonical
+    { customer: { salesRep: rep.name } }, // ↩︎ legacy fallback
+  ],
+};
 
-  const whereByRepPrev = {
-    processedAt: { gte: prevStart, lte: prevEnd },
-    OR: [
-      { customer: { repId } },
-      { customer: { salesRep: rep.name } },
-    ],
-  } as const;
+const whereByRepPrev: Prisma.OrderWhereInput = {
+  processedAt: { gte: prevStart, lte: prevEnd },
+  OR: [
+    { customer: { repId } },
+    { customer: { salesRep: rep.name } },
+  ],
+};
 
   // Fetch orders (current & prev) with fields needed for ex-VAT calc + vendor breakdown
   const [curOrders, prevOrders] = await Promise.all([
