@@ -1,4 +1,6 @@
+// app/api/shopify/webhooks/route.ts
 import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 import {
   verifyShopifyHmac,
   upsertCustomerFromShopify,
@@ -6,6 +8,7 @@ import {
   upsertOrderFromShopify,
   parseShopifyTags,
   extractShopifyCustomerId,
+  shopifyGraphql, // ⬅️ add this import
 } from "@/lib/shopify";
 
 export const runtime = "nodejs";
@@ -39,6 +42,76 @@ export async function POST(req: Request) {
   }
 
   try {
+    // ───────── inventory_items/update → cache unit cost per variant ─────────
+    if (topic === "inventory_items/update") {
+      // payload shape: { inventory_item: { id, cost?, ... } } (REST webhooks)
+      const invId =
+        String(body?.inventory_item?.id ?? body?.id ?? body?.inventory_item_id ?? "") || "";
+
+      if (!invId) {
+        console.warn("[WEBHOOK] inventory_items/update missing inventory_item.id");
+        return ok();
+      }
+
+      // Confirm cost + resolve variant via Admin GraphQL
+      const q = `
+        query InvItem($id: ID!) {
+          inventoryItem(id: $id) {
+            unitCost { amount currencyCode }
+            variant { legacyResourceId }
+          }
+        }`;
+      type Gx = {
+        inventoryItem: {
+          unitCost?: { amount: string; currencyCode: string } | null;
+          variant?: { legacyResourceId?: string | null } | null;
+        } | null;
+      };
+
+      try {
+        const data = await shopifyGraphql<Gx>(q, {
+          id: `gid://shopify/InventoryItem/${invId}`,
+        });
+
+        const legacyVariantId = data?.inventoryItem?.variant?.legacyResourceId;
+        const amountStr = data?.inventoryItem?.unitCost?.amount ?? null;
+        const currency  = data?.inventoryItem?.unitCost?.currencyCode ?? "GBP";
+
+        if (!legacyVariantId || amountStr == null) {
+          // Nothing to store; still 200 so Shopify doesn't retry
+          console.info("[WEBHOOK] inventory_items/update: no variant/cost to upsert", {
+            invId, legacyVariantId, amountStr
+          });
+          return ok();
+        }
+
+        const unitCost = Number(amountStr);
+
+        await prisma.shopifyVariantCost.upsert({
+          where: { variantId: String(legacyVariantId) },
+          create: {
+            variantId: String(legacyVariantId),
+            unitCost,
+            currency,
+            // If your model DOESN'T have this column, remove the next line.
+            inventoryItemId: String(invId),
+          },
+          update: {
+            unitCost,
+            currency,
+            // Remove if you didn't add this column in Prisma.
+            inventoryItemId: String(invId),
+          },
+        });
+
+        console.log(`[WEBHOOK] cost cached for variant ${legacyVariantId} @ ${unitCost} ${currency}`);
+      } catch (e) {
+        console.error("[WEBHOOK] inventory_items/update GraphQL/upsert error:", e);
+        // Don’t fail the webhook; just log the error
+      }
+      return ok();
+    }
+
     // ───────── customers (CREATE / UPDATE) ─────────
     if (topic === "customers/create" || topic === "customers/update") {
       const payload = body?.customer ?? body;
@@ -46,9 +119,7 @@ export async function POST(req: Request) {
 
       console.info(`[WEBHOOK] ${topic} id=${shopifyId ?? "?"}`);
 
-      // Always fetch full customer (ensures tags are present reliably)
       await upsertCustomerFromShopifyById(String(shopifyId), shop, {
-        // use fetched tags, create if needed (for create), match by id or email
         updateOnly: false,
         matchBy: "shopifyIdOrEmail",
       });
@@ -68,7 +139,6 @@ export async function POST(req: Request) {
         return ok();
       }
 
-      // Update-only to avoid creating “random” customers from minimal tag events
       await upsertCustomerFromShopifyById(String(shopifyId), shop, {
         updateOnly: true,
         matchBy: "shopifyIdOnly",
@@ -76,7 +146,7 @@ export async function POST(req: Request) {
       return ok();
     }
 
-    // ───────── orders (unchanged) ─────────
+    // ───────── orders ─────────
     if (
       topic === "orders/create" ||
       topic === "orders/updated" ||
