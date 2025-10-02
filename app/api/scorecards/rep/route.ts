@@ -31,22 +31,12 @@ function exVatForOrder(o: {
   lineItems?: { total: any | null; price: any | null; quantity: number | null }[];
 }): number {
   const num = (x: any) => (x == null ? null : Number(x));
+
+  // Preferred: Shopify subtotal_price (after discounts, before taxes/shipping)
   const sub = num(o.subtotal);
-  const tax = num(o.taxes) ?? 0;
-  const shp = num(o.shipping) ?? 0;
-  const tot = num(o.total);
+  if (sub != null && isFinite(sub)) return Math.max(0, sub);
 
-  // Preferred: Shopify subtotal_price minus taxes (discounts are already in subtotal)
-  if (sub != null && isFinite(sub)) {
-    return Math.max(0, sub - (tax || 0));
-  }
-
-  // Fallback: total - shipping - taxes (discounts already included in total)
-  if (tot != null && isFinite(tot)) {
-    return Math.max(0, tot - shp - tax);
-  }
-
-  // Last resort: sum line totals (assumed discount-adjusted) or price*qty
+  // Fallback: sum line totals (usually already discount-adjusted), else price*qty
   if (o.lineItems && o.lineItems.length) {
     let s = 0;
     for (const li of o.lineItems) {
@@ -61,7 +51,11 @@ function exVatForOrder(o: {
     return Math.max(0, s);
   }
 
-  return 0;
+  // Last resort: total - taxes - shipping (discounts already in total)
+  const tot = num(o.total) ?? 0;
+  const tax = num(o.taxes) ?? 0;
+  const shp = num(o.shipping) ?? 0;
+  return Math.max(0, tot - tax - shp);
 }
 
 export async function GET(req: Request) {
@@ -88,19 +82,19 @@ export async function GET(req: Request) {
   const prevEnd = addDays(curStart, -1);
   const prevStart = addDays(prevEnd, -(days - 1));
 
-  // ✅ Include ALL financial statuses (paid + unpaid). No filter here.
+  // ✅ Include ALL financial statuses (paid + unpaid). No financialStatus filter.
   const whereByRepCurrent: Prisma.OrderWhereInput = {
     processedAt: { gte: curStart, lte: curEnd },
     OR: [
-      { customer: { repId } },              // canonical
-      { customer: { salesRep: rep.name } }, // legacy fallback
+      { customer: { rep: { id: repId } } }, // canonical relation filter
+      { customer: { salesRep: rep.name } },  // legacy string fallback
     ],
   };
 
   const whereByRepPrev: Prisma.OrderWhereInput = {
     processedAt: { gte: prevStart, lte: prevEnd },
     OR: [
-      { customer: { repId } },
+      { customer: { rep: { id: repId } } },
       { customer: { salesRep: rep.name } },
     ],
   };
@@ -156,7 +150,7 @@ export async function GET(req: Request) {
       where: {
         customerId: { in: customerIds },
         OR: [
-          { customer: { repId } },
+          { customer: { rep: { id: repId } } },
           { customer: { salesRep: rep.name } },
         ],
       },
