@@ -6,7 +6,12 @@ import { fetchVariantCostsOnce } from "@/lib/shopify";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Small helper
+type VariantCostEntry = {
+  unitCost: number | null;
+  currency: string | null;
+  inventoryItemId: string | null;
+};
+
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -60,13 +65,13 @@ export async function GET(req: NextRequest) {
 
     const batches = chunk(missing, 50); // GraphQL-friendly batch size
     for (const batch of batches) {
-      // Fetch costs for this batch
-      const map = await fetchVariantCostsOnce(batch); // Map<variantId, { unitCost, currency, inventoryItemId }>
+      // Ensure TS knows this is a Map so .get(...) is callable
+      const costMap = (await fetchVariantCostsOnce(batch)) as Map<string, VariantCostEntry>;
       fetched += batch.length;
 
       for (const id of batch) {
-        const key = `${id}`; // avoid calling global String(); keeps TS happy
-        const entry = map.get(key);
+        const key = String(id);
+        const entry = costMap.get(key);
         if (!entry) continue;
 
         await prisma.shopifyVariantCost.upsert({
