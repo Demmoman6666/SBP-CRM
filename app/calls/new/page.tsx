@@ -41,6 +41,23 @@ function nowHHMM() {
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `${hh}:${mm}`;
 }
+/* Responsive helper */
+function useIsMobile(maxWidth = 640) {
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia?.(`(max-width:${maxWidth}px)`)?.matches ?? false;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia(`(max-width:${maxWidth}px)`);
+    const handler = () => setIsMobile(mq.matches);
+    handler();
+    mq.addEventListener ? mq.addEventListener("change", handler) : mq.addListener(handler);
+    return () =>
+      mq.removeEventListener ? mq.removeEventListener("change", handler) : mq.removeListener(handler);
+  }, [maxWidth]);
+  return isMobile;
+}
 
 /* Normalize reps from either ["Name", ...] or [{id,name}, ...] or { ok, reps: [...] } */
 function normalizeReps(payload: any): Rep[] {
@@ -50,14 +67,19 @@ function normalizeReps(payload: any): Rep[] {
     ? payload.reps
     : [];
 
-  return arr.map((r: any): Rep =>
-    typeof r === "string"
-      ? { id: r, name: r }
-      : { id: String(r.id ?? r.name ?? ""), name: String(r.name ?? r.id ?? "") }
-  ).filter((r: Rep) => r.name);
+  return arr
+    .map(
+      (r: any): Rep =>
+        typeof r === "string"
+          ? { id: r, name: r }
+          : { id: String(r.id ?? r.name ?? ""), name: String(r.name ?? r.id ?? "") }
+    )
+    .filter((r: Rep) => r.name);
 }
 
 export default function NewCallPage() {
+  const isMobile = useIsMobile(640);
+
   /* Sales reps */
   const [reps, setReps] = useState<Rep[]>([]);
   useEffect(() => {
@@ -158,7 +180,7 @@ export default function NewCallPage() {
     return String(diff);
   }, [start, finish]);
 
-  /* NEW — Mandatory geolocation */
+  /* Mandatory geolocation */
   type GeoStatus = "prompt" | "fetching" | "granted" | "denied" | "unsupported";
   const [geoStatus, setGeoStatus] = useState<GeoStatus>("prompt");
   const [lat, setLat] = useState<number | null>(null);
@@ -170,25 +192,34 @@ export default function NewCallPage() {
 
   useEffect(() => {
     if (typeof navigator === "undefined") return;
-    if (!("geolocation" in navigator)) { setGeoStatus("unsupported"); return; }
+    if (!("geolocation" in navigator)) {
+      setGeoStatus("unsupported");
+      return;
+    }
 
     // Check permission state where supported
     // @ts-ignore
     if (navigator.permissions?.query) {
       // @ts-ignore
-      navigator.permissions.query({ name: "geolocation" as PermissionName }).then((p: any) => {
-        setGeoStatus(p.state as GeoStatus);
-        p.onchange = () => setGeoStatus(p.state as GeoStatus);
-      }).catch(() => {});
+      navigator.permissions
+        .query({ name: "geolocation" as PermissionName })
+        .then((p: any) => {
+          setGeoStatus(p.state as GeoStatus);
+          p.onchange = () => setGeoStatus(p.state as GeoStatus);
+        })
+        .catch(() => {});
     }
 
     // Auto-request once on load if secure context (will show prompt)
     if (!insecureContext) requestLocationOnce();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function requestLocationOnce() {
-    if (!("geolocation" in navigator)) { setGeoStatus("unsupported"); return; }
+    if (!("geolocation" in navigator)) {
+      setGeoStatus("unsupported");
+      return;
+    }
     setGeoStatus("fetching");
     navigator.geolocation.getCurrentPosition(
       (pos) => {
@@ -198,7 +229,9 @@ export default function NewCallPage() {
         setAcc(Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null);
         setGeoTs(new Date().toISOString());
       },
-      () => { setGeoStatus("denied"); },
+      () => {
+        setGeoStatus("denied");
+      },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
     );
   }
@@ -217,7 +250,6 @@ export default function NewCallPage() {
       return;
     }
     if (lat == null || lng == null) {
-      // try one more time to prompt
       requestLocationOnce();
       setError("We need your location to log this call. Tap “Enable location” and allow access.");
       return;
@@ -225,13 +257,22 @@ export default function NewCallPage() {
 
     const fd = new FormData(e.currentTarget);
 
-    if (!fd.get("salesRep")) { setError("Please select a Sales Rep."); return; }
-    if (!fd.get("summary")) { setError("Summary is required."); return; }
+    if (!fd.get("salesRep")) {
+      setError("Please select a Sales Rep.");
+      return;
+    }
+    if (!fd.get("summary")) {
+      setError("Summary is required.");
+      return;
+    }
 
     // require start & finish
     const s = String(fd.get("startTime") || "").trim();
     const f = String(fd.get("endTime") || "").trim();
-    if (!s || !f) { setError("Start Time and Finish Time are required."); return; }
+    if (!s || !f) {
+      setError("Start Time and Finish Time are required.");
+      return;
+    }
 
     const existing = fd.get("isExistingCustomer") === "true";
     if (existing && !fd.get("customerId")) {
@@ -240,7 +281,10 @@ export default function NewCallPage() {
     }
     if (!existing) {
       const typed = (fd.get("customer") || "").toString().trim();
-      if (!typed) { setError("Please enter a customer/lead name."); return; }
+      if (!typed) {
+        setError("Please enter a customer/lead name.");
+        return;
+      }
       fd.set("customerName", typed);
     }
 
@@ -250,7 +294,7 @@ export default function NewCallPage() {
     if (fDate && fTime) fd.set("followUpAt", `${fDate}T${fTime}`);
     fd.delete("followUpTime");
 
-    // Add geo fields (hidden inputs are present too, but set here to be sure)
+    // Add geo fields
     fd.set("latitude", String(lat));
     fd.set("longitude", String(lng));
     if (acc != null) fd.set("accuracyM", String(Math.round(acc)));
@@ -273,9 +317,329 @@ export default function NewCallPage() {
   const timestamp = useMemo(() => new Date().toLocaleString(), []);
 
   const geoBadge =
-    insecureContext ? "unavailable (use HTTPS or localhost)" :
-    geoStatus === "fetching" ? "capturing…" :
-    geoStatus;
+    insecureContext ? "unavailable (use HTTPS or localhost)" : geoStatus === "fetching" ? "capturing…" : geoStatus;
+
+  /* Reusable blocks so we can reorder for mobile */
+  const BlockLocation = (
+    <div className="field" style={{ marginBottom: 4 }}>
+      <label>Location (required)</label>
+      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span className="small" style={{ color: geoStatus === "denied" ? "var(--danger,#b91c1c)" : "var(--muted)" }}>
+          {lat != null && lng != null
+            ? `Captured: ${lat.toFixed(5)}, ${lng.toFixed(5)}${acc != null ? ` • ±${Math.round(acc)}m` : ""}`
+            : `Location: ${geoBadge}`}
+        </span>
+        <button type="button" className="btn" onClick={requestLocationOnce}>
+          {lat == null ? "Enable location" : "Refresh location"}
+        </button>
+        {insecureContext && <span className="small muted">Open the HTTPS site to enable geolocation.</span>}
+      </div>
+      {/* Hidden fields */}
+      <input type="hidden" name="latitude" value={lat ?? ""} />
+      <input type="hidden" name="longitude" value={lng ?? ""} />
+      <input type="hidden" name="accuracyM" value={acc ?? ""} />
+      <input type="hidden" name="geoCollectedAt" value={geoTs ?? ""} />
+    </div>
+  );
+
+  const BlockExistingToggle = (
+    <div className="field">
+      <label>Is this an existing customer? (required)</label>
+      <div className="row" style={{ gap: 16 }}>
+        <label className="row" style={{ gap: 6 }}>
+          <input
+            type="radio"
+            name="isExistingCustomer"
+            value="true"
+            checked={isExisting}
+            onChange={() => {
+              setIsExisting(true);
+              setCustTerm("");
+              setCustSelected(null);
+            }}
+            required
+          />
+          Yes
+        </label>
+        <label className="row" style={{ gap: 6 }}>
+          <input
+            type="radio"
+            name="isExistingCustomer"
+            value="false"
+            checked={!isExisting}
+            onChange={() => {
+              setIsExisting(false);
+              setCustHits([]);
+              setCustSelected(null);
+            }}
+          />
+          No
+        </label>
+      </div>
+    </div>
+  );
+
+  const BlockSalesRep = (
+    <div className="field">
+      <label>Sales Rep (required)</label>
+      <select name="salesRep" required defaultValue="">
+        <option value="" disabled>
+          — Select a Sales Rep —
+        </option>
+        {reps.map((r) => (
+          <option key={r.id || r.name} value={r.name}>
+            {r.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+
+  const BlockCustomer = (
+    <div className="field" ref={custWrapRef} style={{ position: "relative" }}>
+      <label>Customer*</label>
+      <input
+        name="customer"
+        placeholder={isExisting ? "Type to search" : "Type a name for this lead"}
+        value={custTerm}
+        onChange={(e) => {
+          setCustTerm(e.target.value);
+          if (custSelected) setCustSelected(null);
+          if (isExisting) setCustOpen(true);
+        }}
+        onFocus={() => {
+          if (isExisting && custTerm.trim().length >= 2) setCustOpen(true);
+        }}
+        required
+        autoComplete="off"
+      />
+      {/* Hidden values server can use */}
+      <input type="hidden" name="customerId" value={custSelected?.id || ""} />
+      <input type="hidden" name="customerResolved" value={fmtCustomerLine(custSelected) || ""} />
+
+      {/* Suggestion panel */}
+      {isExisting && custOpen && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            width: "min(620px, 92vw)",
+            background: "#fff",
+            border: "1px solid var(--border)",
+            borderRadius: 12,
+            boxShadow: "var(--shadow)",
+            padding: 6,
+            zIndex: 40,
+          }}
+        >
+          {custHits.length === 0 ? (
+            <div className="small" style={{ padding: 10 }}>
+              No matches found.
+            </div>
+          ) : (
+            custHits.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => handlePickCustomer(c)}
+                style={{
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid transparent",
+                  cursor: "pointer",
+                  background: "transparent",
+                }}
+                onFocus={(e) => {
+                  // neutralize any global focus highlight
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.borderColor = "transparent";
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "#fafafa";
+                  e.currentTarget.style.borderColor = "#eee";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.borderColor = "transparent";
+                }}
+              >
+                <div style={{ fontWeight: 600 }}>{c.salonName || "-"}</div>
+                <div className="small">
+                  Contact: {c.customerName || "-"}
+                  {c.customerTelephone ? ` • ${c.customerTelephone}` : ""}
+                  {c.customerEmailAddress ? ` • ${c.customerEmailAddress}` : ""}
+                </div>
+                <div className="small muted">{addressLines(c).join(", ") || "-"}</div>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* Selected customer card */}
+      {isExisting && custSelected && (
+        <div className="card" style={{ marginTop: 8, padding: 10, borderRadius: 10 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>{custSelected.salonName || "-"}</div>
+          <div className="small">
+            Contact: {custSelected.customerName || "-"}
+            {custSelected.customerTelephone ? ` • ${custSelected.customerTelephone}` : ""}
+            {custSelected.customerEmailAddress ? ` • ${custSelected.customerEmailAddress}` : ""}
+          </div>
+          <div className="small muted" style={{ marginTop: 2 }}>{addressLines(custSelected).join(", ") || "-"}</div>
+          <div className="right" style={{ marginTop: 8 }}>
+            <button type="button" className="btn" onClick={clearPickedCustomer}>
+              Change
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!isExisting && <div className="form-hint">Free-type for a lead.</div>}
+    </div>
+  );
+
+  const BlockOutcome = (
+    <div className="field">
+      <label>Outcome</label>
+      <select name="outcome" defaultValue="">
+        <option value="" disabled>
+          — Select —
+        </option>
+        <option>Sale</option>
+        <option>No Sale</option>
+        <option>Appointment booked</option>
+        <option>Demo Booked</option>
+      </select>
+    </div>
+  );
+
+  const BlockStage = (
+    <div className="field">
+      <label>Customer Stage</label>
+      <select name="stage" defaultValue="">
+        <option value="">— Select stage —</option>
+        <option value="LEAD">Lead</option>
+        <option value="APPOINTMENT_BOOKED">Appointment booked</option>
+        <option value="SAMPLING">Sampling</option>
+        <option value="CUSTOMER">Customer</option>
+      </select>
+      <div className="form-hint">
+        Optional. If chosen for an existing customer, their profile stage will be updated.
+      </div>
+    </div>
+  );
+
+  const BlockCallType = (
+    <div className="field">
+      <label>Call Type</label>
+      <select name="callType" defaultValue="">
+        <option value="" disabled>
+          — Select —
+        </option>
+        <option>Cold Call</option>
+        <option>Booked Call</option>
+        <option>Booked Demo</option>
+      </select>
+    </div>
+  );
+
+  const BlockTimes = (
+    <div className="grid grid-2">
+      <div className="field">
+        <label>
+          Start Time <span className="small muted">(required)</span>
+        </label>
+        <div className="row" style={{ gap: 8 }}>
+          <input type="time" name="startTime" value={start} onChange={(e) => setStart(e.target.value)} required />
+          <button type="button" className="btn" onClick={() => setStart(nowHHMM())}>
+            Now
+          </button>
+        </div>
+      </div>
+
+      <div className="field">
+        <label>
+          Finish Time <span className="small muted">(required)</span>
+        </label>
+        <div className="row" style={{ gap: 8 }}>
+          <input type="time" name="endTime" value={finish} onChange={(e) => setFinish(e.target.value)} required />
+          <button type="button" className="btn" onClick={() => setFinish(nowHHMM())}>
+            Now
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const BlockDuration = (
+    <div className="field">
+      <label>Total Duration (mins)</label>
+      <input name="durationMinutes" value={duration} readOnly placeholder="—" />
+    </div>
+  );
+
+  const BlockFollowUp = (
+    <div className="grid grid-2">
+      <div className="field">
+        <label>Follow-up (date & time)</label>
+        <div className="input-group">
+          <input type="date" name="followUpAt" />
+          <input type="time" name="followUpTime" />
+        </div>
+        <div className="form-hint">If both are set, we’ll create a 30-minute calendar event.</div>
+      </div>
+    </div>
+  );
+
+  const BlockStockedBrands = (
+    <div className="field">
+      <label>What brands did you discuss? (Stocked Brands)</label>
+      <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr" }}>
+        {stockedBrands.length > 0 ? (
+          stockedBrands.map((b) => (
+            <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
+              <input type="checkbox" name="stockedBrandIds" value={b.id} />
+              {b.name}
+            </label>
+          ))
+        ) : (
+          <div className="small muted">
+            No stocked brands are toggled to show. Ask an admin to enable them in Global Settings.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const BlockCompetitorBrands = (
+    <div className="field">
+      <label>Brands used (Competitor Brands)</label>
+      <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr 1fr" }}>
+        {competitorBrands.length > 0 ? (
+          competitorBrands.map((b) => (
+            <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
+              <input type="checkbox" name="competitorBrandIds" value={b.id} />
+              {b.name}
+            </label>
+          ))
+        ) : (
+          <div className="small muted">
+            No competitor brands are toggled to show. Ask an admin to enable them in Global Settings.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const BlockSummary = (
+    <div className="field">
+      <label>Summary (required)</label>
+      <textarea name="summary" rows={4} placeholder="What was discussed?" required />
+    </div>
+  );
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -285,311 +649,61 @@ export default function NewCallPage() {
       </section>
 
       <form onSubmit={onSubmit} className="card grid" style={{ gap: 12 }}>
-        {/* MANDATORY location capture */}
-        <div className="field" style={{ marginBottom: 4 }}>
-          <label>Location (required)</label>
-          <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <span className="small" style={{ color: geoStatus === "denied" ? "var(--danger,#b91c1c)" : "var(--muted)" }}>
-              {lat != null && lng != null
-                ? `Captured: ${lat.toFixed(5)}, ${lng.toFixed(5)}${acc != null ? ` • ±${Math.round(acc)}m` : ""}`
-                : `Location: ${geoBadge}`}
-            </span>
-            <button type="button" className="btn" onClick={requestLocationOnce}>
-              {lat == null ? "Enable location" : "Refresh location"}
-            </button>
-            {insecureContext && (
-              <span className="small muted">Open the HTTPS site to enable geolocation.</span>
-            )}
-          </div>
+        {!isMobile ? (
+          <>
+            {/* Desktop/tablet layout (unchanged except call type under Rep) */}
+            {BlockLocation}
 
-          {/* Hidden fields sent to server */}
-          <input type="hidden" name="latitude" value={lat ?? ""} />
-          <input type="hidden" name="longitude" value={lng ?? ""} />
-          <input type="hidden" name="accuracyM" value={acc ?? ""} />
-          <input type="hidden" name="geoCollectedAt" value={geoTs ?? ""} />
-        </div>
-
-        {/* Row: Existing? + Rep */}
-        <div className="grid grid-2">
-          <div className="field">
-            <label>Is this an existing customer? (required)</label>
-            <div className="row" style={{ gap: 16 }}>
-              <label className="row" style={{ gap: 6 }}>
-                <input
-                  type="radio"
-                  name="isExistingCustomer"
-                  value="true"
-                  checked={isExisting}
-                  onChange={() => {
-                    setIsExisting(true);
-                    setCustTerm("");
-                    setCustSelected(null);
-                  }}
-                  required
-                />
-                Yes
-              </label>
-              <label className="row" style={{ gap: 6 }}>
-                <input
-                  type="radio"
-                  name="isExistingCustomer"
-                  value="false"
-                  checked={!isExisting}
-                  onChange={() => {
-                    setIsExisting(false);
-                    setCustHits([]);
-                    setCustSelected(null);
-                  }}
-                />
-                No
-              </label>
+            <div className="grid grid-2">
+              {BlockExistingToggle}
+              {BlockSalesRep}
             </div>
-          </div>
 
-          <div className="field">
-            <label>Sales Rep (required)</label>
-            <select name="salesRep" required defaultValue="">
-              <option value="" disabled>— Select a Sales Rep —</option>
-              {reps.map((r) => (
-                <option key={r.id || r.name} value={r.name}>{r.name}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* NEW: Call Type directly under Sales Rep (aligned in the right column) */}
-        <div className="grid grid-2">
-          <div />{/* keeps alignment */}
-          <div className="field">
-            <label>Call Type</label>
-            <select name="callType" defaultValue="">
-              <option value="" disabled>— Select —</option>
-              <option>Cold Call</option>
-              <option>Booked Call</option>
-              <option>Booked Demo</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Row: Customer + Outcome */}
-        <div className="grid grid-2">
-          <div className="field" ref={custWrapRef} style={{ position: "relative" }}>
-            <label>Customer*</label>
-            <input
-              name="customer"
-              placeholder={isExisting ? "Type to search" : "Type a name for this lead"}
-              value={custTerm}
-              onChange={(e) => {
-                setCustTerm(e.target.value);
-                if (custSelected) setCustSelected(null);
-                if (isExisting) setCustOpen(true);
-              }}
-              onFocus={() => {
-                if (isExisting && custTerm.trim().length >= 2) setCustOpen(true);
-              }}
-              required
-              autoComplete="off"
-            />
-            {/* Hidden values server can use */}
-            <input type="hidden" name="customerId" value={custSelected?.id || ""} />
-            <input type="hidden" name="customerResolved" value={fmtCustomerLine(custSelected) || ""} />
-
-            {/* Suggestion panel */}
-            {isExisting && custOpen && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: "calc(100% + 6px)",
-                  left: 0,
-                  width: "min(620px, 92vw)",
-                  background: "#fff",
-                  border: "1px solid var(--border)",
-                  borderRadius: 12,
-                  boxShadow: "var(--shadow)",
-                  padding: 6,
-                  zIndex: 40,
-                }}
-              >
-                {custHits.length === 0 ? (
-                  <div className="small" style={{ padding: 10 }}>No matches found.</div>
-                ) : (
-                  custHits.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => handlePickCustomer(c)}
-                      style={{
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "10px 12px",
-                        borderRadius: 10,
-                        border: "1px solid transparent",
-                        cursor: "pointer",
-                        background: "transparent",
-                      }}
-                      onFocus={(e) => {
-                        // prevent any global :focus pink styling
-                        e.currentTarget.style.background = "transparent";
-                        e.currentTarget.style.borderColor = "transparent";
-                      }}
-                      onMouseEnter={(e) => {
-                        (e.currentTarget.style.background = "#fafafa");
-                        (e.currentTarget.style.borderColor = "#eee");
-                      }}
-                      onMouseLeave={(e) => {
-                        (e.currentTarget.style.background = "transparent");
-                        (e.currentTarget.style.borderColor = "transparent");
-                      }}
-                    >
-                      <div style={{ fontWeight: 600 }}>{c.salonName || "-"}</div>
-                      <div className="small">
-                        Contact: {c.customerName || "-"}
-                        {c.customerTelephone ? ` • ${c.customerTelephone}` : ""}
-                        {c.customerEmailAddress ? ` • ${c.customerEmailAddress}` : ""}
-                      </div>
-                      <div className="small muted">{addressLines(c).join(", ") || "-"}</div>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-
-            {/* Selected customer card */}
-            {isExisting && custSelected && (
-              <div className="card" style={{ marginTop: 8, padding: 10, borderRadius: 10 }}>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>{custSelected.salonName || "-"}</div>
-                <div className="small">
-                  Contact: {custSelected.customerName || "-"}
-                  {custSelected.customerTelephone ? ` • ${custSelected.customerTelephone}` : ""}
-                  {custSelected.customerEmailAddress ? ` • ${custSelected.customerEmailAddress}` : ""}
-                </div>
-                <div className="small muted" style={{ marginTop: 2 }}>{addressLines(custSelected).join(", ") || "-"}</div>
-                <div className="right" style={{ marginTop: 8 }}>
-                  <button type="button" className="btn" onClick={clearPickedCustomer}>Change</button>
-                </div>
-              </div>
-            )}
-
-            {!isExisting && <div className="form-hint">Free-type for a lead.</div>}
-          </div>
-
-          <div className="field">
-            <label>Outcome</label>
-            <select name="outcome" defaultValue="">
-              <option value="" disabled>— Select —</option>
-              <option>Sale</option>
-              <option>No Sale</option>
-              <option>Appointment booked</option>
-              <option>Demo Booked</option>
-            </select>
-          </div>
-        </div>
-
-        {/* NEW: Customer Stage */}
-        <div className="field">
-          <label>Customer Stage</label>
-          <select name="stage" defaultValue="">
-            <option value="">— Select stage —</option>
-            <option value="LEAD">Lead</option>
-            <option value="APPOINTMENT_BOOKED">Appointment booked</option>
-            <option value="SAMPLING">Sampling</option>
-            <option value="CUSTOMER">Customer</option>
-          </select>
-          <div className="form-hint">Optional. If chosen for an existing customer, their profile stage will be updated.</div>
-        </div>
-
-        {/* Times & duration (NOW REQUIRED) */}
-        <div className="grid grid-2">
-          <div className="field">
-            <label>Start Time <span className="small muted">(required)</span></label>
-            <div className="row" style={{ gap: 8 }}>
-              <input
-                type="time"
-                name="startTime"
-                value={start}
-                onChange={(e) => setStart(e.target.value)}
-                required
-              />
-              <button type="button" className="btn" onClick={() => setStart(nowHHMM())}>Now</button>
+            {/* Call type directly under Sales Rep */}
+            <div className="grid grid-2">
+              <div />
+              {BlockCallType}
             </div>
-          </div>
 
-          <div className="field">
-            <label>Finish Time <span className="small muted">(required)</span></label>
-            <div className="row" style={{ gap: 8 }}>
-              <input
-                type="time"
-                name="endTime"
-                value={finish}
-                onChange={(e) => setFinish(e.target.value)}
-                required
-              />
-              <button type="button" className="btn" onClick={() => setFinish(nowHHMM())}>Now</button>
+            <div className="grid grid-2">
+              {BlockCustomer}
+              {BlockOutcome}
             </div>
-          </div>
-        </div>
 
-        <div className="field">
-          <label>Total Duration (mins)</label>
-          <input name="durationMinutes" value={duration} readOnly placeholder="—" />
-        </div>
-
-        {/* Follow-up (call type moved above) */}
-        <div className="grid grid-2">
-          <div className="field">
-            <label>Follow-up (date & time)</label>
-            <div className="input-group">
-              <input type="date" name="followUpAt" />
-              <input type="time" name="followUpTime" />
-            </div>
-            <div className="form-hint">If both are set, we’ll create a 30-minute calendar event.</div>
-          </div>
-        </div>
-
-        {/* Brands discussed (STOCKED — visible only) */}
-        <div className="field">
-          <label>What brands did you discuss? (Stocked Brands)</label>
-          <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr" }}>
-            {stockedBrands.length > 0 ? (
-              stockedBrands.map((b) => (
-                <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
-                  <input type="checkbox" name="stockedBrandIds" value={b.id} />
-                  {b.name}
-                </label>
-              ))
-            ) : (
-              <div className="small muted">No stocked brands are toggled to show. Ask an admin to enable them in Global Settings.</div>
-            )}
-          </div>
-        </div>
-
-        {/* Competitor brands (visible only) */}
-        <div className="field">
-          <label>Brands used (Competitor Brands)</label>
-          <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr 1fr" }}>
-            {competitorBrands.length > 0 ? (
-              competitorBrands.map((b) => (
-                <label key={b.id} className="row" style={{ gap: 8, alignItems: "center" }}>
-                  <input type="checkbox" name="competitorBrandIds" value={b.id} />
-                  {b.name}
-                </label>
-              ))
-            ) : (
-              <div className="small muted">No competitor brands are toggled to show. Ask an admin to enable them in Global Settings.</div>
-            )}
-          </div>
-        </div>
-
-        {/* Summary */}
-        <div className="field">
-          <label>Summary (required)</label>
-          <textarea name="summary" rows={4} placeholder="What was discussed?" required />
-        </div>
+            {BlockStage}
+            {BlockTimes}
+            {BlockDuration}
+            {BlockFollowUp}
+            {BlockStockedBrands}
+            {BlockCompetitorBrands}
+            {BlockSummary}
+          </>
+        ) : (
+          <>
+            {/* Mobile layout in requested order */}
+            {BlockCustomer}
+            {BlockSalesRep}
+            {BlockStage}
+            {BlockCallType}
+            {BlockOutcome}
+            {/* Then the rest */}
+            {BlockExistingToggle}
+            {BlockLocation}
+            {BlockTimes}
+            {BlockDuration}
+            {BlockFollowUp}
+            {BlockStockedBrands}
+            {BlockCompetitorBrands}
+            {BlockSummary}
+          </>
+        )}
 
         {error && <div className="form-error">{error}</div>}
 
         <div className="right row" style={{ gap: 8 }}>
-          <a href="/" className="btn" style={{ background: "#f3f4f6" }}>Cancel</a>
+          <a href="/" className="btn" style={{ background: "#f3f4f6" }}>
+            Cancel
+          </a>
           <button className="primary" type="submit" disabled={submitting}>
             {submitting ? "Saving…" : "Save Call"}
           </button>
