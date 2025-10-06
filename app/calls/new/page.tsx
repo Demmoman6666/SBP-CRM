@@ -357,6 +357,20 @@ export default function NewCallPage() {
           </div>
         </div>
 
+        {/* NEW: Call Type directly under Sales Rep (aligned in the right column) */}
+        <div className="grid grid-2">
+          <div />{/* keeps alignment */}
+          <div className="field">
+            <label>Call Type</label>
+            <select name="callType" defaultValue="">
+              <option value="" disabled>— Select —</option>
+              <option>Cold Call</option>
+              <option>Booked Call</option>
+              <option>Booked Demo</option>
+            </select>
+          </div>
+        </div>
+
         {/* Row: Customer + Outcome */}
         <div className="grid grid-2">
           <div className="field" ref={custWrapRef} style={{ position: "relative" }}>
@@ -411,6 +425,12 @@ export default function NewCallPage() {
                         borderRadius: 10,
                         border: "1px solid transparent",
                         cursor: "pointer",
+                        background: "transparent",
+                      }}
+                      onFocus={(e) => {
+                        // prevent any global :focus pink styling
+                        e.currentTarget.style.background = "transparent";
+                        e.currentTarget.style.borderColor = "transparent";
                       }}
                       onMouseEnter={(e) => {
                         (e.currentTarget.style.background = "#fafafa");
@@ -514,18 +534,8 @@ export default function NewCallPage() {
           <input name="durationMinutes" value={duration} readOnly placeholder="—" />
         </div>
 
-        {/* Call type + follow-up */}
+        {/* Follow-up (call type moved above) */}
         <div className="grid grid-2">
-          <div className="field">
-            <label>Call Type</label>
-            <select name="callType" defaultValue="">
-              <option value="" disabled>— Select —</option>
-              <option>Cold Call</option>
-              <option>Booked Call</option>
-              <option>Booked Demo</option>
-            </select>
-          </div>
-
           <div className="field">
             <label>Follow-up (date & time)</label>
             <div className="input-group">
