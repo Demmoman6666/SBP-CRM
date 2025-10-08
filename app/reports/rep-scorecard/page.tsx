@@ -5,14 +5,10 @@ import { useEffect, useMemo, useState } from "react";
 
 /* Types */
 type Rep = { id: string; name: string };
-
-// Keep in sync with your API shape
 type Scorecard = {
-  // Section 1
-  salesEx: number;        // Sales (ex VAT)
-  marginPct: number;      // %
-  profit: number;         // currency amount
-  // Section 2
+  salesEx: number;
+  marginPct: number;
+  profit: number;
   totalCalls: number;
   coldCalls: number;
   bookedCalls: number;
@@ -20,7 +16,6 @@ type Scorecard = {
   avgTimePerCallMins: number;
   avgCallsPerDay: number;
   daysActive: number;
-  // Section 3
   totalCustomers: number;
   newCustomers: number;
 };
@@ -60,22 +55,17 @@ function fmtPct(n?: number | null) {
 }
 function diffPct(cur?: number | null, base?: number | null) {
   if (cur == null || base == null || isNaN(cur) || isNaN(base)) return null;
-  if (base === 0) return cur === 0 ? 0 : 100; // arbitrary but useful
+  if (base === 0) return cur === 0 ? 0 : 100;
   return ((cur - base) / Math.abs(base)) * 100;
 }
 function Diff({ value }: { value: number | null }) {
   if (value == null || !isFinite(value)) return <span className="small muted">—</span>;
   const up = value >= 0;
-  const color = up ? "#16a34a" /* green-600 */ : "#dc2626" /* red-600 */;
+  const color = up ? "#16a34a" : "#dc2626";
   const sign = up ? "+" : "";
-  return (
-    <span className="small" style={{ color }}>
-      {sign}{value.toFixed(1)}%
-    </span>
-  );
+  return <span className="small" style={{ color }}>{sign}{value.toFixed(1)}%</span>;
 }
 
-/* Fetch helper */
 async function fetchScorecard(rep: string, from: string, to: string): Promise<Scorecard | null> {
   if (!rep || !from || !to) return null;
   const qs = new URLSearchParams({ rep, from, to });
@@ -85,7 +75,6 @@ async function fetchScorecard(rep: string, from: string, to: string): Promise<Sc
 }
 
 export default function RepScorecardPage() {
-  /* reps list */
   const [reps, setReps] = useState<Rep[]>([]);
   useEffect(() => {
     fetch("/api/sales-reps", { cache: "no-store", credentials: "include" })
@@ -93,16 +82,13 @@ export default function RepScorecardPage() {
       .catch(() => setReps([]));
   }, []);
 
-  /* primary selection */
   const today = useMemo(() => new Date(), []);
   const [repId, setRepId] = useState<string>("");
-  const [from, setFrom] = useState<string>(ymd(today));
+  const [from, setFrom] = useState<string>(ymd(addDays(today, -7)));
   const [to, setTo] = useState<string>(ymd(today));
   const [cur, setCur] = useState<Scorecard | null>(null);
 
-  /* comparison selection (rep + timeframe) */
   const [cmpRepId, setCmpRepId] = useState<string>("");
-  // default compare period = previous day(s) same span
   const [cmpFrom, setCmpFrom] = useState<string>(ymd(addDays(today, -7)));
   const [cmpTo, setCmpTo] = useState<string>(ymd(today));
   const [cmp, setCmp] = useState<Scorecard | null>(null);
@@ -110,7 +96,6 @@ export default function RepScorecardPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // default rep once loaded
   useEffect(() => {
     if (reps.length && !repId) setRepId(reps[0].id);
     if (reps.length && !cmpRepId) setCmpRepId(reps[0].id);
@@ -238,7 +223,7 @@ export default function RepScorecardPage() {
       {/* Metrics */}
       <section className="card" style={{ padding: 0 }}>
         <div style={{ padding: "12px 12px 0" }}>
-          <Head title="Section 1" sub="Sales (ex VAT), margin %, profit" />
+          <Head title="Sales" sub="ex VAT, margin %, profit" />
         </div>
         <div style={{ padding: "0 12px 12px" }}>
           <MetricRow label="Sales (ex VAT)" fmt="money" cur={cur?.salesEx} base={cmp?.salesEx} />
@@ -247,7 +232,7 @@ export default function RepScorecardPage() {
         </div>
 
         <div style={{ padding: "12px 12px 0" }}>
-          <Head title="Section 2" sub="Call volumes & activity" />
+          <Head title="Calls" sub="Volumes & activity" />
         </div>
         <div style={{ padding: "0 12px 12px" }}>
           <MetricRow label="Total Calls" cur={cur?.totalCalls} base={cmp?.totalCalls} />
@@ -260,7 +245,7 @@ export default function RepScorecardPage() {
         </div>
 
         <div style={{ padding: "12px 12px 0" }}>
-          <Head title="Section 3" sub="Customer counts" />
+          <Head title="Customers" sub="Counts" />
         </div>
         <div style={{ padding: "0 12px 12px" }}>
           <MetricRow label="Total Customers" cur={cur?.totalCustomers} base={cmp?.totalCustomers} />
