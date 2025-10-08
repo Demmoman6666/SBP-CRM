@@ -286,6 +286,14 @@ export default function CallReportPage() {
           </div>
         </div>
 
+        {/* NEW: Booked Calls count */}
+        <div className="card">
+          <div className="small muted">Booked Calls</div>
+          <div style={{ fontSize: 28, fontWeight: 700 }}>
+            {data ? data.totals.bookedCalls : "—"}
+          </div>
+        </div>
+
         <div className="card">
           <h3>Booked Calls → Sales</h3>
           <div style={{ fontSize: 24, fontWeight: 700 }}>
