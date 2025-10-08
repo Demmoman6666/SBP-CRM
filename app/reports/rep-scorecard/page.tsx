@@ -3,15 +3,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-/* ---------- Types ---------- */
+/* Types */
 type Rep = { id: string; name: string };
 
+// Keep in sync with your API shape
 type Scorecard = {
-  rep: string;
   // Section 1
-  salesEx: number;       // Sales (ex VAT)
-  marginPct: number;     // %
-  profit: number;        // currency
+  salesEx: number;        // Sales (ex VAT)
+  marginPct: number;      // %
+  profit: number;         // currency amount
   // Section 2
   totalCalls: number;
   coldCalls: number;
@@ -25,335 +25,248 @@ type Scorecard = {
   newCustomers: number;
 };
 
-/* ---------- Date helpers ---------- */
 function pad(n: number) { return n < 10 ? `0${n}` : String(n); }
-function ymdLocal(d: Date) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
-function addDaysLocal(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-function mondayOfWeek(d: Date) { const dow = d.getDay(); const delta = dow === 0 ? -6 : 1 - dow; return addDaysLocal(d, delta); }
-function firstOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth(), 1); }
-function lastMonthFirst(d: Date) { return new Date(d.getFullYear(), d.getMonth() - 1, 1); }
-function lastMonthLast(d: Date) { const firstThis = new Date(d.getFullYear(), d.getMonth(), 1); return addDaysLocal(firstThis, -1); }
-function ytdFirst(d: Date) { return new Date(d.getFullYear(), 0, 1); }
-function parseYMD(s: string) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s); if (!m) return null; return new Date(+m[1], +m[2]-1, +m[3]); }
-function diffDaysInclusive(a: string, b: string) {
-  const A = parseYMD(a)!, B = parseYMD(b)!;
-  const ms = Math.abs(+B - +A);
-  return Math.floor(ms / 86400000) + 1;
+function ymd(d = new Date()) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+
+function normalizeRepsResponse(j: any): Rep[] {
+  if (Array.isArray(j)) {
+    return j
+      .map((r: any) =>
+        typeof r === "string"
+          ? { id: r, name: r }
+          : { id: String(r?.id ?? r?.name ?? ""), name: String(r?.name ?? r?.id ?? "") }
+      )
+      .filter((r) => !!r.name);
+  }
+  if (j?.ok && Array.isArray(j.reps)) {
+    return j.reps
+      .map((name: any) => String(name || ""))
+      .filter(Boolean)
+      .map((name: string) => ({ id: name, name }));
+  }
+  return [];
 }
 
-/* ---------- Small UI helpers ---------- */
-const fmt = (n: number | null | undefined, dp = 0) =>
-  n == null || isNaN(n as number) ? "—" : Number(n).toFixed(dp);
-
-function normalizeReps(payload: any): Rep[] {
-  const arr = Array.isArray(payload) ? payload : Array.isArray(payload?.reps) ? payload.reps : [];
-  return arr
-    .map((r: any): Rep =>
-      typeof r === "string"
-        ? { id: r, name: r }
-        : { id: String(r?.id ?? r?.name ?? ""), name: String(r?.name ?? r?.id ?? "") }
-    )
-    .filter((r: Rep) => !!r.name);
+function fmtMoney(n?: number | null, currency = "£") {
+  if (n == null || isNaN(n)) return "—";
+  const sign = n < 0 ? "-" : "";
+  const v = Math.abs(n);
+  return `${sign}${currency}${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
-
-function PctDelta({ base, value }: { base: number; value: number }) {
-  if (!isFinite(base) || base === 0) return null;
-  const pct = ((value - base) / Math.abs(base)) * 100;
-  const color = pct > 0 ? "#16a34a" : pct < 0 ? "#b91c1c" : "var(--muted)";
-  const sign = pct > 0 ? "+" : "";
+function fmtPct(n?: number | null) {
+  if (n == null || isNaN(n)) return "—";
+  return `${n.toFixed(1)}%`;
+}
+function diffPct(cur?: number | null, base?: number | null) {
+  if (cur == null || base == null || isNaN(cur) || isNaN(base)) return null;
+  if (base === 0) return cur === 0 ? 0 : 100; // arbitrary but useful
+  return ((cur - base) / Math.abs(base)) * 100;
+}
+function Diff({ value }: { value: number | null }) {
+  if (value == null || !isFinite(value)) return <span className="small muted">—</span>;
+  const up = value >= 0;
+  const color = up ? "#16a34a" /* green-600 */ : "#dc2626" /* red-600 */;
+  const sign = up ? "+" : "";
   return (
-    <span className="small" style={{ marginLeft: 6, color }}>
-      {sign}{pct.toFixed(1)}%
+    <span className="small" style={{ color }}>
+      {sign}{value.toFixed(1)}%
     </span>
   );
 }
 
-/* ---------- Page ---------- */
+/* Fetch helper */
+async function fetchScorecard(rep: string, from: string, to: string): Promise<Scorecard | null> {
+  if (!rep || !from || !to) return null;
+  const qs = new URLSearchParams({ rep, from, to });
+  const res = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, { cache: "no-store", credentials: "include" });
+  if (!res.ok) return null;
+  return (await res.json()) as Scorecard;
+}
+
 export default function RepScorecardPage() {
-  const today = useMemo(() => new Date(), []);
-
-  // PRIMARY selection
-  const [from, setFrom] = useState<string>(ymdLocal(today));
-  const [to, setTo] = useState<string>(ymdLocal(today));
-  const [primaryRep, setPrimaryRep] = useState<string>("");
-
-  // COMPARISON selection (rep + separate date range)
-  const [cmpFrom, setCmpFrom] = useState<string>(ymdLocal(today));
-  const [cmpTo, setCmpTo] = useState<string>(ymdLocal(today));
-  const [compareRep, setCompareRep] = useState<string>("");
-
-  // Data
-  const [allReps, setAllReps] = useState<Rep[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [primary, setPrimary] = useState<Scorecard | null>(null);
-  const [comparison, setComparison] = useState<Scorecard | null>(null);
-
-  // Load reps list
+  /* reps list */
+  const [reps, setReps] = useState<Rep[]>([]);
   useEffect(() => {
-    (async () => {
-      try {
-        const r = await fetch("/api/sales-reps", { cache: "no-store", credentials: "include" });
-        const j = await r.json().catch(() => null);
-        const reps = normalizeReps(j);
-        setAllReps(reps);
-
-        // sensible defaults
-        if (!primaryRep && reps[0]) setPrimaryRep(reps[0].name);
-        if (!compareRep && reps[1]) setCompareRep(reps[1].name);
-      } catch {
-        setAllReps([]);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    fetch("/api/sales-reps", { cache: "no-store", credentials: "include" })
+      .then(r => r.json()).then(j => setReps(normalizeRepsResponse(j)))
+      .catch(() => setReps([]));
   }, []);
 
-  async function fetchCard(rep: string, f: string, t: string): Promise<Scorecard | null> {
-    if (!rep || !f || !t) return null;
-    const qs = new URLSearchParams({ from: f, to: t, rep });
-    const res = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
-      cache: "no-store",
-      credentials: "include",
-    });
-    const json = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(json?.error || "Failed to load");
-    return json as Scorecard;
-  }
+  /* primary selection */
+  const today = useMemo(() => new Date(), []);
+  const [repId, setRepId] = useState<string>("");
+  const [from, setFrom] = useState<string>(ymd(today));
+  const [to, setTo] = useState<string>(ymd(today));
+  const [cur, setCur] = useState<Scorecard | null>(null);
+
+  /* comparison selection (rep + timeframe) */
+  const [cmpRepId, setCmpRepId] = useState<string>("");
+  // default compare period = previous day(s) same span
+  const [cmpFrom, setCmpFrom] = useState<string>(ymd(addDays(today, -7)));
+  const [cmpTo, setCmpTo] = useState<string>(ymd(today));
+  const [cmp, setCmp] = useState<Scorecard | null>(null);
+
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // default rep once loaded
+  useEffect(() => {
+    if (reps.length && !repId) setRepId(reps[0].id);
+    if (reps.length && !cmpRepId) setCmpRepId(reps[0].id);
+  }, [reps, repId, cmpRepId]);
 
   async function load() {
-    if (!primaryRep) return;
+    if (!repId) return;
     setLoading(true);
     setErr(null);
     try {
       const [a, b] = await Promise.all([
-        fetchCard(primaryRep, from, to),
-        fetchCard(compareRep || primaryRep, cmpFrom || from, cmpTo || to),
+        fetchScorecard(repId, from, to),
+        cmpRepId && cmpFrom && cmpTo ? fetchScorecard(cmpRepId, cmpFrom, cmpTo) : Promise.resolve(null),
       ]);
-      setPrimary(a);
-      setComparison(b);
+      setCur(a);
+      setCmp(b);
     } catch (e: any) {
       setErr(e?.message || "Failed to load");
-      setPrimary(null);
-      setComparison(null);
     } finally {
       setLoading(false);
     }
   }
 
-  // initial load once we have reps
-  useEffect(() => {
-    if (primaryRep) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [primaryRep, compareRep]);
+  useEffect(() => { load(); /* initial */ // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repId]);
 
-  /* Range presets (primary & compare) */
-  function pickRange(kind: string, which: "main" | "cmp") {
-    const now = new Date();
-    let f = which === "main" ? from : cmpFrom;
-    let t = which === "main" ? to : cmpTo;
+  const repName = reps.find(r => r.id === repId)?.name || repId || "—";
+  const cmpRepName = reps.find(r => r.id === cmpRepId)?.name || cmpRepId || "—";
 
-    if (kind === "today") { f = ymdLocal(now); t = ymdLocal(now); }
-    else if (kind === "yesterday") { const y = addDaysLocal(now, -1); f = ymdLocal(y); t = ymdLocal(y); }
-    else if (kind === "wtd") { const start = mondayOfWeek(now); f = ymdLocal(start); t = ymdLocal(now); }
-    else if (kind === "lweek") { const thisMon = mondayOfWeek(now); f = ymdLocal(addDaysLocal(thisMon, -7)); t = ymdLocal(addDaysLocal(thisMon, -1)); }
-    else if (kind === "mtd") { f = ymdLocal(firstOfMonth(now)); t = ymdLocal(now); }
-    else if (kind === "lmonth") { f = ymdLocal(lastMonthFirst(now)); t = ymdLocal(lastMonthLast(now)); }
-    else if (kind === "ytd") { f = ymdLocal(ytdFirst(now)); t = ymdLocal(now); }
-    else if (kind === "prevperiod") {
-      // previous period based on PRIMARY range length
-      const len = diffDaysInclusive(from, to);
-      const end = addDaysLocal(parseYMD(from)!, -1);
-      t = ymdLocal(end);
-      f = ymdLocal(addDaysLocal(end, -(len - 1)));
-    } else if (kind === "lastyear") {
-      const F = parseYMD(which === "main" ? from : cmpFrom)!;
-      const T = parseYMD(which === "main" ? to : cmpTo)!;
-      f = ymdLocal(new Date(F.getFullYear() - 1, F.getMonth(), F.getDate()));
-      t = ymdLocal(new Date(T.getFullYear() - 1, T.getMonth(), T.getDate()));
-    }
-
-    if (which === "main") { setFrom(f); setTo(t); }
-    else { setCmpFrom(f); setCmpTo(t); }
+  function Head({ title, sub }: { title: string; sub?: string }) {
+    return (
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+        <h2 style={{ margin: 0 }}>{title}</h2>
+        {sub ? <div className="small muted">{sub}</div> : null}
+      </div>
+    );
   }
 
-  const left = primary;
-  const right = comparison;
+  function MetricRow(props: {
+    label: string;
+    fmt?: "money" | "pct" | "int";
+    cur?: number | null;
+    base?: number | null;
+  }) {
+    const { label, fmt = "int", cur = null, base = null } = props;
+    const val =
+      fmt === "money" ? fmtMoney(cur) :
+      fmt === "pct" ? fmtPct(cur) :
+      cur == null || isNaN(cur) ? "—" : cur.toLocaleString();
+    const d = diffPct(cur ?? null, base ?? null);
+    return (
+      <div className="row" style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ flex: 2 }}>{label}</div>
+        <div style={{ width: 160, textAlign: "right", fontWeight: 600 }}>{val}</div>
+        <div style={{ width: 90, textAlign: "right" }}>
+          {cmp ? <Diff value={d} /> : <span className="small muted">—</span>}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <section className="card" style={{ display: "grid", gap: 12 }}>
-        <h1 style={{ margin: 0 }}>Rep Scorecard</h1>
+      <section className="card grid" style={{ gap: 12 }}>
+        <h1 style={{ marginBottom: 4 }}>Rep Scorecard</h1>
 
-        {/* PRIMARY selection */}
+        {/* Controls */}
         <div className="grid" style={{ gap: 12 }}>
-          <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <b>Primary</b>
-            <label className="small muted">Rep</label>
-            <select value={primaryRep} onChange={(e) => setPrimaryRep(e.target.value)}>
-              <option value="" disabled>— Select rep —</option>
-              {allReps.map(r => <option key={r.id || r.name} value={r.name}>{r.name}</option>)}
-            </select>
-
-            <div className="small muted">Range:</div>
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-            <button className="btn" onClick={() => pickRange("today", "main")}>Today</button>
-            <button className="btn" onClick={() => pickRange("wtd", "main")}>WTD</button>
-            <button className="btn" onClick={() => pickRange("mtd", "main")}>MTD</button>
-            <button className="btn" onClick={() => pickRange("ytd", "main")}>YTD</button>
+          {/* Primary rep + dates */}
+          <div className="card" style={{ padding: 12 }}>
+            <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                <label className="small muted">Rep</label>
+                <select value={repId} onChange={(e) => setRepId(e.target.value)}>
+                  {reps.map((r) => (
+                    <option key={r.id} value={r.id}>{r.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                <label className="small muted">From</label>
+                <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+              </div>
+              <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                <label className="small muted">To</label>
+                <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+              </div>
+            </div>
           </div>
 
-          {/* COMPARISON selection */}
-          <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <b>Compare to</b>
-            <label className="small muted">Rep</label>
-            <select value={compareRep} onChange={(e) => setCompareRep(e.target.value)}>
-              <option value="">(Same rep)</option>
-              {allReps.map(r => <option key={r.id || r.name} value={r.name}>{r.name}</option>)}
-            </select>
-
-            <div className="small muted">Range:</div>
-            <input type="date" value={cmpFrom} onChange={(e) => setCmpFrom(e.target.value)} />
-            <input type="date" value={cmpTo} onChange={(e) => setCmpTo(e.target.value)} />
-            <button className="btn" onClick={() => { setCmpFrom(from); setCmpTo(to); }}>Same as primary</button>
-            <button className="btn" onClick={() => pickRange("prevperiod", "cmp")}>Previous period</button>
-            <button className="btn" onClick={() => pickRange("lastyear", "cmp")}>Same period last year</button>
-
-            <button className="btn" onClick={load} disabled={loading}>
-              {loading ? "Refreshing…" : "Refresh"}
-            </button>
+          {/* Compare rep + dates */}
+          <div className="card" style={{ padding: 12 }}>
+            <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                <label className="small muted">Compare to</label>
+                <select value={cmpRepId} onChange={(e) => setCmpRepId(e.target.value)}>
+                  {reps.map((r) => (
+                    <option key={r.id} value={r.id}>{r.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                <label className="small muted">From</label>
+                <input type="date" value={cmpFrom} onChange={(e) => setCmpFrom(e.target.value)} />
+              </div>
+              <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                <label className="small muted">To</label>
+                <input type="date" value={cmpTo} onChange={(e) => setCmpTo(e.target.value)} />
+              </div>
+              <button className="btn" onClick={load} disabled={loading}>
+                {loading ? "Loading…" : "Apply"}
+              </button>
+            </div>
           </div>
         </div>
 
-        {err && <div className="small" style={{ color: "#b91c1c" }}>{err}</div>}
+        <div className="small muted">
+          Viewing <b>{repName}</b> {from} → {to}
+          {cmp ? <> • comparing to <b>{cmpRepName}</b> {cmpFrom} → {cmpTo}</> : null}
+        </div>
+
+        {err && <div className="form-error">{err}</div>}
       </section>
 
-      {/* Results */}
-      {(!left || !right) ? (
-        <div className="card">
-          <div className="small">Choose reps and ranges, then click Refresh.</div>
+      {/* Metrics */}
+      <section className="card" style={{ padding: 0 }}>
+        <div style={{ padding: "12px 12px 0" }}>
+          <Head title="Section 1" sub="Sales (ex VAT), margin %, profit" />
         </div>
-      ) : (
-        <>
-          {/* Section 1: Sales & Profit */}
-          <section className="card">
-            <h3>Sales &amp; Profit</h3>
-            <div className="grid" style={{ gap: 8, gridTemplateColumns: "minmax(160px,1fr) 1fr 1fr" }}>
-              <div />
-              <div className="small muted" style={{ textAlign: "right" }}>
-                {left.rep} • {from} → {to}
-              </div>
-              <div className="small muted" style={{ textAlign: "right" }}>
-                {(right.rep || left.rep)} • {cmpFrom} → {cmpTo}
-              </div>
+        <div style={{ padding: "0 12px 12px" }}>
+          <MetricRow label="Sales (ex VAT)" fmt="money" cur={cur?.salesEx} base={cmp?.salesEx} />
+          <MetricRow label="Margin %" fmt="pct" cur={cur?.marginPct} base={cmp?.marginPct} />
+          <MetricRow label="Profit" fmt="money" cur={cur?.profit} base={cmp?.profit} />
+        </div>
 
-              <div style={{ fontWeight: 600 }}>Sales (ex VAT)</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.salesEx)}
-                <PctDelta base={right.salesEx} value={left.salesEx} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.salesEx)}</div>
+        <div style={{ padding: "12px 12px 0" }}>
+          <Head title="Section 2" sub="Call volumes & activity" />
+        </div>
+        <div style={{ padding: "0 12px 12px" }}>
+          <MetricRow label="Total Calls" cur={cur?.totalCalls} base={cmp?.totalCalls} />
+          <MetricRow label="Cold Calls" cur={cur?.coldCalls} base={cmp?.coldCalls} />
+          <MetricRow label="Booked Calls" cur={cur?.bookedCalls} base={cmp?.bookedCalls} />
+          <MetricRow label="Booked Demos" cur={cur?.bookedDemos} base={cmp?.bookedDemos} />
+          <MetricRow label="Average Time Per Call (mins)" cur={cur?.avgTimePerCallMins} base={cmp?.avgTimePerCallMins} />
+          <MetricRow label="Average Calls per Day" cur={cur?.avgCallsPerDay} base={cmp?.avgCallsPerDay} />
+          <MetricRow label="Days Active" cur={cur?.daysActive} base={cmp?.daysActive} />
+        </div>
 
-              <div style={{ fontWeight: 600 }}>Margin %</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.marginPct, 1)}%
-                <PctDelta base={right.marginPct} value={left.marginPct} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.marginPct, 1)}%</div>
-
-              <div style={{ fontWeight: 600 }}>Profit</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.profit)}
-                <PctDelta base={right.profit} value={left.profit} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.profit)}</div>
-            </div>
-          </section>
-
-          {/* Section 2: Calling */}
-          <section className="card">
-            <h3>Calling Activity</h3>
-            <div className="grid" style={{ gap: 8, gridTemplateColumns: "minmax(160px,1fr) 1fr 1fr" }}>
-              <div />
-              <div className="small muted" style={{ textAlign: "right" }}>{left.rep}</div>
-              <div className="small muted" style={{ textAlign: "right" }}>{right.rep || left.rep}</div>
-
-              <div style={{ fontWeight: 600 }}>Total Calls</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.totalCalls)}
-                <PctDelta base={right.totalCalls} value={left.totalCalls} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.totalCalls)}</div>
-
-              <div style={{ fontWeight: 600 }}>Cold Calls</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.coldCalls)}
-                <PctDelta base={right.coldCalls} value={left.coldCalls} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.coldCalls)}</div>
-
-              <div style={{ fontWeight: 600 }}>Booked Calls</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.bookedCalls)}
-                <PctDelta base={right.bookedCalls} value={left.bookedCalls} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.bookedCalls)}</div>
-
-              <div style={{ fontWeight: 600 }}>Booked Demos</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.bookedDemos)}
-                <PctDelta base={right.bookedDemos} value={left.bookedDemos} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.bookedDemos)}</div>
-
-              <div style={{ fontWeight: 600 }}>Avg Time per Call (mins)</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.avgTimePerCallMins, 1)}
-                <PctDelta base={right.avgTimePerCallMins} value={left.avgTimePerCallMins} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.avgTimePerCallMins, 1)}</div>
-
-              <div style={{ fontWeight: 600 }}>Avg Calls per Day</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.avgCallsPerDay, 1)}
-                <PctDelta base={right.avgCallsPerDay} value={left.avgCallsPerDay} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.avgCallsPerDay, 1)}</div>
-
-              <div style={{ fontWeight: 600 }}>Days Active</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.daysActive)}
-                <PctDelta base={right.daysActive} value={left.daysActive} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.daysActive)}</div>
-            </div>
-          </section>
-
-          {/* Section 3: Customers */}
-          <section className="card">
-            <h3>Customer Counts</h3>
-            <div className="grid" style={{ gap: 8, gridTemplateColumns: "minmax(160px,1fr) 1fr 1fr" }}>
-              <div />
-              <div className="small muted" style={{ textAlign: "right" }}>{left.rep}</div>
-              <div className="small muted" style={{ textAlign: "right" }}>{right.rep || left.rep}</div>
-
-              <div style={{ fontWeight: 600 }}>Total Customers</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.totalCustomers)}
-                <PctDelta base={right.totalCustomers} value={left.totalCustomers} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.totalCustomers)}</div>
-
-              <div style={{ fontWeight: 600 }}>New Customers</div>
-              <div style={{ textAlign: "right" }}>
-                {fmt(left.newCustomers)}
-                <PctDelta base={right.newCustomers} value={left.newCustomers} />
-              </div>
-              <div style={{ textAlign: "right" }}>{fmt(right.newCustomers)}</div>
-            </div>
-          </section>
-        </>
-      )}
+        <div style={{ padding: "12px 12px 0" }}>
+          <Head title="Section 3" sub="Customer counts" />
+        </div>
+        <div style={{ padding: "0 12px 12px" }}>
+          <MetricRow label="Total Customers" cur={cur?.totalCustomers} base={cmp?.totalCustomers} />
+          <MetricRow label="New Customers" cur={cur?.newCustomers} base={cmp?.newCustomers} />
+        </div>
+      </section>
     </div>
   );
 }
