@@ -15,19 +15,15 @@ export default function ReportsHub() {
           <div className="action-sub">Volumes, bookings &amp; conversion</div>
         </Link>
 
-        {/* Renamed tile (keeps existing destination) */}
-        <Link href="/reports/customers" className="action-tile">
-          <div className="action-title">Sales Reports</div>
-          <div className="action-sub">Spend, GAP analysis &amp; more</div>
-        </Link>
-
-        {/* NEW: Sales by Customer */}
+        {/* Sales Reports tile now *includes* Sales by Customer and links to it */}
         <Link href="/reports/sales-by-customer" className="action-tile">
-          <div className="action-title">Sales by Customer</div>
-          <div className="action-sub">Gross, discounts, net &amp; margin</div>
+          <div className="action-title">Sales Reports</div>
+          <div className="action-sub">Spend, GAP analysis &amp; Sales by Customer</div>
         </Link>
 
-        {/* New tile for Vendor Scorecard */}
+        {/* Removed standalone Sales by Customer tile */}
+
+        {/* Vendor Scorecard */}
         <Link href="/reports/vendors/scorecard" className="action-tile">
           <div className="action-title">Vendor Scorecard</div>
           <div className="action-sub">Revenue, orders, customers &amp; growth</div>
@@ -36,6 +32,12 @@ export default function ReportsHub() {
         <Link href="/reports/targets" className="action-tile">
           <div className="action-title">Targets &amp; Scorecards</div>
           <div className="action-sub">Monthly goals &amp; performance</div>
+        </Link>
+
+        {/* NEW: Rep Scorecard tile */}
+        <Link href="/reports/rep-scorecard" className="action-tile">
+          <div className="action-title">Rep Scorecard</div>
+          <div className="action-sub">Individual performance</div>
         </Link>
       </section>
     </div>
