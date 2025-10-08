@@ -105,7 +105,7 @@ export async function GET(req: Request) {
     let sales = 0;
     let totalDurationMinutes = 0;
 
-    // "Booked Calls" = callType specifically a "Booked Call" (case-insensitive)
+    // "Booked Calls" = callType specifically a "Booked Call" or "Booked Demo" (case-insensitive)
     let bookedCalls = 0;
     let bookedCallSales = 0;
 
@@ -117,7 +117,12 @@ export async function GET(req: Request) {
       if (sale) sales++;
 
       const callType = norm(l.callType);
-      const isBookedType = callType === "booked call" || callType.includes("booked call");
+      const isBookedType =
+        callType === "booked call" ||
+        callType.includes("booked call") ||
+        callType === "booked demo" ||
+        callType.includes("booked demo");
+
       if (isBookedType) {
         bookedCalls++;
         if (sale) bookedCallSales++;
