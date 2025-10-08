@@ -35,6 +35,15 @@ export default function CustomerReportsPage() {
             Open
           </a>
         </div>
+
+        {/* NEW: Sales by Customer */}
+        <div className="card">
+          <b>Sales by Customer</b>
+          <p className="small">Gross, discounts, net &amp; margin.</p>
+          <a className="primary" href="/reports/sales-by-customer" style={{ marginTop: 8 }}>
+            Open
+          </a>
+        </div>
       </section>
     </div>
   );
