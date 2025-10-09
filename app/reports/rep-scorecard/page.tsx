@@ -12,12 +12,12 @@ type Scorecard = {
   from: string; // yyyy-mm-dd
   to: string;   // yyyy-mm-dd
 
-  // Section: Sales
+  // Sales
   salesEx: number;        // ex VAT
   marginPct: number;      // %
   profit: number;         // money
 
-  // Section: Calls
+  // Calls
   totalCalls: number;
   coldCalls: number;
   bookedCalls: number;
@@ -26,7 +26,7 @@ type Scorecard = {
   avgCallsPerDay: number;
   daysActive: number;
 
-  // Section: Customers
+  // Customers
   totalCustomers: number;
   newCustomers: number;
 };
@@ -52,51 +52,26 @@ const fmtPct = (n: number | null | undefined) =>
 const fmtInt = (n: number | null | undefined) =>
   n == null ? "—" : `${Math.round(n)}`;
 
+const fmtMins = (n: number | null | undefined) =>
+  n == null ? "—" : `${(n as number).toFixed(1)}`;
+
 const trendPct = (cur?: number | null, base?: number | null) => {
   if (cur == null || base == null) return null;
-  if (base === 0) {
-    if (cur === 0) return 0;
-    return 100; // treat as +100% if rising from 0
-  }
+  if (base === 0) return cur === 0 ? 0 : 100;
   return ((cur - base) / Math.abs(base)) * 100;
 };
 
 function Delta({ cur, base }: { cur?: number | null; base?: number | null }) {
   const t = trendPct(cur, base);
   if (t == null) return <span className="small muted">—</span>;
-  const sign = t > 0 ? "+" : t < 0 ? "−" : "";
-  const color = t > 0 ? "#059669" : t < 0 ? "#dc2626" : "var(--muted)";
+  const up = t > 0;
+  const down = t < 0;
+  const sign = up ? "+" : down ? "−" : "";
+  const color = up ? "#059669" : down ? "#dc2626" : "var(--muted)";
   return (
-    <span className="small" style={{ color }}>
-      {sign}
-      {Math.abs(t).toFixed(1)}%
+    <span className="small" style={{ color, fontWeight: 600 }}>
+      {sign}{Math.abs(t).toFixed(1)}%
     </span>
-  );
-}
-
-function MetricRow(props: {
-  label: string;
-  cur: number | null | undefined;
-  base?: number | null;
-  kind?: "money" | "pct" | "int" | "mins";
-}) {
-  const value =
-    props.kind === "money"
-      ? fmtMoney(props.cur as number)
-      : props.kind === "pct"
-      ? fmtPct(props.cur as number)
-      : props.kind === "mins"
-      ? (props.cur == null ? "—" : `${(props.cur as number).toFixed(1)}`)
-      : fmtInt(props.cur as number);
-
-  return (
-    <div className="row" style={{ alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
-      <div style={{ flex: 2 }}>{props.label}</div>
-      <div style={{ width: 140, textAlign: "right" }}>{value}</div>
-      <div style={{ width: 80, textAlign: "right" }}>
-        {"base" in props ? <Delta cur={props.cur as number} base={props.base} /> : <span className="small muted">—</span>}
-      </div>
-    </div>
   );
 }
 
@@ -118,6 +93,56 @@ function normalizeRepsResponse(j: any): Rep[] {
       .map((name: string) => ({ id: name, name }));
   }
   return [];
+}
+
+/* ---------- Metric row (now with side-by-side compare column) ---------- */
+function MetricRow(props: {
+  label: string;
+  cur: number | null | undefined;
+  base?: number | null;
+  showCompare?: boolean;
+  kind?: "money" | "pct" | "int" | "mins";
+  currency?: string;
+}) {
+  const { label, cur, base, showCompare, kind, currency } = props;
+
+  const renderVal = (v: number | null | undefined) => {
+    switch (kind) {
+      case "money": return fmtMoney(v as number, currency);
+      case "pct":   return fmtPct(v as number);
+      case "mins":  return fmtMins(v as number);
+      default:      return fmtInt(v as number);
+    }
+  };
+
+  // chunkier row styles
+  const rowStyle: React.CSSProperties = {
+    alignItems: "center",
+    padding: "14px 12px",
+    borderBottom: "1px solid var(--border)",
+    fontSize: 15,
+  };
+
+  const numStyle: React.CSSProperties = { width: 160, textAlign: "right", fontWeight: 600 };
+
+  return (
+    <div className="row" style={rowStyle}>
+      <div style={{ flex: 2 }}>{label}</div>
+
+      {/* Current rep value */}
+      <div style={numStyle}>{renderVal(cur ?? null)}</div>
+
+      {/* Compare rep value (when applied) */}
+      {showCompare ? <div style={numStyle}>{renderVal(base ?? null)}</div> : null}
+
+      {/* Delta % (when applied) */}
+      {showCompare ? (
+        <div style={{ width: 90, textAlign: "right" }}>
+          <Delta cur={cur ?? null} base={base ?? null} />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /* =======================================================================
@@ -157,14 +182,14 @@ export default function RepScorecardPage() {
         setReps(list);
         if (!rep && list.length) {
           setRep(list[0].name); // default to first rep
-          // default compare draft to same (user can change)
           setCmpRepDraft(list[0].name);
         }
       } catch {
         setReps([]);
       }
     })();
-  }, []); // eslint-disable-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* Fetch scorecard whenever primary selection changes OR applied compare changes */
   useEffect(() => {
@@ -195,7 +220,6 @@ export default function RepScorecardPage() {
     })();
   }, [rep, from, to, cmpRep, cmpFrom, cmpTo]); // eslint-disable-line
 
-  // Apply compare (from drafts only when the user clicks Apply)
   function applyCompare() {
     if (!cmpRepDraft || !cmpFromDraft || !cmpToDraft) return;
     setCmpRep(cmpRepDraft);
@@ -208,28 +232,63 @@ export default function RepScorecardPage() {
     setCmpTo(null);
   }
 
-  // Guarded accessors
   const cur = resp?.current;
   const base = resp?.compare || null;
+  const showCompareCols = Boolean(base);
 
   const viewingLine = (
     <div className="small muted">
       Viewing <b>{rep || "—"}</b> {from ? <span> {from} </span> : null}
       {to ? <>→ {to}</> : null}
-      {cmpRep && cmpFrom && cmpTo ? (
+      {base ? (
         <>
-          {" "}• comparing to <b>{cmpRep}</b> {cmpFrom} → {cmpTo}
+          {" "}• comparing to <b>{base.rep}</b> {base.from} → {base.to}
         </>
       ) : null}
     </div>
   );
+
+  // section header with column headings (current/compare/delta)
+  function SectionHead(props: { title: string; subtitle?: string }) {
+    return (
+      <>
+        <div style={{ padding: "14px 12px 6px 12px" }}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+            <h3 style={{ margin: 0 }}>{props.title}</h3>
+            {props.subtitle ? <div className="small muted">{props.subtitle}</div> : null}
+          </div>
+        </div>
+        <div
+          className="row"
+          style={{
+            padding: "8px 12px",
+            borderTop: "1px solid var(--border)",
+            borderBottom: "1px solid var(--border)",
+            background: "#fafafa",
+            fontSize: 12,
+            fontWeight: 600,
+            color: "var(--muted)",
+          }}
+        >
+          <div style={{ flex: 2 }} />
+          <div style={{ width: 160, textAlign: "right" }}>{cur?.rep || rep || "Selected rep"}</div>
+          {showCompareCols ? (
+            <>
+              <div style={{ width: 160, textAlign: "right" }}>{base?.rep || "Compare"}</div>
+              <div style={{ width: 90, textAlign: "right" }}>Δ %</div>
+            </>
+          ) : null}
+        </div>
+      </>
+    );
+  }
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card" style={{ display: "grid", gap: 12 }}>
         <h1 style={{ margin: 0 }}>Rep Scorecard</h1>
 
-        {/* Primary chooser (auto-applied) */}
+        {/* Primary chooser */}
         <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr auto auto" }}>
           <div className="field">
             <label>Rep</label>
@@ -304,15 +363,34 @@ export default function RepScorecardPage() {
                   <button type="button" className="btn primary" onClick={applyCompare}>
                     Apply
                   </button>
-                  {cmpRep && cmpFrom && cmpTo && (
+                  {base ? (
                     <button type="button" className="btn" onClick={clearCompare}>
                       Clear
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
             </div>
           )}
+        </div>
+
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn" onClick={() => {
+            // re-fetch with the same params
+            if (!rep || !from || !to) return;
+            const qs = new URLSearchParams({ rep, from, to });
+            if (cmpRep && cmpFrom && cmpTo) {
+              qs.set("cmpRep", cmpRep);
+              qs.set("cmpFrom", cmpFrom);
+              qs.set("cmpTo", cmpTo);
+            }
+            fetch(`/api/reports/rep-scorecard?${qs.toString()}`, { cache: "no-store", credentials: "include" })
+              .then(r => r.json())
+              .then(j => setResp(j as ApiResponse))
+              .catch(() => {});
+          }}>
+            Refresh
+          </button>
         </div>
 
         {viewingLine}
@@ -321,48 +399,32 @@ export default function RepScorecardPage() {
         {loading && <div className="small muted">Loading…</div>}
       </section>
 
-      {/* Metrics */}
+      {/* ---------------- Sales ---------------- */}
       <section className="card" style={{ padding: 0 }}>
-        {/* Sales */}
-        <div style={{ padding: "12px 12px 0 12px" }}>
-          <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
-            <h3 style={{ margin: 0 }}>Sales</h3>
-            <div className="small muted">Sales (ex VAT), margin %, profit</div>
-          </div>
-        </div>
-        <div style={{ padding: "0 12px 12px 12px" }}>
-          <MetricRow label="Sales (ex VAT)" cur={cur?.salesEx} base={base?.salesEx} kind="money" />
-          <MetricRow label="Margin %" cur={cur?.marginPct} base={base?.marginPct} kind="pct" />
-          <MetricRow label="Profit" cur={cur?.profit} base={base?.profit} kind="money" />
+        <SectionHead title="Sales" subtitle="Sales (ex VAT), margin %, profit" />
+        <div style={{ padding: "0 0 6px 0" }}>
+          <MetricRow label="Sales (ex VAT)" cur={cur?.salesEx} base={base?.salesEx} showCompare={showCompareCols} kind="money" />
+          <MetricRow label="Margin %" cur={cur?.marginPct} base={base?.marginPct} showCompare={showCompareCols} kind="pct" />
+          <MetricRow label="Profit" cur={cur?.profit} base={base?.profit} showCompare={showCompareCols} kind="money" />
         </div>
 
-        {/* Calls */}
-        <div style={{ padding: "12px 12px 0 12px", borderTop: "1px solid var(--border)" }}>
-          <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
-            <h3 style={{ margin: 0 }}>Calls</h3>
-            <div className="small muted">Call volumes &amp; activity</div>
-          </div>
-        </div>
-        <div style={{ padding: "0 12px 12px 12px" }}>
-          <MetricRow label="Total Calls" cur={cur?.totalCalls} base={base?.totalCalls} kind="int" />
-          <MetricRow label="Cold Calls" cur={cur?.coldCalls} base={base?.coldCalls} kind="int" />
-          <MetricRow label="Booked Calls" cur={cur?.bookedCalls} base={base?.bookedCalls} kind="int" />
-          <MetricRow label="Booked Demos" cur={cur?.bookedDemos} base={base?.bookedDemos} kind="int" />
-          <MetricRow label="Average Time Per Call (mins)" cur={cur?.avgTimePerCallMins} base={base?.avgTimePerCallMins} kind="mins" />
-          <MetricRow label="Average Calls per Day" cur={cur?.avgCallsPerDay} base={base?.avgCallsPerDay} kind="mins" />
-          <MetricRow label="Days Active" cur={cur?.daysActive} base={base?.daysActive} kind="int" />
+        {/* ---------------- Calls ---------------- */}
+        <SectionHead title="Calls" subtitle="Call volumes & activity" />
+        <div style={{ padding: "0 0 6px 0" }}>
+          <MetricRow label="Total Calls" cur={cur?.totalCalls} base={base?.totalCalls} showCompare={showCompareCols} kind="int" />
+          <MetricRow label="Cold Calls" cur={cur?.coldCalls} base={base?.coldCalls} showCompare={showCompareCols} kind="int" />
+          <MetricRow label="Booked Calls" cur={cur?.bookedCalls} base={base?.bookedCalls} showCompare={showCompareCols} kind="int" />
+          <MetricRow label="Booked Demos" cur={cur?.bookedDemos} base={base?.bookedDemos} showCompare={showCompareCols} kind="int" />
+          <MetricRow label="Average Time Per Call (mins)" cur={cur?.avgTimePerCallMins} base={base?.avgTimePerCallMins} showCompare={showCompareCols} kind="mins" />
+          <MetricRow label="Average Calls per Day" cur={cur?.avgCallsPerDay} base={base?.avgCallsPerDay} showCompare={showCompareCols} kind="mins" />
+          <MetricRow label="Days Active" cur={cur?.daysActive} base={base?.daysActive} showCompare={showCompareCols} kind="int" />
         </div>
 
-        {/* Customers */}
-        <div style={{ padding: "12px 12px 0 12px", borderTop: "1px solid var(--border)" }}>
-          <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
-            <h3 style={{ margin: 0 }}>Customers</h3>
-            <div className="small muted">Customer counts</div>
-          </div>
-        </div>
-        <div style={{ padding: "0 12px 12px 12px" }}>
-          <MetricRow label="Total Customers" cur={cur?.totalCustomers} base={base?.totalCustomers} kind="int" />
-          <MetricRow label="New Customers" cur={cur?.newCustomers} base={base?.newCustomers} kind="int" />
+        {/* ---------------- Customers ---------------- */}
+        <SectionHead title="Customers" subtitle="Customer counts" />
+        <div style={{ padding: "0 0 6px 0" }}>
+          <MetricRow label="Total Customers" cur={cur?.totalCustomers} base={base?.totalCustomers} showCompare={showCompareCols} kind="int" />
+          <MetricRow label="New Customers" cur={cur?.newCustomers} base={base?.newCustomers} showCompare={showCompareCols} kind="int" />
         </div>
       </section>
     </div>
