@@ -5,8 +5,8 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-/* ---- helpers ---- */
-function parseDay(s?: string | null): Date | null {
+/* ────────────── date helpers (UTC, inclusive [from..to]) ────────────── */
+function parseDay(s: string | null): Date | null {
   if (!s) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
   if (!m) return null;
@@ -18,6 +18,12 @@ function addDaysUTC(d: Date, n: number) {
   x.setUTCDate(x.getUTCDate() + n);
   return x;
 }
+const dayKeyUTC = (d: Date) =>
+  new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+    .toISOString()
+    .slice(0, 10);
+
+/* ────────────── string + call helpers ────────────── */
 const norm = (v?: string | null) => (v ?? "").trim().toLowerCase();
 
 function isBooking(log: {
@@ -34,9 +40,13 @@ function isBooking(log: {
   if (ct.includes("booked")) return true; // "Booked Call", etc
   return false;
 }
-function isBookedDemo(log: { callType?: string | null; outcome?: string | null }) {
-  const ct = norm(log.callType);
-  const out = norm(log.outcome);
+function isColdCall(callType?: string | null) {
+  const ct = norm(callType);
+  return !!ct && (ct === "cold call" || ct.includes("cold"));
+}
+function isBookedDemo(callType?: string | null, outcome?: string | null) {
+  const ct = norm(callType);
+  const out = norm(outcome);
   return ct.includes("demo") || out.includes("demo");
 }
 function durationMins(log: {
@@ -44,9 +54,8 @@ function durationMins(log: {
   startTime?: Date | null;
   endTime?: Date | null;
 }) {
-  if (typeof log.durationMinutes === "number" && !isNaN(log.durationMinutes)) {
+  if (typeof log.durationMinutes === "number" && !isNaN(log.durationMinutes))
     return Math.max(0, log.durationMinutes);
-  }
   if (log.startTime && log.endTime) {
     const ms = new Date(log.endTime).getTime() - new Date(log.startTime).getTime();
     if (!isNaN(ms) && ms > 0) return Math.round(ms / 60000);
@@ -54,98 +63,61 @@ function durationMins(log: {
   return 0;
 }
 
-export async function GET(req: Request) {
-  try {
-    const { searchParams } = new URL(req.url);
-    const rep = (searchParams.get("rep") || "").trim();
-    const fromStr = searchParams.get("from");
-    const toStr = searchParams.get("to");
+/* ────────────── score computation ────────────── */
+type Scorecard = {
+  rep: string;
+  from: string;
+  to: string;
 
-    if (!rep) return NextResponse.json({ error: "Missing rep" }, { status: 400 });
-    const from = parseDay(fromStr);
-    const to = parseDay(toStr);
-    if (!from || !to) {
-      return NextResponse.json({ error: "Invalid from/to (yyyy-mm-dd)" }, { status: 400 });
-    }
+  // Section 1 — Sales
+  salesEx: number; // ex VAT
+  marginPct: number;
+  profit: number;
 
-    // Inclusive date range
-    const gte = from;
-    const lt = addDaysUTC(to, 1);
+  // Section 2 — Calls
+  totalCalls: number;
+  coldCalls: number;
+  bookedCalls: number;
+  bookedDemos: number;
+  avgTimePerCallMins: number;
+  avgCallsPerDay: number;
+  daysActive: number;
 
-    /* ---------- Calls (by staff = rep) ---------- */
-    const callLogs = await prisma.callLog.findMany({
-      where: { createdAt: { gte, lt }, staff: rep },
-      select: {
-        createdAt: true,
-        callType: true,
-        outcome: true,
-        appointmentBooked: true,
-        stage: true,
-        startTime: true,
-        endTime: true,
-        durationMinutes: true,
-      },
+  // Section 3 — Customers
+  totalCustomers: number;
+  newCustomers: number;
+};
+
+async function computeForRep(repName: string, fromStr: string, toStr: string): Promise<Scorecard> {
+  const from = parseDay(fromStr)!;
+  const to = parseDay(toStr)!;
+  const gte = from;
+  const lt = addDaysUTC(to, 1);
+
+  /* ---------- SALES & PROFIT (ex VAT) ----------
+     We attribute orders to a rep via the linked Customer.salesRep.
+     Revenue is summed from line items (ex VAT).
+     Costs come from ShopifyVariantCost (if available).
+  */
+  const orders = await prisma.order.findMany({
+    where: {
+      processedAt: { gte, lt },
+      customer: { salesRep: repName },
+    },
+    select: { id: true },
+  });
+  const orderIds = orders.map((o) => o.id);
+  let salesEx = 0;
+  let profit = 0;
+
+  if (orderIds.length) {
+    const lines = await prisma.orderLineItem.findMany({
+      where: { orderId: { in: orderIds } },
+      select: { variantId: true, quantity: true, total: true, price: true },
     });
 
-    const totalCalls = callLogs.length;
-    const coldCalls = callLogs.filter((c) => norm(c.callType).includes("cold")).length;
-    const bookedCalls = callLogs.filter(isBooking).length;
-    const bookedDemos = callLogs.filter(isBookedDemo).length;
-
-    let totalDur = 0;
-    const activeDays = new Set<string>();
-    for (const l of callLogs) {
-      totalDur += durationMins(l);
-      activeDays.add(new Date(l.createdAt).toISOString().slice(0, 10)); // UTC day
-    }
-    const daysActive = activeDays.size;
-    const avgTimePerCallMins = totalCalls ? totalDur / totalCalls : 0;
-    const avgCallsPerDay = daysActive ? totalCalls / daysActive : 0;
-
-    /* ---------- Sales (orders via rep’s customers) ---------- */
-    // Find customers owned by rep
-    const customers = await prisma.customer.findMany({
-      where: { salesRep: rep },
-      select: { id: true, createdAt: true },
-    });
-    const custIds = customers.map((c) => c.id);
-    // Orders for those customers in range
-    const orders = custIds.length
-      ? await prisma.order.findMany({
-          where: { processedAt: { gte, lt }, customerId: { in: custIds } },
-          select: { id: true, subtotal: true },
-        })
-      : [];
-
-    const orderIds = orders.map((o) => o.id);
-    const lineItems = orderIds.length
-      ? await prisma.orderLineItem.findMany({
-          where: { orderId: { in: orderIds } },
-          select: { orderId: true, variantId: true, quantity: true, price: true, total: true },
-        })
-      : [];
-
-    // Revenue (ex-VAT): prefer order.subtotal; if missing fall back to sum(lines)
-    const subtotalByOrder = new Map<string, number>();
-    for (const o of orders) {
-      const val = typeof o.subtotal === "number" && !isNaN(o.subtotal) ? o.subtotal : 0;
-      subtotalByOrder.set(o.id, val);
-    }
-    const sumLinesByOrder = new Map<string, number>();
-    for (const li of lineItems) {
-      const v = (typeof li.total === "number" ? li.total : null) ??
-                ((typeof li.price === "number" ? li.price : 0) * (li.quantity ?? 0));
-      sumLinesByOrder.set(li.orderId, (sumLinesByOrder.get(li.orderId) ?? 0) + (v || 0));
-    }
-    let salesEx = 0;
-    for (const o of orders) {
-      const sub = subtotalByOrder.get(o.id) ?? 0;
-      salesEx += sub > 0 ? sub : (sumLinesByOrder.get(o.id) ?? 0);
-    }
-
-    // Costs: use shopifyVariantCost (unitCost * qty)
     const variantIds = Array.from(
-      new Set(lineItems.map((li) => String(li.variantId || "")).filter(Boolean))
+      new Set(lines.map((l) => (l.variantId ? String(l.variantId) : "")).filter(Boolean))
     );
     const costs = variantIds.length
       ? await prisma.shopifyVariantCost.findMany({
@@ -153,56 +125,125 @@ export async function GET(req: Request) {
           select: { variantId: true, unitCost: true },
         })
       : [];
-    const costMap = new Map(costs.map((c) => [String(c.variantId), Number(c.unitCost || 0)]));
-
-    let totalCost = 0;
-    for (const li of lineItems) {
-      const unit = costMap.get(String(li.variantId || "")) ?? 0;
-      const qty = li.quantity ?? 0;
-      totalCost += unit * qty;
-    }
-
-    const profit = salesEx - totalCost;
-    const marginPct = salesEx > 0 ? (profit / salesEx) * 100 : 0;
-
-    /* ---------- Customers ---------- */
-    const totalCustomers = new Set<string>();
-    for (const o of orders) totalCustomers.add(o.id); // order-level unique not good; fix below
-
-    // total customers with orders in the range
-    const orderCustomers = orderIds.length
-      ? await prisma.order.findMany({
-          where: { id: { in: orderIds } },
-          select: { customerId: true },
-        })
-      : [];
-    const customersWithOrders = new Set(
-      orderCustomers.map((x) => x.customerId).filter(Boolean) as string[]
+    const costMap = new Map<string, number | null>(
+      costs.map((c) => [String(c.variantId), c.unitCost == null ? null : Number(c.unitCost)])
     );
 
-    // new customers (created in range, owned by rep)
-    const newCustomers = customers.filter(
-      (c) => c.createdAt >= gte && c.createdAt < lt
-    ).length;
+    for (const li of lines) {
+      const qty = Number(li.quantity || 0);
+      const revenueLine =
+        li.total != null ? Number(li.total) : li.price != null ? Number(li.price) * qty : 0;
+      salesEx += revenueLine;
 
-    const payload = {
-      salesEx,
-      marginPct,
-      profit,
-      totalCalls,
-      coldCalls,
-      bookedCalls,
-      bookedDemos,
-      avgTimePerCallMins,
-      avgCallsPerDay,
-      daysActive,
-      totalCustomers: customersWithOrders.size,
-      newCustomers,
-    };
+      const unitCost =
+        li.variantId != null ? costMap.get(String(li.variantId)) ?? null : null;
+      const extCost = unitCost != null ? unitCost * qty : 0;
+      profit += revenueLine - extCost;
+    }
+  }
+  const marginPct = salesEx > 0 ? (profit / salesEx) * 100 : 0;
 
-    return NextResponse.json(payload, { headers: { "cache-control": "no-store" } });
+  /* ---------- CALLS ---------- */
+  const calls = await prisma.callLog.findMany({
+    where: {
+      createdAt: { gte, lt },
+      OR: [{ staff: repName }, { rep: { name: repName } }],
+    },
+    select: {
+      callType: true,
+      outcome: true,
+      appointmentBooked: true,
+      stage: true,
+      startTime: true,
+      endTime: true,
+      durationMinutes: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const totalCalls = calls.length;
+  let coldCalls = 0;
+  let bookedCalls = 0;
+  let bookedDemos = 0;
+  let totalDur = 0;
+  const activeDays = new Set<string>();
+
+  for (const c of calls) {
+    if (isColdCall(c.callType)) coldCalls++;
+    if (isBooking(c)) bookedCalls++;
+    if (isBookedDemo(c.callType, c.outcome)) bookedDemos++;
+    totalDur += durationMins(c);
+    activeDays.add(dayKeyUTC(new Date(c.createdAt)));
+  }
+
+  const daysActive = activeDays.size;
+  const avgTimePerCallMins = totalCalls ? totalDur / totalCalls : 0;
+  const avgCallsPerDay = daysActive ? totalCalls / daysActive : 0;
+
+  /* ---------- CUSTOMERS ---------- */
+  const [totalCustomers, newCustomers] = await Promise.all([
+    prisma.customer.count({ where: { salesRep: repName } }),
+    prisma.customer.count({
+      where: { salesRep: repName, createdAt: { gte, lt } },
+    }),
+  ]);
+
+  return {
+    rep: repName,
+    from: fromStr,
+    to: toStr,
+    salesEx,
+    marginPct,
+    profit,
+    totalCalls,
+    coldCalls,
+    bookedCalls,
+    bookedDemos,
+    avgTimePerCallMins,
+    avgCallsPerDay,
+    daysActive,
+    totalCustomers,
+    newCustomers,
+  };
+}
+
+/* ────────────── route ────────────── */
+export async function GET(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+
+    const rep = (searchParams.get("rep") || "").trim();
+    const fromStr = searchParams.get("from");
+    const toStr = searchParams.get("to");
+
+    if (!rep) {
+      return NextResponse.json({ error: "Missing ?rep=<Sales Rep name>" }, { status: 400 });
+    }
+    const from = parseDay(fromStr);
+    const to = parseDay(toStr);
+    if (!from || !to) {
+      return NextResponse.json(
+        { error: "Invalid or missing ?from/&?to (YYYY-MM-DD)" },
+        { status: 400 }
+      );
+    }
+
+    const base = await computeForRep(rep, fromStr!, toStr!);
+
+    // Optional comparison
+    const cmpRep = (searchParams.get("cmpRep") || "").trim();
+    const cmpFromStr = searchParams.get("cmpFrom");
+    const cmpToStr = searchParams.get("cmpTo");
+
+    let compare: Scorecard | null = null;
+    if (cmpRep && cmpFromStr && cmpToStr && parseDay(cmpFromStr) && parseDay(cmpToStr)) {
+      compare = await computeForRep(cmpRep, cmpFromStr, cmpToStr);
+    }
+
+    return NextResponse.json({ ok: true, base, compare }, { headers: { "cache-control": "no-store" } });
   } catch (err: any) {
-    console.error("[rep-scorecard] error:", err);
-    return NextResponse.json({ error: err?.message || "Internal error" }, { status: 500 });
+    console.error("[rep-scorecard] error:", err?.stack || err?.message || err);
+    return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }
 }
