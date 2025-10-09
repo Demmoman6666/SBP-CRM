@@ -6,18 +6,35 @@ import { useEffect, useMemo, useState } from "react";
 /* ---------- Types ---------- */
 type Rep = { id: string; name: string };
 
-// Shape expected back from /api/reports/rep-scorecard
+// Shape returned by /api/reports/rep-scorecard (single payload)
+type ApiOne = {
+  ok: boolean;
+  range: { from: string; to: string };
+  rep: { id: string | null; name: string | null };
+  currency: string;
+  section1: { salesEx: number; profit: number; marginPct: number };
+  section2: {
+    totalCalls: number;
+    coldCalls: number;
+    bookedCalls: number;
+    bookedDemos: number;
+    avgTimePerCallMins: number;
+    avgCallsPerDay: number;
+    activeDays: number;
+  };
+  section3: { totalCustomers: number; newCustomers: number };
+};
+
 type Scorecard = {
   rep: string;
-  from: string; // yyyy-mm-dd
-  to: string;   // yyyy-mm-dd
-
-  // Sales
-  salesEx: number;        // ex VAT
-  marginPct: number;      // %
-  profit: number;         // money
-
-  // Calls
+  from: string;
+  to: string;
+  currency: string;
+  // sales
+  salesEx: number;
+  marginPct: number;
+  profit: number;
+  // calls
   totalCalls: number;
   coldCalls: number;
   bookedCalls: number;
@@ -25,15 +42,9 @@ type Scorecard = {
   avgTimePerCallMins: number;
   avgCallsPerDay: number;
   daysActive: number;
-
-  // Customers
+  // customers
   totalCustomers: number;
   newCustomers: number;
-};
-
-type ApiResponse = {
-  current: Scorecard;
-  compare?: Scorecard | null;
 };
 
 /* ---------- Date helpers ---------- */
@@ -41,6 +52,19 @@ const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
 const ymdLocal = (d: Date) =>
   `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const firstOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1);
+
+function parseYMD(s: string) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  return new Date(+m[1], +m[2] - 1, +m[3]);
+}
+function shiftYMD(s: string, { months = 0, years = 0 }: { months?: number; years?: number }) {
+  const d = parseYMD(s);
+  if (!d) return s;
+  d.setFullYear(d.getFullYear() + years);
+  d.setMonth(d.getMonth() + months);
+  return ymdLocal(d);
+}
 
 /* ---------- Formatting ---------- */
 const fmtMoney = (n: number | null | undefined, currency = "GBP") =>
@@ -70,7 +94,8 @@ function Delta({ cur, base }: { cur?: number | null; base?: number | null }) {
   const color = up ? "#059669" : down ? "#dc2626" : "var(--muted)";
   return (
     <span className="small" style={{ color, fontWeight: 600 }}>
-      {sign}{Math.abs(t).toFixed(1)}%
+      {sign}
+      {Math.abs(t).toFixed(1)}%
     </span>
   );
 }
@@ -95,16 +120,37 @@ function normalizeRepsResponse(j: any): Rep[] {
   return [];
 }
 
-/* ---------- Metric row (now with side-by-side compare column) ---------- */
+/* Convert API (single) to Scorecard shape */
+function toScore(api: ApiOne): Scorecard {
+  return {
+    rep: api?.rep?.name || "",
+    from: api?.range?.from || "",
+    to: api?.range?.to || "",
+    currency: api?.currency || "GBP",
+    salesEx: api?.section1?.salesEx ?? 0,
+    marginPct: api?.section1?.marginPct ?? 0,
+    profit: api?.section1?.profit ?? 0,
+    totalCalls: api?.section2?.totalCalls ?? 0,
+    coldCalls: api?.section2?.coldCalls ?? 0,
+    bookedCalls: api?.section2?.bookedCalls ?? 0,
+    bookedDemos: api?.section2?.bookedDemos ?? 0,
+    avgTimePerCallMins: api?.section2?.avgTimePerCallMins ?? 0,
+    avgCallsPerDay: api?.section2?.avgCallsPerDay ?? 0,
+    daysActive: api?.section2?.activeDays ?? 0,
+    totalCustomers: api?.section3?.totalCustomers ?? 0,
+    newCustomers: api?.section3?.newCustomers ?? 0,
+  };
+}
+
+/* ---------- Metric row (now supports many compare columns) ---------- */
 function MetricRow(props: {
   label: string;
   cur: number | null | undefined;
-  base?: number | null;
-  showCompare?: boolean;
+  compares?: Array<number | null | undefined>;
   kind?: "money" | "pct" | "int" | "mins";
   currency?: string;
 }) {
-  const { label, cur, base, showCompare, kind, currency } = props;
+  const { label, cur, compares = [], kind, currency } = props;
 
   const renderVal = (v: number | null | undefined) => {
     switch (kind) {
@@ -115,32 +161,26 @@ function MetricRow(props: {
     }
   };
 
-  // chunkier row styles
   const rowStyle: React.CSSProperties = {
     alignItems: "center",
-    padding: "14px 12px",
+    padding: "16px 12px",
     borderBottom: "1px solid var(--border)",
     fontSize: 15,
   };
-
-  const numStyle: React.CSSProperties = { width: 160, textAlign: "right", fontWeight: 600 };
+  const numStyle: React.CSSProperties = { width: 180, textAlign: "right", fontWeight: 600 };
 
   return (
     <div className="row" style={rowStyle}>
       <div style={{ flex: 2 }}>{label}</div>
-
-      {/* Current rep value */}
-      <div style={numStyle}>{renderVal(cur ?? null)}</div>
-
-      {/* Compare rep value (when applied) */}
-      {showCompare ? <div style={numStyle}>{renderVal(base ?? null)}</div> : null}
-
-      {/* Delta % (when applied) */}
-      {showCompare ? (
-        <div style={{ width: 90, textAlign: "right" }}>
-          <Delta cur={cur ?? null} base={base ?? null} />
+      <div style={numStyle}>{renderVal(cur)}</div>
+      {compares.map((v, i) => (
+        <div key={`cmpv-${i}`} className="row" style={{ gap: 0, width: 270, justifyContent: "flex-end" }}>
+          <div style={{ width: 180, textAlign: "right", fontWeight: 600 }}>{renderVal(v)}</div>
+          <div style={{ width: 90, textAlign: "right" }}>
+            <Delta cur={cur ?? null} base={v ?? null} />
+          </div>
         </div>
-      ) : null}
+      ))}
     </div>
   );
 }
@@ -157,20 +197,24 @@ export default function RepScorecardPage() {
   const [from, setFrom] = useState<string>(ymdLocal(firstOfMonth(today)));
   const [to, setTo] = useState<string>(ymdLocal(today));
 
-  // Compare (applied separately)
+  // Compare mode
+  type CmpMode = "reps" | "period";
   const [showCompare, setShowCompare] = useState<boolean>(false);
-  const [cmpRepDraft, setCmpRepDraft] = useState<string>("");
+  const [cmpMode, setCmpMode] = useState<CmpMode>("reps");
+
+  // Drafts (not applied until user clicks Apply)
+  const [cmpRepsDraft, setCmpRepsDraft] = useState<string[]>([]);
   const [cmpFromDraft, setCmpFromDraft] = useState<string>(ymdLocal(firstOfMonth(today)));
   const [cmpToDraft, setCmpToDraft] = useState<string>(ymdLocal(today));
+  const [cmpPeriodDraft, setCmpPeriodDraft] = useState<"prev-month" | "prev-year">("prev-month");
 
-  const [cmpRep, setCmpRep] = useState<string | null>(null);
-  const [cmpFrom, setCmpFrom] = useState<string | null>(null);
-  const [cmpTo, setCmpTo] = useState<string | null>(null);
+  // Applied comparisons
+  const [comparisons, setComparisons] = useState<Array<{ label: string; data: Scorecard }>>([]);
 
   // Data
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [resp, setResp] = useState<ApiResponse | null>(null);
+  const [current, setCurrent] = useState<Scorecard | null>(null);
 
   /* Load reps list */
   useEffect(() => {
@@ -181,8 +225,10 @@ export default function RepScorecardPage() {
         const list = normalizeRepsResponse(j);
         setReps(list);
         if (!rep && list.length) {
-          setRep(list[0].name); // default to first rep
-          setCmpRepDraft(list[0].name);
+          setRep(list[0].name);
+        }
+        if (cmpRepsDraft.length === 0 && list.length) {
+          setCmpRepsDraft([list[0].name]);
         }
       } catch {
         setReps([]);
@@ -191,7 +237,7 @@ export default function RepScorecardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* Fetch scorecard whenever primary selection changes OR applied compare changes */
+  /* Fetch current whenever primary selection changes */
   useEffect(() => {
     if (!rep || !from || !to) return;
     (async () => {
@@ -199,56 +245,98 @@ export default function RepScorecardPage() {
         setLoading(true);
         setErr(null);
         const qs = new URLSearchParams({ rep, from, to });
-        if (cmpRep && cmpFrom && cmpTo) {
-          qs.set("cmpRep", cmpRep);
-          qs.set("cmpFrom", cmpFrom);
-          qs.set("cmpTo", cmpTo);
-        }
         const r = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
           cache: "no-store",
           credentials: "include",
         });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j?.error || "Failed to load scorecard");
-        setResp(j as ApiResponse);
+        const j = (await r.json()) as ApiOne;
+        if (!r.ok) throw new Error((j as any)?.error || "Failed to load scorecard");
+        setCurrent(toScore(j));
       } catch (e: any) {
         setErr(e?.message || "Failed to load scorecard");
-        setResp(null);
+        setCurrent(null);
       } finally {
         setLoading(false);
       }
     })();
-  }, [rep, from, to, cmpRep, cmpFrom, cmpTo]); // eslint-disable-line
+  }, [rep, from, to]);
 
-  function applyCompare() {
-    if (!cmpRepDraft || !cmpFromDraft || !cmpToDraft) return;
-    setCmpRep(cmpRepDraft);
-    setCmpFrom(cmpFromDraft);
-    setCmpTo(cmpToDraft);
+  async function applyCompare() {
+    if (!current) return;
+
+    try {
+      setLoading(true);
+      setErr(null);
+
+      const next: Array<{ label: string; data: Scorecard }> = [];
+
+      if (cmpMode === "reps") {
+        // one call per selected rep
+        for (const name of cmpRepsDraft) {
+          const qs = new URLSearchParams({ rep: name, from: cmpFromDraft, to: cmpToDraft });
+          const r = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
+            cache: "no-store",
+            credentials: "include",
+          });
+          const j = (await r.json()) as ApiOne;
+          if (r.ok && j?.ok) {
+            next.push({ label: name, data: toScore(j) });
+          }
+        }
+      } else {
+        // period compare against the SAME rep
+        let pf = from, pt = to;
+        if (cmpPeriodDraft === "prev-month") {
+          pf = shiftYMD(from, { months: -1 });
+          pt = shiftYMD(to, { months: -1 });
+          next.push({ label: "Prev month", data: await fetchOne(rep, pf, pt) });
+        } else {
+          pf = shiftYMD(from, { years: -1 });
+          pt = shiftYMD(to, { years: -1 });
+          next.push({ label: "Prev year", data: await fetchOne(rep, pf, pt) });
+        }
+      }
+
+      setComparisons(next);
+    } catch (e: any) {
+      setErr(e?.message || "Failed to apply comparison");
+      setComparisons([]);
+    } finally {
+      setLoading(false);
+    }
   }
+
+  async function fetchOne(repName: string, f: string, t: string): Promise<Scorecard> {
+    const qs = new URLSearchParams({ rep: repName, from: f, to: t });
+    const r = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
+      cache: "no-store",
+      credentials: "include",
+    });
+    const j = (await r.json()) as ApiOne;
+    if (!r.ok || !j?.ok) throw new Error((j as any)?.error || "Fetch failed");
+    return toScore(j);
+  }
+
   function clearCompare() {
-    setCmpRep(null);
-    setCmpFrom(null);
-    setCmpTo(null);
+    setComparisons([]);
   }
-
-  const cur = resp?.current;
-  const base = resp?.compare || null;
-  const showCompareCols = Boolean(base);
 
   const viewingLine = (
     <div className="small muted">
       Viewing <b>{rep || "—"}</b> {from ? <span> {from} </span> : null}
       {to ? <>→ {to}</> : null}
-      {base ? (
+      {comparisons.length ? (
         <>
-          {" "}• comparing to <b>{base.rep}</b> {base.from} → {base.to}
+          {" "}• comparing to{" "}
+          <b>
+            {comparisons.map((c) => c.label).join(", ")}
+          </b>
         </>
       ) : null}
     </div>
   );
 
-  // section header with column headings (current/compare/delta)
+  // Column headers above value/compare/delta
   function SectionHead(props: { title: string; subtitle?: string }) {
     return (
       <>
@@ -271,17 +359,19 @@ export default function RepScorecardPage() {
           }}
         >
           <div style={{ flex: 2 }} />
-          <div style={{ width: 160, textAlign: "right" }}>{cur?.rep || rep || "Selected rep"}</div>
-          {showCompareCols ? (
-            <>
-              <div style={{ width: 160, textAlign: "right" }}>{base?.rep || "Compare"}</div>
+          <div style={{ width: 180, textAlign: "right" }}>{current?.rep || rep || "Selected rep"}</div>
+          {comparisons.map((c, i) => (
+            <div key={`head-${i}`} className="row" style={{ gap: 0, width: 270, justifyContent: "flex-end" }}>
+              <div style={{ width: 180, textAlign: "right" }}>{c.label}</div>
               <div style={{ width: 90, textAlign: "right" }}>Δ %</div>
-            </>
-          ) : null}
+            </div>
+          ))}
         </div>
       </>
     );
   }
+
+  const ccy = current?.currency || "GBP";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -329,66 +419,121 @@ export default function RepScorecardPage() {
                 width: "100%",
               }}
             >
-              <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr auto auto auto" }}>
-                <div className="field">
-                  <label>Compare to</label>
-                  <select
-                    value={cmpRepDraft}
-                    onChange={(e) => setCmpRepDraft(e.target.value)}
-                  >
-                    {reps.map((r) => (
-                      <option key={r.id || r.name} value={r.name}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label>From</label>
-                  <input
-                    type="date"
-                    value={cmpFromDraft}
-                    onChange={(e) => setCmpFromDraft(e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>To</label>
-                  <input
-                    type="date"
-                    value={cmpToDraft}
-                    onChange={(e) => setCmpToDraft(e.target.value)}
-                  />
-                </div>
-                <div className="field" style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
-                  <button type="button" className="btn primary" onClick={applyCompare}>
-                    Apply
-                  </button>
-                  {base ? (
-                    <button type="button" className="btn" onClick={clearCompare}>
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
+              {/* Mode selector */}
+              <div className="row" style={{ gap: 12, alignItems: "center", marginBottom: 8 }}>
+                <label className="small muted">Compare mode</label>
+                <select value={cmpMode} onChange={(e) => setCmpMode(e.target.value as CmpMode)}>
+                  <option value="reps">Reps</option>
+                  <option value="period">Previous period</option>
+                </select>
               </div>
+
+              {cmpMode === "reps" ? (
+                // Multi-select reps + date range
+                <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr auto auto auto" }}>
+                  <div className="field">
+                    <label>Compare to (multi-select)</label>
+                    <select
+                      multiple
+                      size={Math.min(6, Math.max(3, reps.length))}
+                      value={cmpRepsDraft}
+                      onChange={(e) =>
+                        setCmpRepsDraft(Array.from(e.currentTarget.selectedOptions).map((o) => o.value))
+                      }
+                    >
+                      {reps.map((r) => (
+                        <option key={r.id || r.name} value={r.name}>
+                          {r.name}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="small muted" style={{ marginTop: 4 }}>
+                      Hold Cmd/Ctrl to select multiple.
+                    </div>
+                  </div>
+
+                  <div className="field">
+                    <label>From</label>
+                    <input
+                      type="date"
+                      value={cmpFromDraft}
+                      onChange={(e) => setCmpFromDraft(e.target.value)}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>To</label>
+                    <input
+                      type="date"
+                      value={cmpToDraft}
+                      onChange={(e) => setCmpToDraft(e.target.value)}
+                    />
+                  </div>
+                  <div className="field" style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
+                    <button type="button" className="btn primary" onClick={applyCompare}>
+                      Apply
+                    </button>
+                    {comparisons.length ? (
+                      <button type="button" className="btn" onClick={clearCompare}>
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : (
+                // Previous month / year (no rep dropdown)
+                <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr auto" }}>
+                  <div className="field">
+                    <label>Previous period</label>
+                    <div className="row" style={{ gap: 12, alignItems: "center" }}>
+                      <label className="row" style={{ gap: 6 }}>
+                        <input
+                          type="radio"
+                          name="cmpPeriod"
+                          value="prev-month"
+                          checked={cmpPeriodDraft === "prev-month"}
+                          onChange={() => setCmpPeriodDraft("prev-month")}
+                        />
+                        Previous month (same span)
+                      </label>
+                      <label className="row" style={{ gap: 6 }}>
+                        <input
+                          type="radio"
+                          name="cmpPeriod"
+                          value="prev-year"
+                          checked={cmpPeriodDraft === "prev-year"}
+                          onChange={() => setCmpPeriodDraft("prev-year")}
+                        />
+                        Previous year (same span)
+                      </label>
+                    </div>
+                  </div>
+                  <div className="field" style={{ display: "flex", alignItems: "flex-end", gap: 6, justifyContent: "flex-end" }}>
+                    <button type="button" className="btn primary" onClick={applyCompare}>
+                      Apply
+                    </button>
+                    {comparisons.length ? (
+                      <button type="button" className="btn" onClick={clearCompare}>
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
 
         <div className="row" style={{ gap: 8 }}>
-          <button className="btn" onClick={() => {
-            // re-fetch with the same params
-            if (!rep || !from || !to) return;
-            const qs = new URLSearchParams({ rep, from, to });
-            if (cmpRep && cmpFrom && cmpTo) {
-              qs.set("cmpRep", cmpRep);
-              qs.set("cmpFrom", cmpFrom);
-              qs.set("cmpTo", cmpTo);
-            }
-            fetch(`/api/reports/rep-scorecard?${qs.toString()}`, { cache: "no-store", credentials: "include" })
-              .then(r => r.json())
-              .then(j => setResp(j as ApiResponse))
-              .catch(() => {});
-          }}>
+          <button
+            className="btn"
+            onClick={() => {
+              // re-fetch just the current and re-apply comparisons
+              if (!rep || !from || !to) return;
+              // trigger the two effects:
+              setFrom((s) => s); // noop to keep UX; current effect already listens to from/to/rep
+              if (comparisons.length) applyCompare();
+            }}
+          >
             Refresh
           </button>
         </div>
@@ -402,29 +547,46 @@ export default function RepScorecardPage() {
       {/* ---------------- Sales ---------------- */}
       <section className="card" style={{ padding: 0 }}>
         <SectionHead title="Sales" subtitle="Sales (ex VAT), margin %, profit" />
-        <div style={{ padding: "0 0 6px 0" }}>
-          <MetricRow label="Sales (ex VAT)" cur={cur?.salesEx} base={base?.salesEx} showCompare={showCompareCols} kind="money" />
-          <MetricRow label="Margin %" cur={cur?.marginPct} base={base?.marginPct} showCompare={showCompareCols} kind="pct" />
-          <MetricRow label="Profit" cur={cur?.profit} base={base?.profit} showCompare={showCompareCols} kind="money" />
+        <div>
+          <MetricRow
+            label="Sales (ex VAT)"
+            cur={current?.salesEx}
+            compares={comparisons.map((c) => c.data.salesEx)}
+            kind="money"
+            currency={ccy}
+          />
+          <MetricRow
+            label="Margin %"
+            cur={current?.marginPct}
+            compares={comparisons.map((c) => c.data.marginPct)}
+            kind="pct"
+          />
+          <MetricRow
+            label="Profit"
+            cur={current?.profit}
+            compares={comparisons.map((c) => c.data.profit)}
+            kind="money"
+            currency={ccy}
+          />
         </div>
 
         {/* ---------------- Calls ---------------- */}
         <SectionHead title="Calls" subtitle="Call volumes & activity" />
-        <div style={{ padding: "0 0 6px 0" }}>
-          <MetricRow label="Total Calls" cur={cur?.totalCalls} base={base?.totalCalls} showCompare={showCompareCols} kind="int" />
-          <MetricRow label="Cold Calls" cur={cur?.coldCalls} base={base?.coldCalls} showCompare={showCompareCols} kind="int" />
-          <MetricRow label="Booked Calls" cur={cur?.bookedCalls} base={base?.bookedCalls} showCompare={showCompareCols} kind="int" />
-          <MetricRow label="Booked Demos" cur={cur?.bookedDemos} base={base?.bookedDemos} showCompare={showCompareCols} kind="int" />
-          <MetricRow label="Average Time Per Call (mins)" cur={cur?.avgTimePerCallMins} base={base?.avgTimePerCallMins} showCompare={showCompareCols} kind="mins" />
-          <MetricRow label="Average Calls per Day" cur={cur?.avgCallsPerDay} base={base?.avgCallsPerDay} showCompare={showCompareCols} kind="mins" />
-          <MetricRow label="Days Active" cur={cur?.daysActive} base={base?.daysActive} showCompare={showCompareCols} kind="int" />
+        <div>
+          <MetricRow label="Total Calls" cur={current?.totalCalls} compares={comparisons.map((c) => c.data.totalCalls)} kind="int" />
+          <MetricRow label="Cold Calls" cur={current?.coldCalls} compares={comparisons.map((c) => c.data.coldCalls)} kind="int" />
+          <MetricRow label="Booked Calls" cur={current?.bookedCalls} compares={comparisons.map((c) => c.data.bookedCalls)} kind="int" />
+          <MetricRow label="Booked Demos" cur={current?.bookedDemos} compares={comparisons.map((c) => c.data.bookedDemos)} kind="int" />
+          <MetricRow label="Average Time Per Call (mins)" cur={current?.avgTimePerCallMins} compares={comparisons.map((c) => c.data.avgTimePerCallMins)} kind="mins" />
+          <MetricRow label="Average Calls per Day" cur={current?.avgCallsPerDay} compares={comparisons.map((c) => c.data.avgCallsPerDay)} kind="mins" />
+          <MetricRow label="Days Active" cur={current?.daysActive} compares={comparisons.map((c) => c.data.daysActive)} kind="int" />
         </div>
 
         {/* ---------------- Customers ---------------- */}
         <SectionHead title="Customers" subtitle="Customer counts" />
-        <div style={{ padding: "0 0 6px 0" }}>
-          <MetricRow label="Total Customers" cur={cur?.totalCustomers} base={base?.totalCustomers} showCompare={showCompareCols} kind="int" />
-          <MetricRow label="New Customers" cur={cur?.newCustomers} base={base?.newCustomers} showCompare={showCompareCols} kind="int" />
+        <div>
+          <MetricRow label="Total Customers" cur={current?.totalCustomers} compares={comparisons.map((c) => c.data.totalCustomers)} kind="int" />
+          <MetricRow label="New Customers" cur={current?.newCustomers} compares={comparisons.map((c) => c.data.newCustomers)} kind="int" />
         </div>
       </section>
     </div>
