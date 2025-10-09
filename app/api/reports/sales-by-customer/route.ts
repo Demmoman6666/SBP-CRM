@@ -11,16 +11,16 @@ type Row = {
   customerName: string;
   orders: number;
 
-  grossEx: number;      // ex VAT, before discounts (effective, after returns)
-  grossInc: number;     // inc VAT = grossEx + taxes (effective, after returns)
-  discounts: number;    // Shopify total_discounts (ex VAT) (best available)
-  discount: number;     // alias for UI
-  netEx: number;        // ex VAT, after discounts (effective, after returns)
+  grossEx: number;      // current gross ex VAT (after exchanges/returns)
+  grossInc: number;     // current gross inc VAT
+  discounts: number;    // current discounts (proportional)
+  discount: number;     // alias
+  netEx: number;        // current net ex VAT (grossEx - discounts)
 
-  gross: number;        // = grossInc (UI alias)
-  net: number;          // = netEx   (UI alias)
+  gross: number;        // alias of grossInc
+  net: number;          // alias of netEx
 
-  cost: number;         // sum(qtyEffective * unitCost)
+  cost: number;         // COGS on kept qty only
   margin: number;       // netEx - cost
   marginPct: number | null;
   currency: string;
@@ -33,101 +33,34 @@ function toNum(v: any): number {
 function startOfDay(d: Date) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
 function endOfDay(d: Date)   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
 
-/** Sum of line amounts (tries `total` first; otherwise price*qty). Intended as ex-VAT. */
-function sumLinesEx(
+/** Sum of line totals (ex VAT) using original qty (fallback when needed). */
+function grossFromLinesOriginal(
   lines: { total: any | null; price: any | null; quantity: number | null }[]
 ): number {
   let s = 0;
   for (const li of lines) {
-    if (li.total != null) s += toNum(li.total);
-    else s += toNum(li.price) * (Number(li.quantity ?? 0) || 0);
+    const qty = Number(li.quantity ?? 0) || 0;
+    const perUnit = qty > 0 && li.total != null ? toNum(li.total) / qty : toNum(li.price);
+    s += perUnit * qty;
   }
   return Math.max(0, s);
 }
 
-/** Small epsilon compare for deciding if subtotal ~= sum(lines). */
-const approxEq = (a: number, b: number, eps = 0.02) => Math.abs(a - b) <= eps;
+/** Current gross ex VAT from effective (kept) qty. */
+function grossFromLinesEffective(
+  lines: { total: any | null; price: any | null; quantity: number | null; refundedQuantity?: number | null }[]
+): number {
+  let s = 0;
+  for (const li of lines) {
+    const qty = Number(li.quantity ?? 0) || 0;
+    const refundedQty = Number(li.refundedQuantity ?? 0) || 0;
+    const keptQty = Math.max(0, qty - refundedQty);
+    if (keptQty === 0) continue;
 
-/**
- * Compute *effective* revenue numbers for an order using the best available data:
- * - Prefers "current" Shopify fields if your sync saves them, else uses original fields.
- * - Falls back to line totals + discounts when needed.
- * - Subtracts refunds/returns via aggregated columns AND, if present, the nested `refunds` objects.
- *
- * Returns: { netEx, grossEx, grossInc, discountsUsed }
- */
-function liveRevenueFromOrder(
-  o: any, // order record
-  lines: { total: any | null; price: any | null; quantity: number | null }[]
-): { netEx: number; grossEx: number; grossInc: number; discountsUsed: number } {
-  // Prefer current fields if present (no compile/runtime risk since we read via `any`)
-  const curSubtotal = toNum(o?.currentSubtotal ?? o?.currentSubtotalExVat);
-  const curDiscounts = toNum(o?.currentDiscounts ?? o?.currentTotalDiscounts);
-  const curTaxes     = toNum(o?.currentTaxes);
-
-  const origSubtotal = toNum(o?.subtotal);  // ex VAT AFTER discounts (original capture)
-  const origDiscounts= toNum(o?.discounts); // ex VAT
-  const origTaxes    = toNum(o?.taxes);     // VAT
-
-  const lineSum = sumLinesEx(lines);
-
-  // Decide base subtotal/discounts/taxes set
-  const baseSubtotal = curSubtotal || origSubtotal || 0;
-  const baseDiscounts = (curDiscounts || origDiscounts || 0);
-  const baseTaxes = (curTaxes || origTaxes || 0);
-
-  // If subtotal ≈ sum(lines), treat lineSum as already net ex-VAT (post-discount).
-  // Otherwise treat lineSum as gross ex-VAT and subtract discounts.
-  let netExBase: number;
-  let grossExBase: number;
-  if (baseSubtotal && approxEq(baseSubtotal, lineSum)) {
-    netExBase = Math.max(0, baseSubtotal);
-    grossExBase = Math.max(0, netExBase + baseDiscounts);
-  } else {
-    // Assume `lineSum` represents gross ex-VAT (before discounts)
-    grossExBase = Math.max(0, lineSum);
-    netExBase = Math.max(0, grossExBase - baseDiscounts);
+    const perUnit = qty > 0 && li.total != null ? toNum(li.total) / qty : toNum(li.price);
+    s += perUnit * keptQty;
   }
-
-  // Aggregated refunds captured by your webhook/sync
-  const aggRefundNet = toNum(o?.refundedNet);  // ex VAT
-  const aggRefundTax = toNum(o?.refundedTax);  // VAT
-
-  // Detailed Shopify refunds (if synced)
-  let detRefundNet = 0;
-  let detRefundTax = 0;
-  const refunds = o?.refunds || o?.Refunds;
-  if (Array.isArray(refunds)) {
-    for (const rf of refunds) {
-      const items = rf?.refundLineItems || rf?.refund_line_items;
-      if (Array.isArray(items)) {
-        for (const it of items) {
-          // Shopify: refund_line_item.subtotal_set.shop_money.amount (ex VAT)
-          const subEx =
-            toNum(it?.subtotal) ||
-            toNum(it?.subtotal_set?.shop_money?.amount);
-          detRefundNet += subEx;
-        }
-      }
-      const adjs = rf?.orderAdjustments || rf?.order_adjustments;
-      if (Array.isArray(adjs)) {
-        for (const adj of adjs) detRefundNet += toNum(adj?.amount);
-      }
-      const taxAmt =
-        toNum(rf?.total_tax_set?.shop_money?.amount) ||
-        toNum(rf?.totalTax);
-      detRefundTax += taxAmt;
-    }
-  }
-
-  const totalRefundNet = aggRefundNet + detRefundNet;
-  const totalRefundTax = aggRefundTax + detRefundTax;
-
-  const netEx   = Math.max(0, netExBase   - totalRefundNet);
-  const grossEx = Math.max(0, grossExBase - totalRefundNet);
-  const grossInc= Math.max(0, grossEx + Math.max(0, baseTaxes - totalRefundTax));
-
-  return { netEx, grossEx, grossInc, discountsUsed: baseDiscounts };
+  return Math.max(0, s);
 }
 
 type CostEntry = { unitCost: number | string; currency?: string };
@@ -165,7 +98,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Invalid date range" }, { status: 400 });
     }
 
-    // Rep display name (if id given)
+    // Resolve rep display name if only id provided
     let repNameForFilter: string | null = repNameParam;
     if (repId) {
       const rep = await prisma.salesRep.findUnique({ where: { id: repId } });
@@ -180,24 +113,17 @@ export async function GET(req: Request) {
         processedAt: true,
         currency: true,
 
-        // order linkage
         customerId: true,
         shopifyCustomerId: true,
 
-        // revenue components (originals)
-        subtotal: true,         // ex VAT AFTER discount
-        discounts: true,        // ex VAT
-        taxes: true,            // VAT
-        shipping: true,         // ignored in revenue
+        // original snapshots
+        subtotal: true,     // ex VAT, AFTER discounts
+        discounts: true,    // ex VAT
+        taxes: true,        // VAT
 
-        // refunds (aggregated via webhook)
-        refundedNet: true,      // ex VAT after discounts
+        // webhook aggregates (may be null if not synced yet)
+        refundedNet: true,  // ex VAT
         refundedTax: true,
-        refundedShipping: true, // ignored in revenue
-        refundedTotal: true,    // inc VAT (not used directly)
-
-        // If your sync stores Shopify "refunds" objects, they will be present in `o as any`
-        // and read dynamically by liveRevenueFromOrder (no need to select explicitly here).
 
         customer: {
           select: {
@@ -205,13 +131,20 @@ export async function GET(req: Request) {
             salonName: true,
             customerName: true,
             salesRepId: true,
-            salesRep: true, // legacy text
+            salesRep: true,
             shopifyCustomerId: true,
           },
         },
         lineItems: {
-          // include refundedQuantity for cost adjustment + sku for backfill
-          select: { id: true, variantId: true, sku: true, quantity: true, refundedQuantity: true, price: true, total: true },
+          select: {
+            id: true,
+            variantId: true,
+            sku: true,
+            quantity: true,
+            refundedQuantity: true,
+            price: true,
+            total: true, // ex VAT total for original qty
+          },
         },
       },
       orderBy: { processedAt: "asc" },
@@ -225,7 +158,7 @@ export async function GET(req: Request) {
       });
     }
 
-    // 2) Link unlinked orders by shopifyCustomerId
+    // 2) Map orphans by shopifyCustomerId
     const orphanShopIds = Array.from(
       new Set(orders.filter(o => !o.customerId && o.shopifyCustomerId).map(o => String(o.shopifyCustomerId)))
     );
@@ -248,10 +181,10 @@ export async function GET(req: Request) {
           )
         : new Map<string, any>();
 
-    // 3) Rep filter (by canonical id OR legacy name)
+    // 3) Rep filter
     const filteredOrders = orders.filter((o) => {
-      const c = o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
       if (!repId && !repNameForFilter) return true;
+      const c = o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
       if (!c) return false;
       const idMatch = repId && c.salesRepId ? c.salesRepId === repId : false;
       const nameMatch =
@@ -269,7 +202,7 @@ export async function GET(req: Request) {
       });
     }
 
-    // 4) Collect variantIds; detect lines missing variantId but having SKU (to backfill)
+    // 4) Collect variantIds + missing by SKU
     const allVariantIds = new Set<string>();
     const linesMissingVariant: { id: string; sku: string }[] = [];
 
@@ -284,11 +217,9 @@ export async function GET(req: Request) {
       }
     }
 
-    // 4a) Backfill missing variantIds by SKU (cap)
     if (linesMissingVariant.length) {
       const BACKFILL_SKU_LIMIT = 100;
       const uniqueSkus = Array.from(new Set(linesMissingVariant.map(x => x.sku))).slice(0, BACKFILL_SKU_LIMIT);
-
       try {
         const skuToVariant = await fetchVariantIdsBySkus(uniqueSkus); // Map<sku, variantId>
         const toUpdate: Array<{ id: string; variantId: string }> = [];
@@ -303,11 +234,11 @@ export async function GET(req: Request) {
           await prisma.orderLineItem.update({ where: { id: u.id }, data: { variantId: u.variantId } });
         }
       } catch (e) {
-        console.error("[report] variantId backfill by SKU failed:", e);
+        console.error("[sales-by-customer] variantId backfill by SKU failed:", e);
       }
     }
 
-    // 4b) Pull cached unit costs
+    // 4b) Pull cached costs; backfill missing from Shopify & cache
     const costMap = new Map<string, number>();
     if (allVariantIds.size) {
       const costs = await prisma.shopifyVariantCost.findMany({
@@ -319,8 +250,6 @@ export async function GET(req: Request) {
         if (!costMap.has(key)) costMap.set(key, toNum(c.unitCost));
       }
     }
-
-    // 4c) Backfill missing costs from Shopify and cache
     const missingVariantIds = Array.from(allVariantIds).filter(id => !costMap.has(id));
     if (missingVariantIds.length) {
       const BACKFILL_COST_LIMIT = 200;
@@ -339,11 +268,11 @@ export async function GET(req: Request) {
           costMap.set(variantId, unitCostNum);
         }
       } catch (e) {
-        console.error("[report] variant cost backfill failed:", e);
+        console.error("[sales-by-customer] variant cost backfill failed:", e);
       }
     }
 
-    // 5) Aggregate by customer (live net/gross; adjust cost for refunded qty)
+    // 5) Aggregate (current values)
     const rowsMap = new Map<string, Row>();
     const currency = filteredOrders.find(o => o.currency)?.currency || "GBP";
 
@@ -353,10 +282,37 @@ export async function GET(req: Request) {
       const name = (cust?.salonName || cust?.customerName || "Unlinked customer").trim();
       const key = customerId || `unlinked:${name}`;
 
-      // LIVE revenue (handles exchanges/refunds)
-      const { netEx, grossEx, grossInc, discountsUsed } = liveRevenueFromOrder(o as any, o.lineItems);
+      // Original snapshots
+      const taxesOriginal = toNum(o.taxes);
+      const discountsOriginal = toNum(o.discounts);
 
-      // cost = sum(unitCost * (qty - refundedQty))
+      // Original gross ex VAT from lines (robust)
+      const grossExOriginal = grossFromLinesOriginal(o.lineItems);
+
+      // Current gross ex VAT from kept qty
+      const grossExCurrent = grossFromLinesEffective(o.lineItems);
+
+      // Proportional factor for discounts/tax on kept qty
+      const factor = grossExOriginal > 0 ? Math.min(1, grossExCurrent / grossExOriginal) : 0;
+
+      // Current discounts: prefer refundedNet when present; else proportional
+      // We *prefer* a direct net when we have webhook fields:
+      const hasRefundedNet = Number.isFinite(Number(o.refundedNet));
+      const netExCurrentFromWebhook = Math.max(0, toNum(o.subtotal) - toNum(o.refundedNet));
+
+      const discountsCurrent = hasRefundedNet
+        ? Math.max(0, grossExCurrent - netExCurrentFromWebhook) // back-solve to keep Net authoritative
+        : Math.max(0, discountsOriginal * factor);
+
+      const netExCurrent = hasRefundedNet
+        ? netExCurrentFromWebhook
+        : Math.max(0, grossExCurrent - discountsCurrent);
+
+      // VAT (proportional for display of grossInc)
+      const taxesCurrent = Math.max(0, taxesOriginal * factor);
+      const grossIncCurrent = Math.max(0, grossExCurrent + taxesCurrent);
+
+      // Cost = kept qty * unit cost
       let cost = 0;
       for (const li of o.lineItems) {
         const vId = (li.variantId ? `${li.variantId}` : "").trim();
@@ -365,44 +321,38 @@ export async function GET(req: Request) {
         if (unitCost == null) continue;
         const qty = Number(li.quantity ?? 0) || 0;
         const refundedQty = Number(li.refundedQuantity ?? 0) || 0;
-        const effectiveQty = Math.max(0, qty - refundedQty);
-        cost += unitCost * effectiveQty;
+        const keptQty = Math.max(0, qty - refundedQty);
+        if (keptQty > 0) cost += unitCost * keptQty;
       }
 
       const prev = rowsMap.get(key);
       if (!prev) {
-        const margin = Math.max(0, netEx - cost);
+        const margin = Math.max(0, netExCurrent - cost);
         rowsMap.set(key, {
           customerId,
           customerName: name,
           orders: 1,
-
-          grossEx,
-          grossInc,
-          discounts: discountsUsed,
-          discount: discountsUsed,
-          netEx,
-
-          gross: grossInc,
-          net: netEx,
-
+          grossEx: grossExCurrent,
+          grossInc: grossIncCurrent,
+          discounts: discountsCurrent,
+          discount: discountsCurrent,
+          netEx: netExCurrent,
+          gross: grossIncCurrent,
+          net: netExCurrent,
           cost,
           margin,
-          marginPct: netEx > 0 ? (margin / netEx) * 100 : null,
+          marginPct: netExCurrent > 0 ? (margin / netExCurrent) * 100 : null,
           currency,
         });
       } else {
         prev.orders += 1;
-
-        prev.grossEx += grossEx;
-        prev.grossInc += grossInc;
-        prev.discounts += discountsUsed;
+        prev.grossEx += grossExCurrent;
+        prev.grossInc += grossIncCurrent;
+        prev.discounts += discountsCurrent;
         prev.discount = prev.discounts;
-        prev.netEx += netEx;
-
+        prev.netEx += netExCurrent;
         prev.gross = prev.grossInc;
         prev.net = prev.netEx;
-
         prev.cost += cost;
         prev.margin = Math.max(0, prev.netEx - prev.cost);
         prev.marginPct = prev.netEx > 0 ? (prev.margin / prev.netEx) * 100 : null;
@@ -424,20 +374,18 @@ export async function GET(req: Request) {
       { grossEx: 0, grossInc: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 }
     );
 
-    const totalWithAliases = {
-      ...totals,
-      gross: totals.grossInc,
-      net: totals.netEx,
-      discount: totals.discounts,
-    };
-
     return NextResponse.json({
       ok: true,
       from: from.toISOString(),
       to: to.toISOString(),
       currency,
       rows,
-      total: totalWithAliases,
+      total: {
+        ...totals,
+        gross: totals.grossInc,
+        net: totals.netEx,
+        discount: totals.discounts,
+      },
     });
   } catch (err: any) {
     console.error("sales-by-customer error:", err);
