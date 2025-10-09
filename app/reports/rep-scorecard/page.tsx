@@ -247,7 +247,8 @@ export default function RepScorecardPage() {
       try {
         setLoading(true);
         setErr(null);
-        const qs = new URLSearchParams({ rep, from, to });
+        // IMPORTANT: send both rep and staff (same value) to satisfy API filters in all envs
+        const qs = new URLSearchParams({ rep, staff: rep, from, to });
         const r = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
           cache: "no-store",
           credentials: "include",
@@ -265,7 +266,8 @@ export default function RepScorecardPage() {
   }, [rep, from, to]);
 
   async function fetchOne(repName: string, f: string, t: string): Promise<Scorecard> {
-    const qs = new URLSearchParams({ rep: repName, from: f, to: t });
+    // IMPORTANT: also pass staff for robustness
+    const qs = new URLSearchParams({ rep: repName, staff: repName, from: f, to: t });
     const r = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
       cache: "no-store",
       credentials: "include",
@@ -335,8 +337,7 @@ export default function RepScorecardPage() {
       {to ? <>→ {to}</> : null}
       {comparisons.length ? (
         <>
-          {" "}• comparing to{" "}
-          <b>{comparisons.map((c) => c.label).join(", ")}</b>
+          {" "}• comparing to <b>{comparisons.map((c) => c.label).join(", ")}</b>
         </>
       ) : null}
     </div>
