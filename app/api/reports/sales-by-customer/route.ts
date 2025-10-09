@@ -6,63 +6,48 @@ import { fetchVariantUnitCosts, fetchVariantIdsBySkus } from "@/lib/shopify";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+/* ----------------------------- Types ----------------------------- */
 type Row = {
   customerId: string | null;
   customerName: string;
   orders: number;
 
-  grossEx: number;      // current gross ex VAT (after exchanges/returns)
-  grossInc: number;     // current gross inc VAT
-  discounts: number;    // current discounts (proportional)
-  discount: number;     // alias
-  netEx: number;        // current net ex VAT (grossEx - discounts)
+  grossEx: number;      // ex VAT, before discounts (current, after returns/exchanges)
+  grossInc: number;     // inc VAT (current)
+  discounts: number;    // ex VAT (current, pro-rated to kept qty)
+  discount: number;     // alias for UI
+  netEx: number;        // ex VAT, after discounts (current)
 
-  gross: number;        // alias of grossInc
-  net: number;          // alias of netEx
+  gross: number;        // = grossInc (UI alias)
+  net: number;          // = netEx   (UI alias)
 
-  cost: number;         // COGS on kept qty only
+  cost: number;         // sum(keptQty * unitCost)
   margin: number;       // netEx - cost
   marginPct: number | null;
   currency: string;
 };
 
-function toNum(v: any): number {
+/* --------------------------- Utilities --------------------------- */
+const toNum = (v: any): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
-}
-function startOfDay(d: Date) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
-function endOfDay(d: Date)   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
+};
+const startOfDay = (d: Date) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
+const endOfDay   = (d: Date) => { const x = new Date(d); x.setHours(23,59,59,999); return x; };
 
-/** Sum of line totals (ex VAT) using original qty (fallback when needed). */
-function grossFromLinesOriginal(
+/** Sum of line totals as a fallback for original gross ex-VAT. */
+function grossFromLines(
   lines: { total: any | null; price: any | null; quantity: number | null }[]
 ): number {
   let s = 0;
   for (const li of lines) {
-    const qty = Number(li.quantity ?? 0) || 0;
-    const perUnit = qty > 0 && li.total != null ? toNum(li.total) / qty : toNum(li.price);
-    s += perUnit * qty;
+    if (li.total != null) s += toNum(li.total);
+    else s += toNum(li.price) * (Number(li.quantity ?? 0) || 0);
   }
   return Math.max(0, s);
 }
 
-/** Current gross ex VAT from effective (kept) qty. */
-function grossFromLinesEffective(
-  lines: { total: any | null; price: any | null; quantity: number | null; refundedQuantity?: number | null }[]
-): number {
-  let s = 0;
-  for (const li of lines) {
-    const qty = Number(li.quantity ?? 0) || 0;
-    const refundedQty = Number(li.refundedQuantity ?? 0) || 0;
-    const keptQty = Math.max(0, qty - refundedQty);
-    if (keptQty === 0) continue;
-
-    const perUnit = qty > 0 && li.total != null ? toNum(li.total) / qty : toNum(li.price);
-    s += perUnit * keptQty;
-  }
-  return Math.max(0, s);
-}
-
+/* For unit-cost responses that may be Map or plain object */
 type CostEntry = { unitCost: number | string; currency?: string };
 function normalizeCostMap(input: any): Map<string, CostEntry> {
   if (input && typeof input === "object" && typeof (input as Map<any, any>).entries === "function") {
@@ -81,31 +66,34 @@ function normalizeCostMap(input: any): Map<string, CostEntry> {
   return m;
 }
 
+/* =============================== Route =============================== */
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
+
     const repId = (searchParams.get("repId") || "").trim() || null;
-    const repNameParam = (searchParams.get("repName") || searchParams.get("staff") || "").trim() || null;
+    const repNameParam =
+      (searchParams.get("repName") || searchParams.get("staff") || "").trim() || null;
 
     const fromRaw = searchParams.get("from");
-    const toRaw = searchParams.get("to");
+    const toRaw   = searchParams.get("to");
     if (!fromRaw || !toRaw) {
       return NextResponse.json({ error: "from and to are required (YYYY-MM-DD)" }, { status: 400 });
     }
     const from = startOfDay(new Date(fromRaw));
-    const to = endOfDay(new Date(toRaw));
+    const to   = endOfDay(new Date(toRaw));
     if (isNaN(+from) || isNaN(+to)) {
       return NextResponse.json({ error: "Invalid date range" }, { status: 400 });
     }
 
-    // Resolve rep display name if only id provided
+    // Resolve canonical rep name when an id is provided (keeps legacy staff filters working)
     let repNameForFilter: string | null = repNameParam;
     if (repId) {
       const rep = await prisma.salesRep.findUnique({ where: { id: repId } });
       repNameForFilter = rep?.name || repNameForFilter;
     }
 
-    // 1) Orders in range
+    /* 1) Pull orders in range with line items & refund fields */
     const orders = await prisma.order.findMany({
       where: { processedAt: { gte: from, lte: to } },
       select: {
@@ -116,14 +104,17 @@ export async function GET(req: Request) {
         customerId: true,
         shopifyCustomerId: true,
 
-        // original snapshots
-        subtotal: true,     // ex VAT, AFTER discounts
-        discounts: true,    // ex VAT
-        taxes: true,        // VAT
+        // ORIGINAL order-level amounts (typically original totals)
+        subtotal: true,      // ex VAT after discounts
+        discounts: true,     // ex VAT
+        taxes: true,         // VAT
+        shipping: true,      // ignored for revenue
 
-        // webhook aggregates (may be null if not synced yet)
-        refundedNet: true,  // ex VAT
+        // REFUND aggregates from your sync (may be 0 for exchanges w/ no cash refund)
+        refundedNet: true,   // ex VAT after discounts
         refundedTax: true,
+        refundedShipping: true,
+        refundedTotal: true,
 
         customer: {
           select: {
@@ -131,19 +122,20 @@ export async function GET(req: Request) {
             salonName: true,
             customerName: true,
             salesRepId: true,
-            salesRep: true,
+            salesRep: true, // legacy free-text
             shopifyCustomerId: true,
           },
         },
         lineItems: {
+          // refundedQuantity is vital for exchanges/returns
           select: {
             id: true,
             variantId: true,
             sku: true,
             quantity: true,
             refundedQuantity: true,
-            price: true,
-            total: true, // ex VAT total for original qty
+            price: true,   // ex VAT unit price
+            total: true,   // ex VAT line total (often price*qty minus line-level discount)
           },
         },
       },
@@ -158,7 +150,7 @@ export async function GET(req: Request) {
       });
     }
 
-    // 2) Map orphans by shopifyCustomerId
+    /* 2) Link unlinked orders via shopifyCustomerId */
     const orphanShopIds = Array.from(
       new Set(orders.filter(o => !o.customerId && o.shopifyCustomerId).map(o => String(o.shopifyCustomerId)))
     );
@@ -169,22 +161,18 @@ export async function GET(req: Request) {
               await prisma.customer.findMany({
                 where: { shopifyCustomerId: { in: orphanShopIds } },
                 select: {
-                  id: true,
-                  salonName: true,
-                  customerName: true,
-                  salesRepId: true,
-                  salesRep: true,
-                  shopifyCustomerId: true,
+                  id: true, salonName: true, customerName: true,
+                  salesRepId: true, salesRep: true, shopifyCustomerId: true,
                 },
               })
             ).map(c => [String(c.shopifyCustomerId ?? ""), c])
           )
         : new Map<string, any>();
 
-    // 3) Rep filter
+    /* 3) Rep filter (canonical id OR legacy name), using linked or orphan customer */
     const filteredOrders = orders.filter((o) => {
-      if (!repId && !repNameForFilter) return true;
       const c = o.customer ?? (o.shopifyCustomerId ? orphanMap.get(String(o.shopifyCustomerId)) ?? null : null);
+      if (!repId && !repNameForFilter) return true;
       if (!c) return false;
       const idMatch = repId && c.salesRepId ? c.salesRepId === repId : false;
       const nameMatch =
@@ -202,7 +190,7 @@ export async function GET(req: Request) {
       });
     }
 
-    // 4) Collect variantIds + missing by SKU
+    /* 4) Collect variantIds & backfill missing by SKU (cap) */
     const allVariantIds = new Set<string>();
     const linesMissingVariant: { id: string; sku: string }[] = [];
 
@@ -238,7 +226,7 @@ export async function GET(req: Request) {
       }
     }
 
-    // 4b) Pull cached costs; backfill missing from Shopify & cache
+    /* 5) Pull/Backfill unit costs */
     const costMap = new Map<string, number>();
     if (allVariantIds.size) {
       const costs = await prisma.shopifyVariantCost.findMany({
@@ -249,30 +237,31 @@ export async function GET(req: Request) {
         const key = `${c.variantId}`;
         if (!costMap.has(key)) costMap.set(key, toNum(c.unitCost));
       }
-    }
-    const missingVariantIds = Array.from(allVariantIds).filter(id => !costMap.has(id));
-    if (missingVariantIds.length) {
-      const BACKFILL_COST_LIMIT = 200;
-      const toFetch = missingVariantIds.slice(0, BACKFILL_COST_LIMIT);
-      try {
-        const fetchedRaw = await fetchVariantUnitCosts(toFetch);
-        const fetched = normalizeCostMap(fetchedRaw);
-        for (const [variantId, entry] of fetched.entries()) {
-          const unitCostNum = Number(entry.unitCost);
-          if (!Number.isFinite(unitCostNum)) continue;
-          await prisma.shopifyVariantCost.upsert({
-            where: { variantId },
-            create: { variantId, unitCost: unitCostNum, currency: entry.currency || "GBP" },
-            update: { unitCost: unitCostNum, currency: entry.currency || "GBP" },
-          });
-          costMap.set(variantId, unitCostNum);
+
+      const missingVariantIds = Array.from(allVariantIds).filter(id => !costMap.has(id));
+      if (missingVariantIds.length) {
+        const BACKFILL_COST_LIMIT = 200;
+        const toFetch = missingVariantIds.slice(0, BACKFILL_COST_LIMIT);
+        try {
+          const fetchedRaw = await fetchVariantUnitCosts(toFetch);
+          const fetched = normalizeCostMap(fetchedRaw);
+          for (const [variantId, entry] of fetched.entries()) {
+            const unitCostNum = Number(entry.unitCost);
+            if (!Number.isFinite(unitCostNum)) continue;
+            await prisma.shopifyVariantCost.upsert({
+              where: { variantId },
+              create: { variantId, unitCost: unitCostNum, currency: entry.currency || "GBP" },
+              update: { unitCost: unitCostNum, currency: entry.currency || "GBP" },
+            });
+            costMap.set(variantId, unitCostNum);
+          }
+        } catch (e) {
+          console.error("[sales-by-customer] variant cost backfill failed:", e);
         }
-      } catch (e) {
-        console.error("[sales-by-customer] variant cost backfill failed:", e);
       }
     }
 
-    // 5) Aggregate (current values)
+    /* 6) Aggregate by customer using KEPT QTY (fixes exchanges) */
     const rowsMap = new Map<string, Row>();
     const currency = filteredOrders.find(o => o.currency)?.currency || "GBP";
 
@@ -282,77 +271,101 @@ export async function GET(req: Request) {
       const name = (cust?.salonName || cust?.customerName || "Unlinked customer").trim();
       const key = customerId || `unlinked:${name}`;
 
-      // Original snapshots
       const taxesOriginal = toNum(o.taxes);
-      const discountsOriginal = toNum(o.discounts);
+      const subtotalOriginal = toNum(o.subtotal);   // ex VAT after discounts (original)
+      let discountsOriginal = toNum(o.discounts);   // ex VAT (original)
 
-      // Original gross ex VAT from lines (robust)
-      const grossExOriginal = grossFromLinesOriginal(o.lineItems);
+      // If discounts field is missing/0 but lines imply discount, infer it
+      if (!discountsOriginal) {
+        const lineGross = grossFromLines(o.lineItems);
+        const inferred = Math.max(0, lineGross - subtotalOriginal);
+        discountsOriginal = inferred > 0 ? inferred : 0;
+      }
 
-      // Current gross ex VAT from kept qty
-      const grossExCurrent = grossFromLinesEffective(o.lineItems);
+      // Build original and kept gross ex-VAT from line items
+      let grossExOriginal = 0;
+      let grossExKept = 0;
 
-      // Proportional factor for discounts/tax on kept qty
-      const factor = grossExOriginal > 0 ? Math.min(1, grossExCurrent / grossExOriginal) : 0;
-
-      // Current discounts: prefer refundedNet when present; else proportional
-      // We *prefer* a direct net when we have webhook fields:
-      const hasRefundedNet = Number.isFinite(Number(o.refundedNet));
-      const netExCurrentFromWebhook = Math.max(0, toNum(o.subtotal) - toNum(o.refundedNet));
-
-      const discountsCurrent = hasRefundedNet
-        ? Math.max(0, grossExCurrent - netExCurrentFromWebhook) // back-solve to keep Net authoritative
-        : Math.max(0, discountsOriginal * factor);
-
-      const netExCurrent = hasRefundedNet
-        ? netExCurrentFromWebhook
-        : Math.max(0, grossExCurrent - discountsCurrent);
-
-      // VAT (proportional for display of grossInc)
-      const taxesCurrent = Math.max(0, taxesOriginal * factor);
-      const grossIncCurrent = Math.max(0, grossExCurrent + taxesCurrent);
-
-      // Cost = kept qty * unit cost
-      let cost = 0;
       for (const li of o.lineItems) {
-        const vId = (li.variantId ? `${li.variantId}` : "").trim();
-        if (!vId) continue;
-        const unitCost = costMap.get(vId);
-        if (unitCost == null) continue;
         const qty = Number(li.quantity ?? 0) || 0;
         const refundedQty = Number(li.refundedQuantity ?? 0) || 0;
-        const keptQty = Math.max(0, qty - refundedQty);
-        if (keptQty > 0) cost += unitCost * keptQty;
+        const kept = Math.max(0, qty - refundedQty);
+
+        // Derive unit gross ex VAT
+        const unitGrossEx =
+          qty > 0 && li.total != null ? toNum(li.total) / qty : toNum(li.price);
+
+        grossExOriginal += unitGrossEx * qty;
+        grossExKept     += unitGrossEx * kept;
+      }
+
+      // Pro-rate discounts & VAT to kept portion when possible
+      const keepRatio = grossExOriginal > 0 ? grossExKept / grossExOriginal : 0;
+      const discountsKept = discountsOriginal * keepRatio;
+      const taxKept       = taxesOriginal * keepRatio;
+
+      // Current ex-VAT and inc-VAT revenue from kept quantities
+      let netEx   = Math.max(0, grossExKept - discountsKept);
+      let grossEx = grossExKept;                      // for reporting ex VAT
+      let grossInc = Math.max(0, grossExKept + taxKept);
+
+      // Fallback: if we couldn't compute from lines, use order-level refund fields
+      if (grossExOriginal === 0) {
+        const refNet = toNum(o.refundedNet);
+        const refTax = toNum(o.refundedTax);
+        // Original: subtotal (ex VAT after discounts) and taxes
+        const fallbackNetEx = Math.max(0, subtotalOriginal - refNet);
+        const fallbackGrossInc = Math.max(0, (subtotalOriginal + taxesOriginal) - (refNet + refTax));
+
+        netEx   = fallbackNetEx;
+        grossEx = Math.max(0, netEx + (discountsOriginal - refNet)); // rough ex-VAT gross fallback
+        grossInc = fallbackGrossInc;
+      }
+
+      // Cost = unitCost * kept qty
+      let cost = 0;
+      for (const li of o.lineItems) {
+        const qty = Number(li.quantity ?? 0) || 0;
+        const refundedQty = Number(li.refundedQuantity ?? 0) || 0;
+        const kept = Math.max(0, qty - refundedQty);
+        const unit = costMap.get(String(li.variantId || ""));
+        if (unit != null) cost += unit * kept;
       }
 
       const prev = rowsMap.get(key);
       if (!prev) {
-        const margin = Math.max(0, netExCurrent - cost);
+        const margin = Math.max(0, netEx - cost);
         rowsMap.set(key, {
           customerId,
           customerName: name,
           orders: 1,
-          grossEx: grossExCurrent,
-          grossInc: grossIncCurrent,
-          discounts: discountsCurrent,
-          discount: discountsCurrent,
-          netEx: netExCurrent,
-          gross: grossIncCurrent,
-          net: netExCurrent,
+
+          grossEx,
+          grossInc,
+          discounts: discountsKept,
+          discount: discountsKept,
+          netEx,
+
+          gross: grossInc,
+          net: netEx,
+
           cost,
           margin,
-          marginPct: netExCurrent > 0 ? (margin / netExCurrent) * 100 : null,
+          marginPct: netEx > 0 ? (margin / netEx) * 100 : null,
           currency,
         });
       } else {
         prev.orders += 1;
-        prev.grossEx += grossExCurrent;
-        prev.grossInc += grossIncCurrent;
-        prev.discounts += discountsCurrent;
+
+        prev.grossEx += grossEx;
+        prev.grossInc += grossInc;
+        prev.discounts += discountsKept;
         prev.discount = prev.discounts;
-        prev.netEx += netExCurrent;
+        prev.netEx += netEx;
+
         prev.gross = prev.grossInc;
         prev.net = prev.netEx;
+
         prev.cost += cost;
         prev.margin = Math.max(0, prev.netEx - prev.cost);
         prev.marginPct = prev.netEx > 0 ? (prev.margin / prev.netEx) * 100 : null;
@@ -374,18 +387,20 @@ export async function GET(req: Request) {
       { grossEx: 0, grossInc: 0, discounts: 0, netEx: 0, cost: 0, margin: 0 }
     );
 
+    const totalWithAliases = {
+      ...totals,
+      gross: totals.grossInc,
+      net: totals.netEx,
+      discount: totals.discounts,
+    };
+
     return NextResponse.json({
       ok: true,
       from: from.toISOString(),
       to: to.toISOString(),
       currency,
       rows,
-      total: {
-        ...totals,
-        gross: totals.grossInc,
-        net: totals.netEx,
-        discount: totals.discounts,
-      },
+      total: totalWithAliases,
     });
   } catch (err: any) {
     console.error("sales-by-customer error:", err);
