@@ -18,8 +18,8 @@ function startOfDayUTC(d: Date) { const x = new Date(d); x.setUTCHours(0,0,0,0);
 function endOfDayUTC(d: Date)   { const x = new Date(d); x.setUTCHours(23,59,59,999); return x; }
 const toNum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
-/* ----------------- money helpers ----------------- */
-function grossFromLines(
+/* ----------------- revenue helpers (live/exchange-aware) ----------------- */
+function sumLinesEx(
   lines: { total: any | null; price: any | null; quantity: number | null }[]
 ): number {
   let s = 0;
@@ -29,14 +29,73 @@ function grossFromLines(
   }
   return Math.max(0, s);
 }
-function netExFromOrder(
-  o: { subtotal: any | null; discounts: any | null },
-  fallbackGrossEx: number
-): number {
-  const sub = o.subtotal != null ? toNum(o.subtotal) : null;
-  if (sub != null && Number.isFinite(sub)) return Math.max(0, sub);
-  const disc = toNum(o.discounts);
-  return Math.max(0, fallbackGrossEx - disc);
+const approxEq = (a: number, b: number, eps = 0.02) => Math.abs(a - b) <= eps;
+
+/**
+ * Returns effective { netEx, grossEx, grossInc, discountsUsed } for an order.
+ * Uses current* fields if present, otherwise falls back to original columns
+ * and/or line totals. Subtracts aggregated (and, if present, detailed) refunds.
+ */
+function liveRevenueFromOrder(
+  o: any,
+  lines: { total: any | null; price: any | null; quantity: number | null }[]
+): { netEx: number; grossEx: number; grossInc: number; discountsUsed: number } {
+  const curSubtotal = toNum(o?.currentSubtotal ?? o?.currentSubtotalExVat);
+  const curDiscounts = toNum(o?.currentDiscounts ?? o?.currentTotalDiscounts);
+  const curTaxes     = toNum(o?.currentTaxes);
+
+  const origSubtotal = toNum(o?.subtotal);  // ex VAT AFTER discounts
+  const origDiscounts= toNum(o?.discounts); // ex VAT
+  const origTaxes    = toNum(o?.taxes);     // VAT
+
+  const baseSubtotal = curSubtotal || origSubtotal || 0;
+  const baseDiscounts= curDiscounts || origDiscounts || 0;
+  const baseTaxes    = curTaxes || origTaxes || 0;
+
+  const lineSum = sumLinesEx(lines);
+
+  let netExBase: number;
+  let grossExBase: number;
+  if (baseSubtotal && approxEq(baseSubtotal, lineSum)) {
+    netExBase = Math.max(0, baseSubtotal);
+    grossExBase = Math.max(0, netExBase + baseDiscounts);
+  } else {
+    grossExBase = Math.max(0, lineSum);
+    netExBase = Math.max(0, grossExBase - baseDiscounts);
+  }
+
+  // Aggregated refunds captured in your DB
+  const aggRefundNet = toNum(o?.refundedNet);
+  const aggRefundTax = toNum(o?.refundedTax);
+
+  // Detailed refunds (if you store Shopify JSON); safe if absent
+  let detRefundNet = 0;
+  let detRefundTax = 0;
+  const refunds = o?.refunds || o?.Refunds;
+  if (Array.isArray(refunds)) {
+    for (const rf of refunds) {
+      const items = rf?.refundLineItems || rf?.refund_line_items;
+      if (Array.isArray(items)) {
+        for (const it of items) {
+          detRefundNet +=
+            toNum(it?.subtotal) || toNum(it?.subtotal_set?.shop_money?.amount);
+        }
+      }
+      const adjs = rf?.orderAdjustments || rf?.order_adjustments;
+      if (Array.isArray(adjs)) for (const adj of adjs) detRefundNet += toNum(adj?.amount);
+      detRefundTax +=
+        toNum(rf?.total_tax_set?.shop_money?.amount) || toNum(rf?.totalTax);
+    }
+  }
+
+  const totalRefundNet = aggRefundNet + detRefundNet;
+  const totalRefundTax = aggRefundTax + detRefundTax;
+
+  const netEx    = Math.max(0, netExBase   - totalRefundNet);
+  const grossEx  = Math.max(0, grossExBase - totalRefundNet);
+  const grossInc = Math.max(0, grossEx + Math.max(0, baseTaxes - totalRefundTax));
+
+  return { netEx, grossEx, grossInc, discountsUsed: baseDiscounts };
 }
 
 /* ----------------- call helpers ----------------- */
@@ -112,11 +171,23 @@ export async function GET(req: Request) {
           id: true,
           processedAt: true,
           currency: true,
-          subtotal: true,
-          discounts: true,
+
+          // base revenue fields
+          subtotal: true,        // ex VAT AFTER discounts (original)
+          discounts: true,       // ex VAT
+          taxes: true,           // VAT
+
+          // refunds (aggregated)
+          refundedNet: true,     // ex VAT
+          refundedTax: true,
+
           customerId: true,
           customer: { select: { salesRep: true, salesRepId: true } },
-          lineItems: { select: { variantId: true, quantity: true, price: true, total: true } },
+
+          // include refundedQuantity for cost adjustment
+          lineItems: {
+            select: { variantId: true, quantity: true, refundedQuantity: true, price: true, total: true }
+          },
         },
         orderBy: { processedAt: "asc" },
       });
@@ -170,9 +241,10 @@ export async function GET(req: Request) {
         }
 
         for (const o of relevantOrders) {
-          const grossEx = grossFromLines(o.lineItems);
-          const netEx   = netExFromOrder({ subtotal: o.subtotal, discounts: o.discounts }, grossEx);
+          // Effective (live) revenue after exchanges/returns
+          const { netEx } = liveRevenueFromOrder(o as any, o.lineItems);
 
+          // Cost based on effective quantity (qty - refundedQty)
           let cost = 0;
           for (const li of o.lineItems) {
             const vid = String(li.variantId || "");
@@ -180,7 +252,9 @@ export async function GET(req: Request) {
             const unit = costMap.get(vid);
             if (unit == null) continue;
             const qty = Number(li.quantity ?? 0) || 0;
-            cost += unit * qty;
+            const refundedQty = Number((li as any)?.refundedQuantity ?? 0) || 0;
+            const effectiveQty = Math.max(0, qty - refundedQty);
+            cost += unit * effectiveQty;
           }
 
           salesEx += netEx;
@@ -202,7 +276,6 @@ export async function GET(req: Request) {
         repNameResolved
           ? {
               createdAt: { gte, lte },
-              // case-insensitive equality
               staff: { equals: repNameResolved, mode: "insensitive" as const },
             }
           : { createdAt: { gte, lte } };
