@@ -32,97 +32,64 @@ function sumLinesEx(
 const approxEq = (a: number, b: number, eps = 0.02) => Math.abs(a - b) <= eps;
 
 /**
- * Compute effective ex-VAT revenue for an order *after* refunds/returns/exchanges.
- * Priority:
- *   1) Use “current*” fields if present (Shopify edited orders).
- *   2) Otherwise start from original values + subtract aggregated/detailed refunds.
- *   3) If no monetary refunds are present but line items have refundedQuantity,
- *      fall back to a proportional discount allocation based on kept quantity.
- *
- * Returns { netEx, grossEx, discountsUsed } (all ex VAT).
+ * Compute effective ex-VAT revenue for an order after returns/exchanges.
+ * Uses:
+ *  - original subtotal/discounts
+ *  - aggregated refundedNet (ex VAT)
+ *  - refundedQuantity on line items (for exchanges without monetary refund)
  */
 function liveNetExFromOrder(
   o: any,
   lines: { price: any | null; total: any | null; quantity: number | null; refundedQuantity?: number | null }[]
 ): { netEx: number; grossEx: number; discountsUsed: number } {
-  // 1) Prefer current* numbers if your DB has them
-  const curSubtotal = toNum(o?.currentSubtotal ?? o?.currentSubtotalExVat);
-  const curDiscounts = toNum(o?.currentDiscounts ?? o?.currentTotalDiscounts);
-
-  // 2) Originals
+  // Originals from DB
   const origSubtotal = toNum(o?.subtotal);   // ex VAT AFTER discounts
   const origDiscounts = toNum(o?.discounts); // ex VAT
-
-  const baseSubtotal = curSubtotal || origSubtotal || 0;
-  const baseDiscounts = curDiscounts || origDiscounts || 0;
 
   // Gross from line items (original)
   const lineSumOriginal = sumLinesEx(lines);
 
-  // If the stored subtotal matches line sum, accept as is; else derive from lines.
+  // Derive base gross/net ex VAT
   let grossExBase: number;
   let netExBase: number;
-  if (baseSubtotal && approxEq(baseSubtotal, lineSumOriginal)) {
-    netExBase = Math.max(0, baseSubtotal);
-    grossExBase = Math.max(0, netExBase + baseDiscounts);
+  if (origSubtotal && approxEq(origSubtotal, lineSumOriginal)) {
+    netExBase = Math.max(0, origSubtotal);
+    grossExBase = Math.max(0, netExBase + origDiscounts);
   } else {
     grossExBase = Math.max(0, lineSumOriginal);
-    netExBase = Math.max(0, grossExBase - baseDiscounts);
+    netExBase = Math.max(0, grossExBase - origDiscounts);
   }
 
-  // Refunds (monetary)
+  // Monetary refunds aggregated by your sync (ex VAT)
   const aggRefundNet = toNum(o?.refundedNet);
 
-  // Detailed refunds (if you store Shopify JSON; safe if absent)
-  let detRefundNet = 0;
-  const refunds = o?.refunds || o?.Refunds;
-  if (Array.isArray(refunds)) {
-    for (const rf of refunds) {
-      const items = rf?.refundLineItems || rf?.refund_line_items;
-      if (Array.isArray(items)) {
-        for (const it of items) {
-          detRefundNet +=
-            toNum(it?.subtotal) || toNum(it?.subtotal_set?.shop_money?.amount);
-        }
-      }
-      const adjs = rf?.orderAdjustments || rf?.order_adjustments;
-      if (Array.isArray(adjs)) for (const adj of adjs) detRefundNet += toNum(adj?.amount);
-    }
+  if (aggRefundNet > 0) {
+    const netEx = Math.max(0, netExBase - aggRefundNet);
+    const grossEx = Math.max(0, grossExBase - aggRefundNet);
+    return { netEx, grossEx, discountsUsed: origDiscounts };
   }
 
-  const totalRefundNet = aggRefundNet + detRefundNet;
-
-  // 3) If we have a monetary refund figure, subtract it directly.
-  if (totalRefundNet > 0) {
-    const netEx = Math.max(0, netExBase - totalRefundNet);
-    const grossEx = Math.max(0, grossExBase - totalRefundNet);
-    return { netEx, grossEx, discountsUsed: baseDiscounts };
-  }
-
-  // 4) Fallback: proportional adjustment by refundedQuantity (exchanges with no refund rows)
+  // Fallback: proportional adjustment by refundedQuantity (exchanges)
   const anyRefundQty = lines.some((li) => Number(li.refundedQuantity ?? 0) > 0);
   if (anyRefundQty && lineSumOriginal > 0) {
     const keptSum = lines.reduce((s, li) => {
       const qty = Number(li.quantity ?? 0) || 0;
       const rqty = Number(li.refundedQuantity ?? 0) || 0;
       const kept = Math.max(0, qty - rqty);
-      const unit = li.total != null
-        ? toNum(li.total) / Math.max(1, qty) // prefer per-line total
-        : toNum(li.price);
+      const unit = li.total != null ? toNum(li.total) / Math.max(1, qty) : toNum(li.price);
       return s + unit * kept;
     }, 0);
 
-    // Allocate the original order-level discount proportionally to what's kept.
     const ratio = Math.max(0, Math.min(1, keptSum / lineSumOriginal));
-    const effectiveDiscount = baseDiscounts * ratio;
+    const effectiveDiscount = origDiscounts * ratio;
 
     const grossEx = Math.max(0, keptSum);
     const netEx = Math.max(0, keptSum - effectiveDiscount);
     return { netEx, grossEx, discountsUsed: effectiveDiscount };
   }
 
-  // 5) Default
-  return { netEx: netExBase, grossEx: grossExBase, discountsUsed: baseDiscounts };
+  // Default
+  return { netEx: netExBase, grossEx: grossExBase, discountsUsed: origDiscounts };
 }
 
 /* ----------------- call helpers ----------------- */
@@ -199,25 +166,19 @@ export async function GET(req: Request) {
           processedAt: true,
           currency: true,
 
-          // base revenue fields (original)
+          // originals
           subtotal: true,        // ex VAT AFTER discounts
           discounts: true,       // ex VAT
           taxes: true,           // VAT
 
-          // “current*” if your sync stores them (optional)
-          currentSubtotal: true,
-          currentSubtotalExVat: true,
-          currentDiscounts: true,
-          currentTotalDiscounts: true,
-
-          // refunds (aggregated)
-          refundedNet: true,     // ex VAT
+          // refunds (aggregated ex VAT)
+          refundedNet: true,
           refundedTax: true,
 
           customerId: true,
           customer: { select: { salesRep: true, salesRepId: true } },
 
-          // include refundedQuantity for cost adjustment
+          // include refundedQuantity to adjust cost on exchanges
           lineItems: {
             select: {
               variantId: true,
@@ -231,7 +192,7 @@ export async function GET(req: Request) {
         orderBy: { processedAt: "asc" },
       });
 
-      // Filter to orders for this rep
+      // Filter to this rep’s orders
       const relevantOrders = orders.filter((o) => {
         if (!repId && !repNameResolved) return true;
         const matchRel =
@@ -246,7 +207,7 @@ export async function GET(req: Request) {
       if (relevantOrders.length > 0) {
         currency = relevantOrders[0]?.currency || currency;
 
-        // Pull / backfill costs
+        // Costs
         const allVariantIds = Array.from(
           new Set(
             relevantOrders.flatMap((o) =>
@@ -280,7 +241,7 @@ export async function GET(req: Request) {
           // LIVE revenue (handles returns/exchanges)
           const { netEx } = liveNetExFromOrder(o as any, o.lineItems);
 
-          // Cost on *kept* quantity
+          // Cost on kept quantity only
           let cost = 0;
           for (const li of o.lineItems) {
             const vid = String(li.variantId || "");
