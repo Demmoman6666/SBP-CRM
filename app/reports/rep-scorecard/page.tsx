@@ -20,7 +20,7 @@ type ApiOne = {
     bookedDemos: number;
     avgTimePerCallMins: number;
     avgCallsPerDay: number;
-    activeDays: number;
+    activeDays: number; // API calls it activeDays
   };
   section3: { totalCustomers: number; newCustomers: number };
 };
@@ -41,7 +41,7 @@ type Scorecard = {
   bookedDemos: number;
   avgTimePerCallMins: number;
   avgCallsPerDay: number;
-  daysActive: number;
+  daysActive: number; // local naming
   // customers
   totalCustomers: number;
   newCustomers: number;
@@ -64,6 +64,11 @@ function shiftYMD(s: string, { months = 0, years = 0 }: { months?: number; years
   d.setFullYear(d.getFullYear() + years);
   d.setMonth(d.getMonth() + months);
   return ymdLocal(d);
+}
+function addDays(d: Date, n: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
 }
 
 /* ---------- Formatting ---------- */
@@ -142,7 +147,7 @@ function toScore(api: ApiOne): Scorecard {
   };
 }
 
-/* ---------- Metric row (now supports many compare columns) ---------- */
+/* ---------- Metric row (supports many compare columns) ---------- */
 function MetricRow(props: {
   label: string;
   cur: number | null | undefined;
@@ -198,15 +203,17 @@ export default function RepScorecardPage() {
   const [to, setTo] = useState<string>(ymdLocal(today));
 
   // Compare mode
-  type CmpMode = "reps" | "period";
+  type CmpMode = "reps" | "date";
   const [showCompare, setShowCompare] = useState<boolean>(false);
   const [cmpMode, setCmpMode] = useState<CmpMode>("reps");
 
   // Drafts (not applied until user clicks Apply)
   const [cmpRepsDraft, setCmpRepsDraft] = useState<string[]>([]);
+  const [cmpRepsOpen, setCmpRepsOpen] = useState<boolean>(false); // dropdown open/close
+
   const [cmpFromDraft, setCmpFromDraft] = useState<string>(ymdLocal(firstOfMonth(today)));
   const [cmpToDraft, setCmpToDraft] = useState<string>(ymdLocal(today));
-  const [cmpPeriodDraft, setCmpPeriodDraft] = useState<"prev-month" | "prev-year">("prev-month");
+  const [dateMode, setDateMode] = useState<"custom" | "previous-period" | "previous-year">("custom");
 
   // Applied comparisons
   const [comparisons, setComparisons] = useState<Array<{ label: string; data: Scorecard }>>([]);
@@ -224,12 +231,8 @@ export default function RepScorecardPage() {
         const j = await r.json().catch(() => null);
         const list = normalizeRepsResponse(j);
         setReps(list);
-        if (!rep && list.length) {
-          setRep(list[0].name);
-        }
-        if (cmpRepsDraft.length === 0 && list.length) {
-          setCmpRepsDraft([list[0].name]);
-        }
+        if (!rep && list.length) setRep(list[0].name);
+        if (cmpRepsDraft.length === 0 && list.length) setCmpRepsDraft([list[0].name]);
       } catch {
         setReps([]);
       }
@@ -261,6 +264,17 @@ export default function RepScorecardPage() {
     })();
   }, [rep, from, to]);
 
+  async function fetchOne(repName: string, f: string, t: string): Promise<Scorecard> {
+    const qs = new URLSearchParams({ rep: repName, from: f, to: t });
+    const r = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
+      cache: "no-store",
+      credentials: "include",
+    });
+    const j = (await r.json()) as ApiOne;
+    if (!r.ok || !j?.ok) throw new Error((j as any)?.error || "Fetch failed");
+    return toScore(j);
+  }
+
   async function applyCompare() {
     if (!current) return;
 
@@ -271,29 +285,34 @@ export default function RepScorecardPage() {
       const next: Array<{ label: string; data: Scorecard }> = [];
 
       if (cmpMode === "reps") {
-        // one call per selected rep
         for (const name of cmpRepsDraft) {
-          const qs = new URLSearchParams({ rep: name, from: cmpFromDraft, to: cmpToDraft });
-          const r = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
-            cache: "no-store",
-            credentials: "include",
-          });
-          const j = (await r.json()) as ApiOne;
-          if (r.ok && j?.ok) {
-            next.push({ label: name, data: toScore(j) });
-          }
+          const sc = await fetchOne(name, cmpFromDraft, cmpToDraft);
+          next.push({ label: name, data: sc });
         }
+        setCmpRepsOpen(false);
       } else {
-        // period compare against the SAME rep
-        let pf = from, pt = to;
-        if (cmpPeriodDraft === "prev-month") {
-          pf = shiftYMD(from, { months: -1 });
-          pt = shiftYMD(to, { months: -1 });
-          next.push({ label: "Prev month", data: await fetchOne(rep, pf, pt) });
+        // date range compares (against SAME rep)
+        if (dateMode === "custom") {
+          const sc = await fetchOne(rep, cmpFromDraft, cmpToDraft);
+          next.push({ label: "Custom range", data: sc });
+        } else if (dateMode === "previous-year") {
+          const pf = shiftYMD(from, { years: -1 });
+          const pt = shiftYMD(to, { years: -1 });
+          const sc = await fetchOne(rep, pf, pt);
+          next.push({ label: "Previous year", data: sc });
         } else {
-          pf = shiftYMD(from, { years: -1 });
-          pt = shiftYMD(to, { years: -1 });
-          next.push({ label: "Prev year", data: await fetchOne(rep, pf, pt) });
+          // previous-period: same span immediately before [from, to]
+          const dFrom = parseYMD(from);
+          const dTo = parseYMD(to);
+          if (dFrom && dTo) {
+            const spanDays = Math.max(1, Math.round((dTo.getTime() - dFrom.getTime()) / 86400000) + 1);
+            const prevTo = addDays(dFrom, -1);
+            const prevFrom = addDays(prevTo, -(spanDays - 1));
+            const pf = ymdLocal(prevFrom);
+            const pt = ymdLocal(prevTo);
+            const sc = await fetchOne(rep, pf, pt);
+            next.push({ label: "Previous period", data: sc });
+          }
         }
       }
 
@@ -304,17 +323,6 @@ export default function RepScorecardPage() {
     } finally {
       setLoading(false);
     }
-  }
-
-  async function fetchOne(repName: string, f: string, t: string): Promise<Scorecard> {
-    const qs = new URLSearchParams({ rep: repName, from: f, to: t });
-    const r = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
-      cache: "no-store",
-      credentials: "include",
-    });
-    const j = (await r.json()) as ApiOne;
-    if (!r.ok || !j?.ok) throw new Error((j as any)?.error || "Fetch failed");
-    return toScore(j);
   }
 
   function clearCompare() {
@@ -328,9 +336,7 @@ export default function RepScorecardPage() {
       {comparisons.length ? (
         <>
           {" "}• comparing to{" "}
-          <b>
-            {comparisons.map((c) => c.label).join(", ")}
-          </b>
+          <b>{comparisons.map((c) => c.label).join(", ")}</b>
         </>
       ) : null}
     </div>
@@ -372,6 +378,7 @@ export default function RepScorecardPage() {
   }
 
   const ccy = current?.currency || "GBP";
+  const repsBtnLabel = cmpRepsDraft.length ? cmpRepsDraft.join(", ") : "Choose reps…";
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -424,31 +431,74 @@ export default function RepScorecardPage() {
                 <label className="small muted">Compare mode</label>
                 <select value={cmpMode} onChange={(e) => setCmpMode(e.target.value as CmpMode)}>
                   <option value="reps">Reps</option>
-                  <option value="period">Previous period</option>
+                  <option value="date">Date range</option>
                 </select>
               </div>
 
               {cmpMode === "reps" ? (
-                // Multi-select reps + date range
+                // Dropdown-style multi-select for reps + date range
                 <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr auto auto auto" }}>
                   <div className="field">
                     <label>Compare to (multi-select)</label>
-                    <select
-                      multiple
-                      size={Math.min(6, Math.max(3, reps.length))}
-                      value={cmpRepsDraft}
-                      onChange={(e) =>
-                        setCmpRepsDraft(Array.from(e.currentTarget.selectedOptions).map((o) => o.value))
-                      }
-                    >
-                      {reps.map((r) => (
-                        <option key={r.id || r.name} value={r.name}>
-                          {r.name}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="small muted" style={{ marginTop: 4 }}>
-                      Hold Cmd/Ctrl to select multiple.
+                    <div style={{ position: "relative" }}>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => setCmpRepsOpen((v) => !v)}
+                        style={{
+                          width: "100%",
+                          textAlign: "left",
+                          background: "#fff",
+                          border: "1px solid var(--border)",
+                        }}
+                      >
+                        {repsBtnLabel}
+                      </button>
+
+                      {cmpRepsOpen && (
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: "calc(100% + 6px)",
+                            left: 0,
+                            right: 0,
+                            maxHeight: 260,
+                            overflow: "auto",
+                            background: "#fff",
+                            border: "1px solid var(--border)",
+                            borderRadius: 10,
+                            boxShadow: "var(--shadow)",
+                            padding: 8,
+                            zIndex: 50,
+                          }}
+                        >
+                          {reps.map((r) => {
+                            const checked = cmpRepsDraft.includes(r.name);
+                            return (
+                              <label
+                                key={r.id || r.name}
+                                className="row"
+                                style={{ gap: 8, alignItems: "center", padding: "6px 4px" }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setCmpRepsDraft((prev) =>
+                                        prev.includes(r.name) ? prev : [...prev, r.name]
+                                      );
+                                    } else {
+                                      setCmpRepsDraft((prev) => prev.filter((x) => x !== r.name));
+                                    }
+                                  }}
+                                />
+                                {r.name}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -480,34 +530,40 @@ export default function RepScorecardPage() {
                   </div>
                 </div>
               ) : (
-                // Previous month / year (no rep dropdown)
-                <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr auto" }}>
+                // Date range compare: custom / previous period / previous year
+                <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr auto auto auto" }}>
                   <div className="field">
-                    <label>Previous period</label>
-                    <div className="row" style={{ gap: 12, alignItems: "center" }}>
-                      <label className="row" style={{ gap: 6 }}>
-                        <input
-                          type="radio"
-                          name="cmpPeriod"
-                          value="prev-month"
-                          checked={cmpPeriodDraft === "prev-month"}
-                          onChange={() => setCmpPeriodDraft("prev-month")}
-                        />
-                        Previous month (same span)
-                      </label>
-                      <label className="row" style={{ gap: 6 }}>
-                        <input
-                          type="radio"
-                          name="cmpPeriod"
-                          value="prev-year"
-                          checked={cmpPeriodDraft === "prev-year"}
-                          onChange={() => setCmpPeriodDraft("prev-year")}
-                        />
-                        Previous year (same span)
-                      </label>
-                    </div>
+                    <label>Mode</label>
+                    <select
+                      value={dateMode}
+                      onChange={(e) => setDateMode(e.target.value as any)}
+                    >
+                      <option value="custom">Custom range</option>
+                      <option value="previous-period">Previous period</option>
+                      <option value="previous-year">Previous year</option>
+                    </select>
                   </div>
-                  <div className="field" style={{ display: "flex", alignItems: "flex-end", gap: 6, justifyContent: "flex-end" }}>
+
+                  <div className="field">
+                    <label>From</label>
+                    <input
+                      type="date"
+                      value={cmpFromDraft}
+                      onChange={(e) => setCmpFromDraft(e.target.value)}
+                      disabled={dateMode !== "custom"}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>To</label>
+                    <input
+                      type="date"
+                      value={cmpToDraft}
+                      onChange={(e) => setCmpToDraft(e.target.value)}
+                      disabled={dateMode !== "custom"}
+                    />
+                  </div>
+
+                  <div className="field" style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
                     <button type="button" className="btn primary" onClick={applyCompare}>
                       Apply
                     </button>
@@ -527,10 +583,9 @@ export default function RepScorecardPage() {
           <button
             className="btn"
             onClick={() => {
-              // re-fetch just the current and re-apply comparisons
               if (!rep || !from || !to) return;
-              // trigger the two effects:
-              setFrom((s) => s); // noop to keep UX; current effect already listens to from/to/rep
+              // re-run primary fetch (effect already watches rep/from/to)
+              setFrom((s) => s);
               if (comparisons.length) applyCompare();
             }}
           >
@@ -538,7 +593,15 @@ export default function RepScorecardPage() {
           </button>
         </div>
 
-        {viewingLine}
+        <div className="small muted">
+          Viewing <b>{rep || "—"}</b> {from ? <span> {from} </span> : null}
+          {to ? <>→ {to}</> : null}
+          {comparisons.length ? (
+            <>
+              {" "}• comparing to <b>{comparisons.map((c) => c.label).join(", ")}</b>
+            </>
+          ) : null}
+        </div>
 
         {err && <div className="form-error">{err}</div>}
         {loading && <div className="small muted">Loading…</div>}
