@@ -14,20 +14,9 @@ function parseDay(s: string | null): Date | null {
   const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
   return isNaN(d.getTime()) ? null : d;
 }
-function startOfDayUTC(d: Date) {
-  const x = new Date(d);
-  x.setUTCHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDayUTC(d: Date) {
-  const x = new Date(d);
-  x.setUTCHours(23, 59, 59, 999);
-  return x;
-}
-const toNum = (v: any) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-};
+function startOfDayUTC(d: Date) { const x = new Date(d); x.setUTCHours(0,0,0,0); return x; }
+function endOfDayUTC(d: Date)   { const x = new Date(d); x.setUTCHours(23,59,59,999); return x; }
+const toNum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 /* ----------------- money helpers ----------------- */
 function grossFromLines(
@@ -52,11 +41,8 @@ function netExFromOrder(
 
 /* ----------------- call helpers ----------------- */
 const norm = (v?: string | null) => (v ?? "").trim().toLowerCase();
-
 function durationMins(log: {
-  durationMinutes?: number | null;
-  startTime?: Date | null;
-  endTime?: Date | null;
+  durationMinutes?: number | null; startTime?: Date | null; endTime?: Date | null;
 }) {
   if (typeof log.durationMinutes === "number" && !isNaN(log.durationMinutes)) {
     return Math.max(0, log.durationMinutes);
@@ -68,184 +54,176 @@ function durationMins(log: {
   return 0;
 }
 
+/* ----------------- route ----------------- */
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
 
-    // Rep filter: prefer repId (canonical), otherwise legacy rep/staff name
+    // Prefer repId (if your UI sends it), else fall back to legacy rep/staff name.
     const repId = (searchParams.get("repId") || "").trim() || null;
-    const repName = (searchParams.get("rep") || searchParams.get("staff") || "").trim() || null;
+    const repNameParam = (searchParams.get("rep") || searchParams.get("staff") || "").trim() || null;
 
     const fromStr = searchParams.get("from");
-    const toStr = searchParams.get("to");
+    const toStr   = searchParams.get("to");
     const from = parseDay(fromStr);
-    const to = parseDay(toStr);
+    const to   = parseDay(toStr);
     if (!from || !to) {
       return NextResponse.json({ error: "from and to are required (YYYY-MM-DD)" }, { status: 400 });
     }
     const gte = startOfDayUTC(from);
     const lte = endOfDayUTC(to);
 
-    // Resolve rep name from id (for legacy name filters)
-    let repNameResolved: string | null = repName;
+    // Resolve name from id when possible (keeps legacy name filters working)
+    let repNameResolved: string | null = repNameParam;
     if (repId) {
-      const rep = await prisma.salesRep.findUnique({ where: { id: repId } });
-      repNameResolved = rep?.name || repNameResolved;
+      try {
+        const rep = await prisma.salesRep.findUnique({ where: { id: repId } });
+        repNameResolved = rep?.name || repNameResolved;
+      } catch {}
     }
 
     /* =============== SECTION 1: Sales / Profit / Margin% (ex VAT) =============== */
-    const orders = await prisma.order.findMany({
-      where: {
-        processedAt: { gte, lte },
-      },
-      select: {
-        id: true,
-        processedAt: true,
-        currency: true,
-        subtotal: true,
-        discounts: true,
-        customerId: true,
-        shopifyCustomerId: true,
-        customer: { select: { id: true, salesRepId: true, salesRep: true } },
-        lineItems: { select: { variantId: true, quantity: true, price: true, total: true } },
-      },
-      orderBy: { processedAt: "asc" },
-    });
-
-    // Filter orders to the chosen rep (by canonical id or legacy name)
-    const filteredOrders = orders.filter((o) => {
-      if (!repId && !repNameResolved) return true;
-      const c = o.customer;
-      if (!c) return false;
-      const idMatch = repId && c.salesRepId ? c.salesRepId === repId : false;
-      const nameMatch =
-        repNameResolved && c.salesRep
-          ? (c.salesRep || "").trim().toLowerCase() === repNameResolved.trim().toLowerCase()
-          : false;
-      return Boolean(idMatch || nameMatch);
-    });
-
-    const allVariantIds = Array.from(
-      new Set(
-        filteredOrders
-          .flatMap((o) => o.lineItems.map((li) => String(li.variantId || "")).filter(Boolean))
-      )
-    );
-
-    const costMap = new Map<string, number>();
-    if (allVariantIds.length) {
-      const cached = await prisma.shopifyVariantCost.findMany({
-        where: { variantId: { in: allVariantIds } },
-        select: { variantId: true, unitCost: true },
-      });
-      for (const c of cached) costMap.set(String(c.variantId), Number(c.unitCost ?? 0));
-
-      const missing = allVariantIds.filter((v) => !costMap.has(v)).slice(0, 200);
-      if (missing.length) {
-        try {
-          const fetched = await fetchVariantUnitCosts(missing);
-          const pairs = Object.entries(fetched || {}) as [string, number | null][];
-          for (const [vid, amt] of pairs) {
-            if (amt != null && Number.isFinite(amt)) {
-              costMap.set(String(vid), Number(amt));
-            }
-          }
-        } catch (e) {
-          console.error("[rep-scorecard] fetchVariantUnitCosts failed:", e);
-        }
-      }
-    }
-
     let salesEx = 0;
     let profit = 0;
-    const currency = filteredOrders[0]?.currency || "GBP";
+    let currency = "GBP";
 
-    for (const o of filteredOrders) {
-      const grossEx = grossFromLines(o.lineItems);
-      const netEx = netExFromOrder({ subtotal: o.subtotal, discounts: o.discounts }, grossEx);
+    try {
+      const orders = await prisma.order.findMany({
+        where: { processedAt: { gte, lte } },
+        select: {
+          processedAt: true,
+          currency: true,
+          subtotal: true,
+          discounts: true,
+          customer: { select: { salesRep: true /* name string */ } },
+          lineItems: { select: { variantId: true, quantity: true, price: true, total: true } },
+        },
+        orderBy: { processedAt: "asc" },
+      });
 
-      let cost = 0;
-      for (const li of o.lineItems) {
-        const vid = String(li.variantId || "");
-        if (!vid) continue;
-        const unit = costMap.get(vid);
-        if (unit == null) continue;
-        const qty = Number(li.quantity ?? 0) || 0;
-        cost += unit * qty;
+      const filteredOrders = orders.filter((o) => {
+        if (!repNameResolved) return true; // no rep filter -> include all
+        const name = (o.customer?.salesRep || "").trim().toLowerCase();
+        return name === repNameResolved.trim().toLowerCase();
+      });
+
+      if (filteredOrders.length > 0) {
+        currency = filteredOrders[0]?.currency || currency;
+
+        const allVariantIds = Array.from(
+          new Set(
+            filteredOrders.flatMap((o) =>
+              o.lineItems.map((li) => String(li.variantId || "")).filter(Boolean)
+            )
+          )
+        );
+
+        const costMap = new Map<string, number>();
+        if (allVariantIds.length) {
+          // cached costs
+          try {
+            const cached = await prisma.shopifyVariantCost.findMany({
+              where: { variantId: { in: allVariantIds } },
+              select: { variantId: true, unitCost: true },
+            });
+            for (const c of cached) costMap.set(String(c.variantId), Number(c.unitCost ?? 0));
+          } catch {}
+
+          // fetch remaining (best-effort)
+          const missing = allVariantIds.filter((v) => !costMap.has(v)).slice(0, 200);
+          if (missing.length) {
+            try {
+              const fetched = await fetchVariantUnitCosts(missing);
+              for (const [vid, amt] of Object.entries(fetched || {})) {
+                if (amt != null && Number.isFinite(amt)) costMap.set(String(vid), Number(amt));
+              }
+            } catch (e) {
+              console.error("[rep-scorecard] fetchVariantUnitCosts failed:", e);
+            }
+          }
+        }
+
+        for (const o of filteredOrders) {
+          const grossEx = grossFromLines(o.lineItems);
+          const netEx = netExFromOrder({ subtotal: o.subtotal, discounts: o.discounts }, grossEx);
+
+          let cost = 0;
+          for (const li of o.lineItems) {
+            const vid = String(li.variantId || "");
+            if (!vid) continue;
+            const unit = costMap.get(vid);
+            if (unit == null) continue;
+            const qty = Number(li.quantity ?? 0) || 0;
+            cost += unit * qty;
+          }
+
+          salesEx += netEx;
+          profit  += Math.max(0, netEx - cost);
+        }
       }
-
-      salesEx += netEx;
-      const orderProfit = Math.max(0, netEx - cost);
-      profit += orderProfit;
+    } catch (e) {
+      console.error("[rep-scorecard] orders section failed:", e);
     }
 
     const marginPct = salesEx > 0 ? (profit / salesEx) * 100 : 0;
 
     /* =============== SECTION 2: Calls =============== */
-    const callWhere: any = { createdAt: { gte, lte } };
-    const or: any[] = [];
-    if (repNameResolved) {
-      or.push({ staff: repNameResolved }, { rep: { name: repNameResolved } });
+    let totalCalls = 0, coldCalls = 0, bookedCalls = 0, bookedDemos = 0;
+    let totalDuration = 0, activeDays = 0, avgTimePerCallMins = 0, avgCallsPerDay = 0;
+
+    try {
+      // SAFEST: your call form stores the rep name in `staff`
+      const calls = await prisma.callLog.findMany({
+        where: {
+          createdAt: { gte, lte },
+          ...(repNameResolved ? { staff: repNameResolved } : {}),
+        },
+        select: {
+          createdAt: true,
+          callType: true,
+          durationMinutes: true,
+          startTime: true,
+          endTime: true,
+        },
+        orderBy: { createdAt: "asc" },
+      });
+
+      totalCalls = calls.length;
+
+      const activeDaysSet = new Set<string>();
+      for (const c of calls) {
+        const ct = norm(c.callType);
+        if (ct.includes("cold")) coldCalls++;
+        if (ct.includes("booked call")) bookedCalls++;
+        if (ct.includes("booked demo")) bookedDemos++;
+
+        totalDuration += durationMins(c);
+
+        const dayKey = new Date(c.createdAt).toISOString().slice(0, 10); // UTC YYYY-MM-DD
+        activeDaysSet.add(dayKey);
+      }
+      activeDays = activeDaysSet.size;
+      avgTimePerCallMins = totalCalls ? totalDuration / totalCalls : 0;
+      avgCallsPerDay = activeDays ? totalCalls / activeDays : 0;
+    } catch (e) {
+      console.error("[rep-scorecard] calls section failed:", e);
     }
-    if (repId) {
-      // if your schema has repId on callLog, this will work; if not, it's ignored
-      or.push({ repId });
-    }
-    if (or.length) callWhere.OR = or;
-
-    const calls = await prisma.callLog.findMany({
-      where: callWhere,
-      select: {
-        createdAt: true,
-        callType: true,
-        durationMinutes: true,
-        startTime: true,
-        endTime: true,
-      },
-      orderBy: { createdAt: "asc" },
-    });
-
-    const totalCalls = calls.length;
-    let coldCalls = 0;
-    let bookedCalls = 0;
-    let bookedDemos = 0;
-    let totalDuration = 0;
-
-    const activeDaysSet = new Set<string>();
-    for (const c of calls) {
-      const ct = norm(c.callType);
-      if (ct.includes("cold")) coldCalls++;
-      if (ct.includes("booked call")) bookedCalls++;
-      if (ct.includes("booked demo")) bookedDemos++;
-
-      totalDuration += durationMins(c);
-
-      const dayKey = new Date(c.createdAt).toISOString().slice(0, 10); // UTC day
-      activeDaysSet.add(dayKey);
-    }
-    const activeDays = activeDaysSet.size;
-    const avgTimePerCallMins = totalCalls ? totalDuration / totalCalls : 0;
-    const avgCallsPerDay = activeDays ? totalCalls / activeDays : 0;
 
     /* =============== SECTION 3: Customers =============== */
-    const totalCustomers = await prisma.customer.count({
-      where: {
-        OR: [
-          ...(repId ? [{ salesRepId: repId }] : []),
-          ...(repNameResolved ? [{ salesRep: { equals: repNameResolved } }] : []),
-        ],
-      },
-    });
-
-    const newCustomers = await prisma.customer.count({
-      where: {
-        createdAt: { gte, lte },
-        OR: [
-          ...(repId ? [{ salesRepId: repId }] : []),
-          ...(repNameResolved ? [{ salesRep: { equals: repNameResolved } }] : []),
-        ],
-      },
-    });
+    let totalCustomers = 0, newCustomers = 0;
+    try {
+      totalCustomers = await prisma.customer.count({
+        where: repNameResolved ? { salesRep: repNameResolved } : {},
+      });
+      newCustomers = await prisma.customer.count({
+        where: {
+          createdAt: { gte, lte },
+          ...(repNameResolved ? { salesRep: repNameResolved } : {}),
+        },
+      });
+    } catch (e) {
+      console.error("[rep-scorecard] customers section failed:", e);
+    }
 
     return NextResponse.json(
       {
@@ -253,24 +231,12 @@ export async function GET(req: Request) {
         range: { from: fromStr, to: toStr },
         rep: { id: repId, name: repNameResolved },
         currency,
-        section1: {
-          salesEx,
-          profit,
-          marginPct,
-        },
+        section1: { salesEx, profit, marginPct },
         section2: {
-          totalCalls,
-          coldCalls,
-          bookedCalls,
-          bookedDemos,
-          avgTimePerCallMins,
-          avgCallsPerDay,
-          activeDays,
+          totalCalls, coldCalls, bookedCalls, bookedDemos,
+          avgTimePerCallMins, avgCallsPerDay, activeDays,
         },
-        section3: {
-          totalCustomers,
-          newCustomers,
-        },
+        section3: { totalCustomers, newCustomers },
       },
       { headers: { "cache-control": "no-store" } }
     );
