@@ -11,11 +11,11 @@ type Row = {
   customerName: string;
   orders: number;
 
-  grossEx: number;      // ex VAT, before discounts
-  grossInc: number;     // inc VAT = grossEx + taxes
-  discounts: number;    // Shopify total_discounts (ex VAT)
+  grossEx: number;      // ex VAT, before discounts (effective, after returns)
+  grossInc: number;     // inc VAT = grossEx + taxes (effective, after returns)
+  discounts: number;    // Shopify total_discounts (ex VAT) (best available)
   discount: number;     // alias for UI
-  netEx: number;        // ex VAT, after discounts
+  netEx: number;        // ex VAT, after discounts (effective, after returns)
 
   gross: number;        // = grossInc (UI alias)
   net: number;          // = netEx   (UI alias)
@@ -33,8 +33,8 @@ function toNum(v: any): number {
 function startOfDay(d: Date) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
 function endOfDay(d: Date)   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
 
-/** Fallback: sum of line totals (best-effort), ex VAT. */
-function grossFromLines(
+/** Sum of line amounts (tries `total` first; otherwise price*qty). Intended as ex-VAT. */
+function sumLinesEx(
   lines: { total: any | null; price: any | null; quantity: number | null }[]
 ): number {
   let s = 0;
@@ -43,6 +43,91 @@ function grossFromLines(
     else s += toNum(li.price) * (Number(li.quantity ?? 0) || 0);
   }
   return Math.max(0, s);
+}
+
+/** Small epsilon compare for deciding if subtotal ~= sum(lines). */
+const approxEq = (a: number, b: number, eps = 0.02) => Math.abs(a - b) <= eps;
+
+/**
+ * Compute *effective* revenue numbers for an order using the best available data:
+ * - Prefers "current" Shopify fields if your sync saves them, else uses original fields.
+ * - Falls back to line totals + discounts when needed.
+ * - Subtracts refunds/returns via aggregated columns AND, if present, the nested `refunds` objects.
+ *
+ * Returns: { netEx, grossEx, grossInc, discountsUsed }
+ */
+function liveRevenueFromOrder(
+  o: any, // order record
+  lines: { total: any | null; price: any | null; quantity: number | null }[]
+): { netEx: number; grossEx: number; grossInc: number; discountsUsed: number } {
+  // Prefer current fields if present (no compile/runtime risk since we read via `any`)
+  const curSubtotal = toNum(o?.currentSubtotal ?? o?.currentSubtotalExVat);
+  const curDiscounts = toNum(o?.currentDiscounts ?? o?.currentTotalDiscounts);
+  const curTaxes     = toNum(o?.currentTaxes);
+
+  const origSubtotal = toNum(o?.subtotal);  // ex VAT AFTER discounts (original capture)
+  const origDiscounts= toNum(o?.discounts); // ex VAT
+  const origTaxes    = toNum(o?.taxes);     // VAT
+
+  const lineSum = sumLinesEx(lines);
+
+  // Decide base subtotal/discounts/taxes set
+  const baseSubtotal = curSubtotal || origSubtotal || 0;
+  const baseDiscounts = (curDiscounts || origDiscounts || 0);
+  const baseTaxes = (curTaxes || origTaxes || 0);
+
+  // If subtotal ≈ sum(lines), treat lineSum as already net ex-VAT (post-discount).
+  // Otherwise treat lineSum as gross ex-VAT and subtract discounts.
+  let netExBase: number;
+  let grossExBase: number;
+  if (baseSubtotal && approxEq(baseSubtotal, lineSum)) {
+    netExBase = Math.max(0, baseSubtotal);
+    grossExBase = Math.max(0, netExBase + baseDiscounts);
+  } else {
+    // Assume `lineSum` represents gross ex-VAT (before discounts)
+    grossExBase = Math.max(0, lineSum);
+    netExBase = Math.max(0, grossExBase - baseDiscounts);
+  }
+
+  // Aggregated refunds captured by your webhook/sync
+  const aggRefundNet = toNum(o?.refundedNet);  // ex VAT
+  const aggRefundTax = toNum(o?.refundedTax);  // VAT
+
+  // Detailed Shopify refunds (if synced)
+  let detRefundNet = 0;
+  let detRefundTax = 0;
+  const refunds = o?.refunds || o?.Refunds;
+  if (Array.isArray(refunds)) {
+    for (const rf of refunds) {
+      const items = rf?.refundLineItems || rf?.refund_line_items;
+      if (Array.isArray(items)) {
+        for (const it of items) {
+          // Shopify: refund_line_item.subtotal_set.shop_money.amount (ex VAT)
+          const subEx =
+            toNum(it?.subtotal) ||
+            toNum(it?.subtotal_set?.shop_money?.amount);
+          detRefundNet += subEx;
+        }
+      }
+      const adjs = rf?.orderAdjustments || rf?.order_adjustments;
+      if (Array.isArray(adjs)) {
+        for (const adj of adjs) detRefundNet += toNum(adj?.amount);
+      }
+      const taxAmt =
+        toNum(rf?.total_tax_set?.shop_money?.amount) ||
+        toNum(rf?.totalTax);
+      detRefundTax += taxAmt;
+    }
+  }
+
+  const totalRefundNet = aggRefundNet + detRefundNet;
+  const totalRefundTax = aggRefundTax + detRefundTax;
+
+  const netEx   = Math.max(0, netExBase   - totalRefundNet);
+  const grossEx = Math.max(0, grossExBase - totalRefundNet);
+  const grossInc= Math.max(0, grossEx + Math.max(0, baseTaxes - totalRefundTax));
+
+  return { netEx, grossEx, grossInc, discountsUsed: baseDiscounts };
 }
 
 type CostEntry = { unitCost: number | string; currency?: string };
@@ -110,6 +195,9 @@ export async function GET(req: Request) {
         refundedTax: true,
         refundedShipping: true, // ignored in revenue
         refundedTotal: true,    // inc VAT (not used directly)
+
+        // If your sync stores Shopify "refunds" objects, they will be present in `o as any`
+        // and read dynamically by liveRevenueFromOrder (no need to select explicitly here).
 
         customer: {
           select: {
@@ -255,7 +343,7 @@ export async function GET(req: Request) {
       }
     }
 
-    // 5) Aggregate by customer (subtract refunds; adjust cost for refunded qty)
+    // 5) Aggregate by customer (live net/gross; adjust cost for refunded qty)
     const rowsMap = new Map<string, Row>();
     const currency = filteredOrders.find(o => o.currency)?.currency || "GBP";
 
@@ -265,26 +353,8 @@ export async function GET(req: Request) {
       const name = (cust?.salonName || cust?.customerName || "Unlinked customer").trim();
       const key = customerId || `unlinked:${name}`;
 
-      // base amounts
-      const taxes = toNum(o.taxes);
-      const netExOriginal = toNum(o.subtotal);      // ex VAT after discounts
-      let discounts = toNum(o.discounts);           // ex VAT
-      if (!discounts) {
-        const lineGross = grossFromLines(o.lineItems);
-        const inferred = Math.max(0, lineGross - netExOriginal);
-        discounts = inferred > 0 ? inferred : 0;
-      }
-      const grossExOriginal = Math.max(0, netExOriginal + discounts);
-      const grossIncOriginal = Math.max(0, grossExOriginal + taxes);
-
-      // refunds
-      const refundedNet = toNum(o.refundedNet);   // ex VAT after discounts
-      const refundedTax = toNum(o.refundedTax);
-
-      // effective revenue after refunds
-      const netEx = Math.max(0, netExOriginal - refundedNet);
-      const grossEx = Math.max(0, grossExOriginal - refundedNet); // discount already baked in via netEx
-      const grossInc = Math.max(0, grossIncOriginal - (refundedNet + refundedTax));
+      // LIVE revenue (handles exchanges/refunds)
+      const { netEx, grossEx, grossInc, discountsUsed } = liveRevenueFromOrder(o as any, o.lineItems);
 
       // cost = sum(unitCost * (qty - refundedQty))
       let cost = 0;
@@ -309,8 +379,8 @@ export async function GET(req: Request) {
 
           grossEx,
           grossInc,
-          discounts,
-          discount: discounts,
+          discounts: discountsUsed,
+          discount: discountsUsed,
           netEx,
 
           gross: grossInc,
@@ -326,7 +396,7 @@ export async function GET(req: Request) {
 
         prev.grossEx += grossEx;
         prev.grossInc += grossInc;
-        prev.discounts += discounts;
+        prev.discounts += discountsUsed;
         prev.discount = prev.discounts;
         prev.netEx += netEx;
 
