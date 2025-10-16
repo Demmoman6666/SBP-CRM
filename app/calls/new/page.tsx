@@ -35,6 +35,12 @@ function toMinutes(hhmm: string) {
   if (Number.isFinite(h) && Number.isFinite(m)) return h * 60 + m;
   return NaN;
 }
+function minutesToHHMM(mins: number) {
+  const t = ((mins % 1440) + 1440) % 1440; // wrap safely
+  const hh = String(Math.floor(t / 60)).padStart(2, "0");
+  const mm = String(t % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
 function nowHHMM() {
   const d = new Date();
   const hh = String(d.getHours()).padStart(2, "0");
@@ -171,6 +177,20 @@ export default function NewCallPage() {
   /* Times + duration */
   const [start, setStart] = useState<string>("");
   const [finish, setFinish] = useState<string>("");
+
+  // ⏱ ensure finish is always at least start + 1 minute
+  useEffect(() => {
+    if (!start) return;
+    const s = toMinutes(start);
+    if (!Number.isFinite(s)) return;
+    const minFinish = (s + 1) % (24 * 60);
+    const f = toMinutes(finish);
+    // if finish missing OR earlier than +1 minute (including wrap) -> bump it
+    if (!Number.isFinite(f) || ((f - s + 1440) % 1440) < 1) {
+      setFinish(minutesToHHMM(minFinish));
+    }
+  }, [start]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const duration = useMemo(() => {
     if (!start || !finish) return "";
     const s = toMinutes(start);
@@ -553,8 +573,28 @@ export default function NewCallPage() {
           Start Time <span className="small muted">(required)</span>
         </label>
         <div className="row" style={{ gap: 8 }}>
-          <input type="time" name="startTime" value={start} onChange={(e) => setStart(e.target.value)} required />
-          <button type="button" className="btn" onClick={() => setStart(nowHHMM())}>
+          <input
+            type="time"
+            name="startTime"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            required
+          />
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              const n = nowHHMM();
+              setStart(n);
+              // ensure finish instantly respects +1 min when start is set via "Now"
+              const sM = toMinutes(n);
+              const minF = minutesToHHMM((sM + 1) % (24 * 60));
+              const fM = toMinutes(finish);
+              if (!Number.isFinite(fM) || ((fM - sM + 1440) % 1440) < 1) {
+                setFinish(minF);
+              }
+            }}
+          >
             Now
           </button>
         </div>
@@ -565,8 +605,39 @@ export default function NewCallPage() {
           Finish Time <span className="small muted">(required)</span>
         </label>
         <div className="row" style={{ gap: 8 }}>
-          <input type="time" name="endTime" value={finish} onChange={(e) => setFinish(e.target.value)} required />
-          <button type="button" className="btn" onClick={() => setFinish(nowHHMM())}>
+          <input
+            type="time"
+            name="endTime"
+            value={finish}
+            min={start ? minutesToHHMM(((toMinutes(start) || 0) + 1) % (24 * 60)) : undefined}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (!start) return setFinish(v);
+              const sM = toMinutes(start);
+              const vM = toMinutes(v);
+              const minF = minutesToHHMM((sM + 1) % (24 * 60));
+              if (!Number.isFinite(vM) || ((vM - sM + 1440) % 1440) < 1) {
+                setFinish(minF);
+              } else {
+                setFinish(v);
+              }
+            }}
+            required
+          />
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              const candidate = nowHHMM();
+              if (!start) return setFinish(candidate);
+              const sM = toMinutes(start);
+              const nM = toMinutes(candidate);
+              const minF = minutesToHHMM((sM + 1) % (24 * 60));
+              // choose "Now" but not earlier than start+1
+              const chosen = ((nM - sM + 1440) % 1440) < 1 ? minF : candidate;
+              setFinish(chosen);
+            }}
+          >
             Now
           </button>
         </div>
