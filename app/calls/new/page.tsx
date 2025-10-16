@@ -36,7 +36,7 @@ function toMinutes(hhmm: string) {
   return NaN;
 }
 function minutesToHHMM(mins: number) {
-  const t = ((mins % 1440) + 1440) % 1440; // wrap safely
+  const t = ((mins % 1440) + 1440) % 1440;
   const hh = String(Math.floor(t / 60)).padStart(2, "0");
   const mm = String(t % 60).padStart(2, "0");
   return `${hh}:${mm}`;
@@ -46,6 +46,12 @@ function nowHHMM() {
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `${hh}:${mm}`;
+}
+function cmpHHMM(a?: string, b?: string) {
+  const am = toMinutes(a || "");
+  const bm = toMinutes(b || "");
+  if (!Number.isFinite(am) || !Number.isFinite(bm)) return 0;
+  return am - bm; // same-day compare
 }
 /* Responsive helper */
 function useIsMobile(maxWidth = 640) {
@@ -178,25 +184,43 @@ export default function NewCallPage() {
   const [start, setStart] = useState<string>("");
   const [finish, setFinish] = useState<string>("");
 
-  // ⏱ ensure finish is always at least start + 1 minute
+  // Live "now" for greying out the past
+  const [nowStr, setNowStr] = useState<string>(nowHHMM());
+  useEffect(() => {
+    const iv = setInterval(() => setNowStr(nowHHMM()), 30_000);
+    return () => clearInterval(iv);
+  }, []);
+
+  // keep finish ≥ start + 1 minute
   useEffect(() => {
     if (!start) return;
     const s = toMinutes(start);
     if (!Number.isFinite(s)) return;
     const minFinish = (s + 1) % (24 * 60);
     const f = toMinutes(finish);
-    // if finish missing OR earlier than +1 minute (including wrap) -> bump it
     if (!Number.isFinite(f) || ((f - s + 1440) % 1440) < 1) {
       setFinish(minutesToHHMM(minFinish));
     }
   }, [start]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // derived mins for inputs
+  const startMin = nowStr; // can't start before now
+  const finishMin = (() => {
+    const nowPlus1 = minutesToHHMM(((toMinutes(nowStr) || 0) + 1) % (24 * 60));
+    const sPlus1 =
+      start && Number.isFinite(toMinutes(start))
+        ? minutesToHHMM(((toMinutes(start) as number) + 1) % (24 * 60))
+        : nowPlus1;
+    // choose the later (max) of now+1 and start+1
+    return cmpHHMM(sPlus1, nowPlus1) >= 0 ? sPlus1 : nowPlus1;
+  })();
 
   const duration = useMemo(() => {
     if (!start || !finish) return "";
     const s = toMinutes(start);
     const e = toMinutes(finish);
     if (!Number.isFinite(s) || !Number.isFinite(e)) return "";
-    const diff = e >= s ? e - s : e + 24 * 60 - s; // overnight
+    const diff = e >= s ? e - s : e + 24 * 60 - s;
     return String(diff);
   }, [start, finish]);
 
@@ -230,10 +254,8 @@ export default function NewCallPage() {
         .catch(() => {});
     }
 
-    // Auto-request once on load if secure context (will show prompt)
     if (!insecureContext) requestLocationOnce();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function requestLocationOnce() {
     if (!("geolocation" in navigator)) {
@@ -264,7 +286,6 @@ export default function NewCallPage() {
     e.preventDefault();
     setError(null);
 
-    // Hard gate: must have coords
     if (insecureContext) {
       setError("Location requires HTTPS (or localhost in dev). Open the HTTPS site to log a call.");
       return;
@@ -286,7 +307,6 @@ export default function NewCallPage() {
       return;
     }
 
-    // require start & finish
     const s = String(fd.get("startTime") || "").trim();
     const f = String(fd.get("endTime") || "").trim();
     if (!s || !f) {
@@ -308,13 +328,11 @@ export default function NewCallPage() {
       fd.set("customerName", typed);
     }
 
-    // Combine follow-up date + time
     const fDate = (fd.get("followUpAt") || "").toString().trim();
     const fTime = (fd.get("followUpTime") || "").toString().trim();
     if (fDate && fTime) fd.set("followUpAt", `${fDate}T${fTime}`);
     fd.delete("followUpTime");
 
-    // Add geo fields
     fd.set("latitude", String(lat));
     fd.set("longitude", String(lng));
     if (acc != null) fd.set("accuracyM", String(Math.round(acc)));
@@ -473,7 +491,6 @@ export default function NewCallPage() {
                   background: "transparent",
                 }}
                 onFocus={(e) => {
-                  // neutralize any global focus highlight
                   e.currentTarget.style.background = "transparent";
                   e.currentTarget.style.borderColor = "transparent";
                 }}
@@ -577,7 +594,15 @@ export default function NewCallPage() {
             type="time"
             name="startTime"
             value={start}
-            onChange={(e) => setStart(e.target.value)}
+            min={startMin}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v && cmpHHMM(v, startMin) < 0) {
+                setStart(startMin);
+              } else {
+                setStart(v);
+              }
+            }}
             required
           />
           <button
@@ -586,7 +611,6 @@ export default function NewCallPage() {
             onClick={() => {
               const n = nowHHMM();
               setStart(n);
-              // ensure finish instantly respects +1 min when start is set via "Now"
               const sM = toMinutes(n);
               const minF = minutesToHHMM((sM + 1) % (24 * 60));
               const fM = toMinutes(finish);
@@ -609,15 +633,11 @@ export default function NewCallPage() {
             type="time"
             name="endTime"
             value={finish}
-            min={start ? minutesToHHMM(((toMinutes(start) || 0) + 1) % (24 * 60)) : undefined}
+            min={finishMin}
             onChange={(e) => {
               const v = e.target.value;
-              if (!start) return setFinish(v);
-              const sM = toMinutes(start);
-              const vM = toMinutes(v);
-              const minF = minutesToHHMM((sM + 1) % (24 * 60));
-              if (!Number.isFinite(vM) || ((vM - sM + 1440) % 1440) < 1) {
-                setFinish(minF);
+              if (v && cmpHHMM(v, finishMin) < 0) {
+                setFinish(finishMin);
               } else {
                 setFinish(v);
               }
@@ -629,12 +649,7 @@ export default function NewCallPage() {
             className="btn"
             onClick={() => {
               const candidate = nowHHMM();
-              if (!start) return setFinish(candidate);
-              const sM = toMinutes(start);
-              const nM = toMinutes(candidate);
-              const minF = minutesToHHMM((sM + 1) % (24 * 60));
-              // choose "Now" but not earlier than start+1
-              const chosen = ((nM - sM + 1440) % 1440) < 1 ? minF : candidate;
+              const chosen = cmpHHMM(candidate, finishMin) < 0 ? finishMin : candidate;
               setFinish(chosen);
             }}
           >
@@ -722,7 +737,6 @@ export default function NewCallPage() {
       <form onSubmit={onSubmit} className="card grid" style={{ gap: 12 }}>
         {!isMobile ? (
           <>
-            {/* Desktop/tablet layout (unchanged except call type under Rep) */}
             {BlockLocation}
 
             <div className="grid grid-2">
@@ -730,7 +744,6 @@ export default function NewCallPage() {
               {BlockSalesRep}
             </div>
 
-            {/* Call type directly under Sales Rep */}
             <div className="grid grid-2">
               <div />
               {BlockCallType}
@@ -751,13 +764,11 @@ export default function NewCallPage() {
           </>
         ) : (
           <>
-            {/* Mobile layout in requested order */}
             {BlockCustomer}
             {BlockSalesRep}
             {BlockStage}
             {BlockCallType}
             {BlockOutcome}
-            {/* Then the rest */}
             {BlockExistingToggle}
             {BlockLocation}
             {BlockTimes}
