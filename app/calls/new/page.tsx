@@ -184,14 +184,7 @@ export default function NewCallPage() {
   const [start, setStart] = useState<string>("");
   const [finish, setFinish] = useState<string>("");
 
-  // Live "now" for greying out the past
-  const [nowStr, setNowStr] = useState<string>(nowHHMM());
-  useEffect(() => {
-    const iv = setInterval(() => setNowStr(nowHHMM()), 30_000);
-    return () => clearInterval(iv);
-  }, []);
-
-  // keep finish ≥ start + 1 minute
+  // keep finish ≥ start + 1 minute (no restriction to “now”)
   useEffect(() => {
     if (!start) return;
     const s = toMinutes(start);
@@ -203,16 +196,11 @@ export default function NewCallPage() {
     }
   }, [start]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // derived mins for inputs
-  const startMin = nowStr; // can't start before now
+  // min value for Finish Time is just start+1 minute (if start set)
   const finishMin = (() => {
-    const nowPlus1 = minutesToHHMM(((toMinutes(nowStr) || 0) + 1) % (24 * 60));
-    const sPlus1 =
-      start && Number.isFinite(toMinutes(start))
-        ? minutesToHHMM(((toMinutes(start) as number) + 1) % (24 * 60))
-        : nowPlus1;
-    // choose the later (max) of now+1 and start+1
-    return cmpHHMM(sPlus1, nowPlus1) >= 0 ? sPlus1 : nowPlus1;
+    const sm = toMinutes(start);
+    if (!Number.isFinite(sm)) return "";
+    return minutesToHHMM((sm + 1) % (24 * 60));
   })();
 
   const duration = useMemo(() => {
@@ -220,7 +208,7 @@ export default function NewCallPage() {
     const s = toMinutes(start);
     const e = toMinutes(finish);
     if (!Number.isFinite(s) || !Number.isFinite(e)) return "";
-    const diff = e >= s ? e - s : e + 24 * 60 - s;
+    const diff = e >= s ? e - s : e + 24 * 60 - s; // overnight support
     return String(diff);
   }, [start, finish]);
 
@@ -254,8 +242,10 @@ export default function NewCallPage() {
         .catch(() => {});
     }
 
+    // Auto-request once on load if secure context (will show prompt)
     if (!insecureContext) requestLocationOnce();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function requestLocationOnce() {
     if (!("geolocation" in navigator)) {
@@ -286,6 +276,7 @@ export default function NewCallPage() {
     e.preventDefault();
     setError(null);
 
+    // Hard gate: must have coords
     if (insecureContext) {
       setError("Location requires HTTPS (or localhost in dev). Open the HTTPS site to log a call.");
       return;
@@ -307,6 +298,7 @@ export default function NewCallPage() {
       return;
     }
 
+    // require start & finish
     const s = String(fd.get("startTime") || "").trim();
     const f = String(fd.get("endTime") || "").trim();
     if (!s || !f) {
@@ -328,11 +320,13 @@ export default function NewCallPage() {
       fd.set("customerName", typed);
     }
 
+    // Combine follow-up date + time
     const fDate = (fd.get("followUpAt") || "").toString().trim();
     const fTime = (fd.get("followUpTime") || "").toString().trim();
     if (fDate && fTime) fd.set("followUpAt", `${fDate}T${fTime}`);
     fd.delete("followUpTime");
 
+    // Add geo fields
     fd.set("latitude", String(lat));
     fd.set("longitude", String(lng));
     if (acc != null) fd.set("accuracyM", String(Math.round(acc)));
@@ -590,35 +584,15 @@ export default function NewCallPage() {
           Start Time <span className="small muted">(required)</span>
         </label>
         <div className="row" style={{ gap: 8 }}>
+          {/* Start can be in the past → no min */}
           <input
             type="time"
             name="startTime"
             value={start}
-            min={startMin}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v && cmpHHMM(v, startMin) < 0) {
-                setStart(startMin);
-              } else {
-                setStart(v);
-              }
-            }}
+            onChange={(e) => setStart(e.target.value)}
             required
           />
-          <button
-            type="button"
-            className="btn"
-            onClick={() => {
-              const n = nowHHMM();
-              setStart(n);
-              const sM = toMinutes(n);
-              const minF = minutesToHHMM((sM + 1) % (24 * 60));
-              const fM = toMinutes(finish);
-              if (!Number.isFinite(fM) || ((fM - sM + 1440) % 1440) < 1) {
-                setFinish(minF);
-              }
-            }}
-          >
+          <button type="button" className="btn" onClick={() => setStart(nowHHMM())}>
             Now
           </button>
         </div>
@@ -633,10 +607,10 @@ export default function NewCallPage() {
             type="time"
             name="endTime"
             value={finish}
-            min={finishMin}
+            min={finishMin || undefined}
             onChange={(e) => {
               const v = e.target.value;
-              if (v && cmpHHMM(v, finishMin) < 0) {
+              if (finishMin && v && cmpHHMM(v, finishMin) < 0) {
                 setFinish(finishMin);
               } else {
                 setFinish(v);
@@ -648,9 +622,10 @@ export default function NewCallPage() {
             type="button"
             className="btn"
             onClick={() => {
+              // If start is set, ensure "Now" respects start+1
               const candidate = nowHHMM();
-              const chosen = cmpHHMM(candidate, finishMin) < 0 ? finishMin : candidate;
-              setFinish(chosen);
+              if (!finishMin) return setFinish(candidate);
+              setFinish(cmpHHMM(candidate, finishMin) < 0 ? finishMin : candidate);
             }}
           >
             Now
@@ -737,6 +712,7 @@ export default function NewCallPage() {
       <form onSubmit={onSubmit} className="card grid" style={{ gap: 12 }}>
         {!isMobile ? (
           <>
+            {/* Desktop/tablet layout (unchanged except call type under Rep) */}
             {BlockLocation}
 
             <div className="grid grid-2">
@@ -744,6 +720,7 @@ export default function NewCallPage() {
               {BlockSalesRep}
             </div>
 
+            {/* Call type directly under Sales Rep */}
             <div className="grid grid-2">
               <div />
               {BlockCallType}
@@ -764,11 +741,13 @@ export default function NewCallPage() {
           </>
         ) : (
           <>
+            {/* Mobile layout in requested order */}
             {BlockCustomer}
             {BlockSalesRep}
             {BlockStage}
             {BlockCallType}
             {BlockOutcome}
+            {/* Then the rest */}
             {BlockExistingToggle}
             {BlockLocation}
             {BlockTimes}
