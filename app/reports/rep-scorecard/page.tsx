@@ -16,8 +16,8 @@ type ApiOne = {
     salesEx: number;
     profit: number;
     marginPct: number;
-    avgOrderValueExVat?: number;   // <-- NEW
-    ordersCount?: number;          // (not displayed, handy for later)
+    avgOrderValueExVat?: number;   // existing
+    ordersCount?: number;          // used for "Total Orders"
   };
   section2: {
     totalCalls: number;
@@ -40,7 +40,8 @@ type Scorecard = {
   salesEx: number;
   marginPct: number;
   profit: number;
-  avgOrderValueExVat: number;      // <-- NEW
+  avgOrderValueExVat: number;
+  ordersCount: number;             // <-- NEW
   // calls
   totalCalls: number;
   coldCalls: number;
@@ -142,7 +143,8 @@ function toScore(api: ApiOne): Scorecard {
     salesEx: api?.section1?.salesEx ?? 0,
     marginPct: api?.section1?.marginPct ?? 0,
     profit: api?.section1?.profit ?? 0,
-    avgOrderValueExVat: api?.section1?.avgOrderValueExVat ?? 0, // <-- NEW
+    avgOrderValueExVat: api?.section1?.avgOrderValueExVat ?? 0,
+    ordersCount: api?.section1?.ordersCount ?? 0, // <-- NEW
     totalCalls: api?.section2?.totalCalls ?? 0,
     coldCalls: api?.section2?.coldCalls ?? 0,
     bookedCalls: api?.section2?.bookedCalls ?? 0,
@@ -292,7 +294,7 @@ export default function RepScorecardPage() {
       setLoading(true);
       setErr(null);
 
-      const next: Array<{ label: string; data: Scorecard }> = []; // <-- fixed extra '>'
+      const next: Array<{ label: string; data: Scorecard }> = [];
 
       if (cmpMode === "reps") {
         for (const name of cmpRepsDraft) {
@@ -640,7 +642,12 @@ export default function RepScorecardPage() {
             kind="money"
             currency={ccy}
           />
-          {/* NEW: Average Order Value (ex VAT) */}
+          <MetricRow
+            label="Total Orders"                                   // <-- NEW
+            cur={current?.ordersCount}
+            compares={comparisons.map((c) => c.data.ordersCount)}
+            kind="int"
+          />
           <MetricRow
             label="Average Order Value (ex VAT)"
             cur={current?.avgOrderValueExVat}
@@ -650,7 +657,7 @@ export default function RepScorecardPage() {
           />
         </div>
 
-      {/* ---------------- Calls ---------------- */}
+        {/* ---------------- Calls ---------------- */}
         <SectionHead title="Calls" subtitle="Call volumes & activity" />
         <div>
           <MetricRow label="Total Calls" cur={current?.totalCalls} compares={comparisons.map((c) => c.data.totalCalls)} kind="int" />
