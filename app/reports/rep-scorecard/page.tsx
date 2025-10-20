@@ -12,7 +12,13 @@ type ApiOne = {
   range: { from: string; to: string };
   rep: { id: string | null; name: string | null };
   currency: string;
-  section1: { salesEx: number; profit: number; marginPct: number };
+  section1: {
+    salesEx: number;
+    profit: number;
+    marginPct: number;
+    avgOrderValueExVat?: number;   // <-- NEW
+    ordersCount?: number;          // (not displayed, handy for later)
+  };
   section2: {
     totalCalls: number;
     coldCalls: number;
@@ -34,6 +40,7 @@ type Scorecard = {
   salesEx: number;
   marginPct: number;
   profit: number;
+  avgOrderValueExVat: number;      // <-- NEW
   // calls
   totalCalls: number;
   coldCalls: number;
@@ -135,6 +142,7 @@ function toScore(api: ApiOne): Scorecard {
     salesEx: api?.section1?.salesEx ?? 0,
     marginPct: api?.section1?.marginPct ?? 0,
     profit: api?.section1?.profit ?? 0,
+    avgOrderValueExVat: api?.section1?.avgOrderValueExVat ?? 0, // <-- NEW
     totalCalls: api?.section2?.totalCalls ?? 0,
     coldCalls: api?.section2?.coldCalls ?? 0,
     bookedCalls: api?.section2?.bookedCalls ?? 0,
@@ -284,7 +292,7 @@ export default function RepScorecardPage() {
       setLoading(true);
       setErr(null);
 
-      const next: Array<{ label: string; data: Scorecard }> = [];
+      const next: Array<{ label: string; data: Scorecard }>> = [];
 
       if (cmpMode === "reps") {
         for (const name of cmpRepsDraft) {
@@ -629,6 +637,14 @@ export default function RepScorecardPage() {
             label="Profit"
             cur={current?.profit}
             compares={comparisons.map((c) => c.data.profit)}
+            kind="money"
+            currency={ccy}
+          />
+          {/* NEW: Average Order Value (ex VAT) */}
+          <MetricRow
+            label="Average Order Value (ex VAT)"
+            cur={current?.avgOrderValueExVat}
+            compares={comparisons.map((c) => c.data.avgOrderValueExVat)}
             kind="money"
             currency={ccy}
           />
