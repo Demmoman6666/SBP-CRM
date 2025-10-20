@@ -153,10 +153,12 @@ export async function GET(req: Request) {
       repCustomerIdSet = new Set(custs.map((c) => String(c.id)));
     }
 
-    /* =============== SECTION 1: Sales / Profit / Margin% (ex VAT) =============== */
+    /* =============== SECTION 1: Sales / Profit / Margin% (ex VAT) + AOV =============== */
     let salesEx = 0;
     let profit = 0;
     let currency = "GBP";
+    let ordersCount = 0;               // <-- NEW: number of counted orders (netEx > 0)
+    let avgOrderValueExVat = 0;        // <-- NEW
 
     try {
       const orders = await prisma.order.findMany({
@@ -241,6 +243,9 @@ export async function GET(req: Request) {
           // LIVE revenue (handles returns/exchanges)
           const { netEx } = liveNetExFromOrder(o as any, o.lineItems);
 
+          // Count this order for AOV only if it has positive ex-VAT net
+          if (netEx > 0.0001) ordersCount++;
+
           // Cost on kept quantity only
           let cost = 0;
           for (const li of o.lineItems) {
@@ -257,6 +262,9 @@ export async function GET(req: Request) {
           salesEx += netEx;
           profit  += Math.max(0, netEx - cost);
         }
+
+        // Compute AOV (ex VAT)
+        avgOrderValueExVat = ordersCount > 0 ? salesEx / ordersCount : 0;
       }
     } catch (e) {
       console.error("[rep-scorecard] orders section failed:", e);
@@ -340,7 +348,13 @@ export async function GET(req: Request) {
         range: { from: fromStr, to: toStr },
         rep: { id: repId, name: repNameResolved },
         currency,
-        section1: { salesEx, profit, marginPct },
+        section1: {
+          salesEx,
+          profit,
+          marginPct,
+          ordersCount,             // <-- NEW (useful for UI context)
+          avgOrderValueExVat,      // <-- NEW: AOV (ex VAT)
+        },
         section2: {
           totalCalls, coldCalls, bookedCalls, bookedDemos,
           avgTimePerCallMins, avgCallsPerDay, activeDays,
