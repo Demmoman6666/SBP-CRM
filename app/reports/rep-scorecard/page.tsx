@@ -16,8 +16,8 @@ type ApiOne = {
     salesEx: number;
     profit: number;
     marginPct: number;
-    avgOrderValueExVat?: number;   // existing
-    ordersCount?: number;          // used for "Total Orders"
+    avgOrderValueExVat?: number;
+    ordersCount?: number;
   };
   section2: {
     totalCalls: number;
@@ -28,7 +28,11 @@ type ApiOne = {
     avgCallsPerDay: number;
     activeDays: number; // API calls it activeDays
   };
-  section3: { totalCustomers: number; newCustomers: number };
+  section3: {
+    totalCustomers: number;
+    newCustomers: number;
+    activeCustomers?: number; // <-- NEW
+  };
 };
 
 type Scorecard = {
@@ -41,7 +45,7 @@ type Scorecard = {
   marginPct: number;
   profit: number;
   avgOrderValueExVat: number;
-  ordersCount: number;             // <-- NEW
+  ordersCount: number;
   // calls
   totalCalls: number;
   coldCalls: number;
@@ -53,6 +57,7 @@ type Scorecard = {
   // customers
   totalCustomers: number;
   newCustomers: number;
+  activeCustomers: number; // <-- NEW
 };
 
 /* ---------- Date helpers ---------- */
@@ -66,7 +71,10 @@ function parseYMD(s: string) {
   if (!m) return null;
   return new Date(+m[1], +m[2] - 1, +m[3]);
 }
-function shiftYMD(s: string, { months = 0, years = 0 }: { months?: number; years?: number }) {
+function shiftYMD(
+  s: string,
+  { months = 0, years = 0 }: { months?: number; years?: number }
+) {
   const d = parseYMD(s);
   if (!d) return s;
   d.setFullYear(d.getFullYear() + years);
@@ -144,7 +152,7 @@ function toScore(api: ApiOne): Scorecard {
     marginPct: api?.section1?.marginPct ?? 0,
     profit: api?.section1?.profit ?? 0,
     avgOrderValueExVat: api?.section1?.avgOrderValueExVat ?? 0,
-    ordersCount: api?.section1?.ordersCount ?? 0, // <-- NEW
+    ordersCount: api?.section1?.ordersCount ?? 0,
     totalCalls: api?.section2?.totalCalls ?? 0,
     coldCalls: api?.section2?.coldCalls ?? 0,
     bookedCalls: api?.section2?.bookedCalls ?? 0,
@@ -154,6 +162,7 @@ function toScore(api: ApiOne): Scorecard {
     daysActive: api?.section2?.activeDays ?? 0,
     totalCustomers: api?.section3?.totalCustomers ?? 0,
     newCustomers: api?.section3?.newCustomers ?? 0,
+    activeCustomers: api?.section3?.activeCustomers ?? 0, // <-- NEW
   };
 }
 
@@ -169,10 +178,14 @@ function MetricRow(props: {
 
   const renderVal = (v: number | null | undefined) => {
     switch (kind) {
-      case "money": return fmtMoney(v as number, currency);
-      case "pct":   return fmtPct(v as number);
-      case "mins":  return fmtMins(v as number);
-      default:      return fmtInt(v as number);
+      case "money":
+        return fmtMoney(v as number, currency);
+      case "pct":
+        return fmtPct(v as number);
+      case "mins":
+        return fmtMins(v as number);
+      default:
+        return fmtInt(v as number);
     }
   };
 
@@ -189,8 +202,14 @@ function MetricRow(props: {
       <div style={{ flex: 2 }}>{label}</div>
       <div style={numStyle}>{renderVal(cur)}</div>
       {compares.map((v, i) => (
-        <div key={`cmpv-${i}`} className="row" style={{ gap: 0, width: 270, justifyContent: "flex-end" }}>
-          <div style={{ width: 180, textAlign: "right", fontWeight: 600 }}>{renderVal(v)}</div>
+        <div
+          key={`cmpv-${i}`}
+          className="row"
+          style={{ gap: 0, width: 270, justifyContent: "flex-end" }}
+        >
+          <div style={{ width: 180, textAlign: "right", fontWeight: 600 }}>
+            {renderVal(v)}
+          </div>
           <div style={{ width: 90, textAlign: "right" }}>
             <Delta cur={cur ?? null} base={v ?? null} />
           </div>
@@ -317,7 +336,10 @@ export default function RepScorecardPage() {
           const dFrom = parseYMD(from);
           const dTo = parseYMD(to);
           if (dFrom && dTo) {
-            const spanDays = Math.max(1, Math.round((dTo.getTime() - dFrom.getTime()) / 86400000) + 1);
+            const spanDays = Math.max(
+              1,
+              Math.round((dTo.getTime() - dFrom.getTime()) / 86400000) + 1
+            );
             const prevTo = addDays(dFrom, -1);
             const prevFrom = addDays(prevTo, -(spanDays - 1));
             const pf = ymdLocal(prevFrom);
@@ -344,7 +366,7 @@ export default function RepScorecardPage() {
   const viewingLine = (
     <div className="small muted">
       Viewing <b>{rep || "—"}</b> {from ? <span> {from} </span> : null}
-      {to ? <>→ {to}</> : null}
+      {to ? <>→ {to}</></> : null}
       {comparisons.length ? (
         <>
           {" "}• comparing to <b>{comparisons.map((c) => c.label).join(", ")}</b>
@@ -376,9 +398,15 @@ export default function RepScorecardPage() {
           }}
         >
           <div style={{ flex: 2 }} />
-          <div style={{ width: 180, textAlign: "right" }}>{current?.rep || rep || "Selected rep"}</div>
+          <div style={{ width: 180, textAlign: "right" }}>
+            {current?.rep || rep || "Selected rep"}
+          </div>
           {comparisons.map((c, i) => (
-            <div key={`head-${i}`} className="row" style={{ gap: 0, width: 270, justifyContent: "flex-end" }}>
+            <div
+              key={`head-${i}`}
+              className="row"
+              style={{ gap: 0, width: 270, justifyContent: "flex-end" }}
+            >
               <div style={{ width: 180, textAlign: "right" }}>{c.label}</div>
               <div style={{ width: 90, textAlign: "right" }}>Δ %</div>
             </div>
@@ -643,7 +671,7 @@ export default function RepScorecardPage() {
             currency={ccy}
           />
           <MetricRow
-            label="Total Orders"                                   // <-- NEW
+            label="Total Orders"
             cur={current?.ordersCount}
             compares={comparisons.map((c) => c.data.ordersCount)}
             kind="int"
@@ -660,20 +688,71 @@ export default function RepScorecardPage() {
         {/* ---------------- Calls ---------------- */}
         <SectionHead title="Calls" subtitle="Call volumes & activity" />
         <div>
-          <MetricRow label="Total Calls" cur={current?.totalCalls} compares={comparisons.map((c) => c.data.totalCalls)} kind="int" />
-          <MetricRow label="Cold Calls" cur={current?.coldCalls} compares={comparisons.map((c) => c.data.coldCalls)} kind="int" />
-          <MetricRow label="Booked Calls" cur={current?.bookedCalls} compares={comparisons.map((c) => c.data.bookedCalls)} kind="int" />
-          <MetricRow label="Booked Demos" cur={current?.bookedDemos} compares={comparisons.map((c) => c.data.bookedDemos)} kind="int" />
-          <MetricRow label="Average Time Per Call (mins)" cur={current?.avgTimePerCallMins} compares={comparisons.map((c) => c.data.avgTimePerCallMins)} kind="mins" />
-          <MetricRow label="Average Calls per Day" cur={current?.avgCallsPerDay} compares={comparisons.map((c) => c.data.avgCallsPerDay)} kind="mins" />
-          <MetricRow label="Days Active" cur={current?.daysActive} compares={comparisons.map((c) => c.data.daysActive)} kind="int" />
+          <MetricRow
+            label="Total Calls"
+            cur={current?.totalCalls}
+            compares={comparisons.map((c) => c.data.totalCalls)}
+            kind="int"
+          />
+          <MetricRow
+            label="Cold Calls"
+            cur={current?.coldCalls}
+            compares={comparisons.map((c) => c.data.coldCalls)}
+            kind="int"
+          />
+          <MetricRow
+            label="Booked Calls"
+            cur={current?.bookedCalls}
+            compares={comparisons.map((c) => c.data.bookedCalls)}
+            kind="int"
+          />
+          <MetricRow
+            label="Booked Demos"
+            cur={current?.bookedDemos}
+            compares={comparisons.map((c) => c.data.bookedDemos)}
+            kind="int"
+          />
+          <MetricRow
+            label="Average Time Per Call (mins)"
+            cur={current?.avgTimePerCallMins}
+            compares={comparisons.map((c) => c.data.avgTimePerCallMins)}
+            kind="mins"
+          />
+          <MetricRow
+            label="Average Calls per Day"
+            cur={current?.avgCallsPerDay}
+            compares={comparisons.map((c) => c.data.avgCallsPerDay)}
+            kind="mins"
+          />
+          <MetricRow
+            label="Days Active"
+            cur={current?.daysActive}
+            compares={comparisons.map((c) => c.data.daysActive)}
+            kind="int"
+          />
         </div>
 
         {/* ---------------- Customers ---------------- */}
         <SectionHead title="Customers" subtitle="Customer counts" />
         <div>
-          <MetricRow label="Total Customers" cur={current?.totalCustomers} compares={comparisons.map((c) => c.data.totalCustomers)} kind="int" />
-          <MetricRow label="New Customers" cur={current?.newCustomers} compares={comparisons.map((c) => c.data.newCustomers)} kind="int" />
+          <MetricRow
+            label="Total Customers"
+            cur={current?.totalCustomers}
+            compares={comparisons.map((c) => c.data.totalCustomers)}
+            kind="int"
+          />
+          <MetricRow
+            label="Active Customers (unique buyers)"
+            cur={current?.activeCustomers}
+            compares={comparisons.map((c) => c.data.activeCustomers)}
+            kind="int"
+          />
+          <MetricRow
+            label="New Customers"
+            cur={current?.newCustomers}
+            compares={comparisons.map((c) => c.data.newCustomers)}
+            kind="int"
+          />
         </div>
       </section>
     </div>
