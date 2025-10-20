@@ -292,7 +292,7 @@ export default function RepScorecardPage() {
       setLoading(true);
       setErr(null);
 
-      const next: Array<{ label: string; data: Scorecard }>> = [];
+      const next: Array<{ label: string; data: Scorecard }> = []; // <-- fixed extra '>'
 
       if (cmpMode === "reps") {
         for (const name of cmpRepsDraft) {
@@ -650,7 +650,7 @@ export default function RepScorecardPage() {
           />
         </div>
 
-        {/* ---------------- Calls ---------------- */}
+      {/* ---------------- Calls ---------------- */}
         <SectionHead title="Calls" subtitle="Call volumes & activity" />
         <div>
           <MetricRow label="Total Calls" cur={current?.totalCalls} compares={comparisons.map((c) => c.data.totalCalls)} kind="int" />
