@@ -31,7 +31,13 @@ type ApiOne = {
   section3: {
     totalCustomers: number;
     newCustomers: number;
+    // Any of these may be present from the API; we’ll coalesce them.
     activeCustomers?: number;
+    uniqueBuyers?: number;
+    buyers?: number;
+    purchasers?: number;
+    purchasingCustomers?: number;
+    customersPurchased?: number;
   };
 };
 
@@ -140,6 +146,15 @@ function normalizeRepsResponse(j: any): Rep[] {
 
 /* Convert API (single) to Scorecard shape */
 function toScore(api: ApiOne): Scorecard {
+  const activeCustomersCoalesced =
+    api?.section3?.activeCustomers ??
+    api?.section3?.uniqueBuyers ??
+    api?.section3?.buyers ??
+    api?.section3?.purchasers ??
+    api?.section3?.purchasingCustomers ??
+    api?.section3?.customersPurchased ??
+    0;
+
   return {
     rep: api?.rep?.name || "",
     from: api?.range?.from || "",
@@ -159,7 +174,7 @@ function toScore(api: ApiOne): Scorecard {
     daysActive: api?.section2?.activeDays ?? 0,
     totalCustomers: api?.section3?.totalCustomers ?? 0,
     newCustomers: api?.section3?.newCustomers ?? 0,
-    activeCustomers: api?.section3?.activeCustomers ?? 0,
+    activeCustomers: activeCustomersCoalesced,
   };
 }
 
@@ -175,14 +190,10 @@ function MetricRow(props: {
 
   const renderVal = (v: number | null | undefined) => {
     switch (kind) {
-      case "money":
-        return fmtMoney(v as number, currency);
-      case "pct":
-        return fmtPct(v as number);
-      case "mins":
-        return fmtMins(v as number);
-      default:
-        return fmtInt(v as number);
+      case "money": return fmtMoney(v as number, currency);
+      case "pct":   return fmtPct(v as number);
+      case "mins":  return fmtMins(v as number);
+      default:      return fmtInt(v as number);
     }
   };
 
