@@ -157,8 +157,10 @@ export async function GET(req: Request) {
     let salesEx = 0;
     let profit = 0;
     let currency = "GBP";
-    let ordersCount = 0;               // <-- NEW: number of counted orders (netEx > 0)
-    let avgOrderValueExVat = 0;        // <-- NEW
+    let ordersCount = 0;               // number of counted orders (netEx > 0)
+    let avgOrderValueExVat = 0;
+    let activeCustomers = 0;           // <-- NEW: distinct buyers in range for this rep
+    const activeCustomerIds = new Set<string>(); // <-- NEW
 
     try {
       const orders = await prisma.order.findMany({
@@ -244,7 +246,10 @@ export async function GET(req: Request) {
           const { netEx } = liveNetExFromOrder(o as any, o.lineItems);
 
           // Count this order for AOV only if it has positive ex-VAT net
-          if (netEx > 0.0001) ordersCount++;
+          if (netEx > 0.0001) {
+            ordersCount++;
+            if (o.customerId) activeCustomerIds.add(String(o.customerId)); // <-- NEW
+          }
 
           // Cost on kept quantity only
           let cost = 0;
@@ -265,6 +270,9 @@ export async function GET(req: Request) {
 
         // Compute AOV (ex VAT)
         avgOrderValueExVat = ordersCount > 0 ? salesEx / ordersCount : 0;
+
+        // Compute Active Customers (unique buyers)
+        activeCustomers = activeCustomerIds.size; // <-- NEW
       }
     } catch (e) {
       console.error("[rep-scorecard] orders section failed:", e);
@@ -352,14 +360,14 @@ export async function GET(req: Request) {
           salesEx,
           profit,
           marginPct,
-          ordersCount,             // <-- NEW (useful for UI context)
-          avgOrderValueExVat,      // <-- NEW: AOV (ex VAT)
+          ordersCount,             // number of orders counted in AOV
+          avgOrderValueExVat,      // AOV (ex VAT)
         },
         section2: {
           totalCalls, coldCalls, bookedCalls, bookedDemos,
           avgTimePerCallMins, avgCallsPerDay, activeDays,
         },
-        section3: { totalCustomers, newCustomers },
+        section3: { totalCustomers, newCustomers, activeCustomers }, // <-- NEW
       },
       { headers: { "cache-control": "no-store" } }
     );
