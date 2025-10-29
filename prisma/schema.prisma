@@ -383,6 +383,7 @@ model OrderLineItem {
 
   @@index([orderId])
   @@index([productVendor])
+  @@index([sku]) // ADDED: speeds up SKU-based joins/lookups for PAR
 }
 
 model SalesRepTagRule {
@@ -767,4 +768,18 @@ model ShopifyVariantCost {
   updatedAt DateTime @updatedAt
 
   @@index([variantId])
+}
+
+// ---------------- PAR per Customer+SKU (NEW) ----------------
+model CustomerProductPar {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  sku        String
+  parQty     Int
+  updatedAt  DateTime @updatedAt
+
+  @@unique([customerId, sku], map: "customer_sku_unique")
+  @@index([sku])
 }
