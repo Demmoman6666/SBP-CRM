@@ -190,6 +190,9 @@ model Customer {
   routeWeeks           Int[]       @default([])
   routeDays            RouteDay[]  @default([])
 
+  // ✅ Back-relation for PARs
+  productPars          CustomerProductPar[]
+
   @@index([customerEmailAddress])
   @@index([salesRep])          // legacy text index
   @@index([salesRepId])        // ✅ canonical rep index
@@ -347,10 +350,10 @@ model Order {
   shipping           Decimal?   @db.Decimal(12, 2)
 
   // --- Refund aggregates (from refunds/create webhook) ---
-  refundedNet       Decimal?   @db.Decimal(12, 2) // ex VAT, after discounts
-  refundedTax       Decimal?   @db.Decimal(12, 2)
-  refundedShipping  Decimal?   @db.Decimal(12, 2)
-  refundedTotal     Decimal?   @db.Decimal(12, 2) // inc VAT = net + tax + shipping
+  refundedNet        Decimal?   @db.Decimal(12, 2) // ex VAT, after discounts
+  refundedTax        Decimal?   @db.Decimal(12, 2)
+  refundedShipping   Decimal?   @db.Decimal(12, 2)
+  refundedTotal      Decimal?   @db.Decimal(12, 2) // inc VAT = net + tax + shipping
 
   lineItems          OrderLineItem[]
 
@@ -550,16 +553,16 @@ model LwStockItemMap {
 
 // Linnworks suppliers cache + defaults (optional overrides)
 model LwSupplier {
-  id                  String   @id              // Linnworks SupplierId (GUID)
-  name                String   @unique
-  defaultLeadTimeDays Int?
-  defaultPackSize     Int?
-  defaultMoq          Int?
-  defaultCurrency     String?  @default("GBP")
+  id                   String   @id              // Linnworks SupplierId (GUID)
+  name                 String   @unique
+  defaultLeadTimeDays  Int?
+  defaultPackSize      Int?
+  defaultMoq           Int?
+  defaultCurrency      String?  @default("GBP")
   defaultPurchasePrice Decimal? @db.Decimal(12, 4)
 
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   // back-relations
   skuOverrides  SkuOverride[]
@@ -642,7 +645,7 @@ model PurchasePlan {
 
   // relations
   lines         PurchasePlanLine[]
-  poSyncs       PurchaseOrderSync[]   // <— back-relation added
+  poSyncs       PurchaseOrderSync[]   // back-relation
 
   @@index([status, createdAt])
   @@index([locationId])
