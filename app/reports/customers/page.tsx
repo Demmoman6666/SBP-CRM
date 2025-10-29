@@ -44,6 +44,19 @@ export default function CustomerReportsPage() {
             Open
           </a>
         </div>
+
+        {/* NEW: Stock & Order (PAR) */}
+        <div className="card">
+          <b>Stock &amp; Order (PAR)</b>
+          <p className="small">Suggest monthly PAR per SKU by customer &amp; brand.</p>
+          <a
+            className="primary"
+            href="/reports/customers/stock-order-par"
+            style={{ marginTop: 8 }}
+          >
+            Open
+          </a>
+        </div>
       </section>
     </div>
   );
