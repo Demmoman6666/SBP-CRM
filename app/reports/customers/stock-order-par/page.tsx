@@ -499,19 +499,33 @@ export default function StockOrderParPage() {
         )}
       </div>
 
-      {/* TABLE */}
+      {/* TABLE — adjusted to show clear grid lines */}
       <div className="mx-auto max-w-5xl overflow-x-auto rounded-xl ring-1 ring-slate-200 bg-white/70 shadow-sm">
-        <table className="min-w-full text-sm">
-          <thead className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b border-slate-200">
+        <table className="min-w-full text-sm border-collapse table-fixed">
+          <thead className="sticky top-0 z-10 bg-white/90 backdrop-blur">
             <tr>
-              <th className="px-3 py-2 text-left font-medium text-slate-700 cursor-pointer select-none" onClick={() => toggleSort("sku")}>
-                <div className="inline-flex items-center gap-1">SKU {sortKey==="sku" && <span className="text-slate-400">{sortDir==="asc"?"▲":"▼"}</span>}</div>
+              <th
+                className="px-3 py-2 text-left font-medium text-slate-700 cursor-pointer select-none border border-slate-300 bg-slate-50"
+                onClick={() => toggleSort("sku")}
+              >
+                <div className="inline-flex items-center gap-1">
+                  SKU {sortKey === "sku" && <span className="text-slate-400">{sortDir === "asc" ? "▲" : "▼"}</span>}
+                </div>
               </th>
-              <th className="px-3 py-2 text-left font-medium text-slate-700 cursor-pointer select-none" onClick={() => toggleSort("productName")}>
-                <div className="inline-flex items-center gap-1">Product {sortKey==="productName" && <span className="text-slate-400">{sortDir==="asc"?"▲":"▼"}</span>}</div>
+              <th
+                className="px-3 py-2 text-left font-medium text-slate-700 cursor-pointer select-none border border-slate-300 bg-slate-50"
+                onClick={() => toggleSort("productName")}
+              >
+                <div className="inline-flex items-center gap-1">
+                  Product {sortKey === "productName" && <span className="text-slate-400">{sortDir === "asc" ? "▲" : "▼"}</span>}
+                </div>
               </th>
-              {["unitsInWindow","avgMonthly","suggestedMonthlyPAR","agreedPar","delta"].map((k) => (
-                <th key={k} className="px-3 py-2 text-center font-medium text-slate-700 cursor-pointer select-none" onClick={() => toggleSort(k as SortKey)}>
+              {["unitsInWindow", "avgMonthly", "suggestedMonthlyPAR", "agreedPar", "delta"].map((k) => (
+                <th
+                  key={k}
+                  className="px-3 py-2 text-center font-medium text-slate-700 cursor-pointer select-none border border-slate-300 bg-slate-50"
+                  onClick={() => toggleSort(k as SortKey)}
+                >
                   <div className="inline-flex items-center gap-1">
                     {{
                       unitsInWindow: "Units (window)",
@@ -520,33 +534,39 @@ export default function StockOrderParPage() {
                       agreedPar: "Agreed PAR",
                       delta: "Δ (Sug - Agr)",
                     }[k as keyof any]}
-                    {sortKey===k && <span className="text-slate-400">{sortDir==="asc"?"▲":"▼"}</span>}
+                    {sortKey === k && <span className="text-slate-400">{sortDir === "asc" ? "▲" : "▼"}</span>}
                   </div>
                 </th>
               ))}
-              <th className="px-3 py-2 text-center font-medium text-slate-700">Edit PAR</th>
-              <th className="px-3 py-2 text-right font-medium text-slate-700">Actions</th>
+              <th className="px-3 py-2 text-center font-medium text-slate-700 border border-slate-300 bg-slate-50">Edit PAR</th>
+              <th className="px-3 py-2 text-right font-medium text-slate-700 border border-slate-300 bg-slate-50">Actions</th>
             </tr>
           </thead>
 
-          <tbody className="[&>tr:nth-child(odd)]:bg-slate-50/60">
+          <tbody>
             {rows.map((r: any) => {
               const editVal = editPar[r.sku] ?? String(r.agreedPar ?? r.suggestedMonthlyPAR ?? 0);
               const delta = Number(r.delta || 0);
               const deltaClass = delta > 0 ? "text-amber-700" : delta < 0 ? "text-emerald-700" : "text-slate-700";
 
               return (
-                <tr key={r.sku || r.productName} className="border-b border-slate-200 hover:bg-slate-100">
-                  <td className="px-3 py-2 whitespace-nowrap">{r.sku || <em className="text-slate-400">—</em>}</td>
-                  <td className="px-3 py-2">{r.productName}</td>
+                <tr key={r.sku || r.productName} className="even:bg-white odd:bg-slate-50/60 hover:bg-slate-100">
+                  <td className="px-3 py-2 whitespace-nowrap border border-slate-200">
+                    {r.sku || <em className="text-slate-400">—</em>}
+                  </td>
+                  <td className="px-3 py-2 border border-slate-200">{r.productName}</td>
 
-                  <td className="px-3 py-2 text-center tabular-nums">{fmt0(r.unitsInWindow)}</td>
-                  <td className="px-3 py-2 text-center tabular-nums">{fmt2(r.avgMonthly)}</td>
-                  <td className="px-3 py-2 text-center tabular-nums font-medium">{fmt0(r.suggestedMonthlyPAR)}</td>
-                  <td className="px-3 py-2 text-center tabular-nums">{r.agreedPar != null ? fmt0(r.agreedPar) : "—"}</td>
-                  <td className={`px-3 py-2 text-center tabular-nums ${deltaClass}`}>{fmt0(delta)}</td>
+                  <td className="px-3 py-2 text-center tabular-nums border border-slate-200">{fmt0(r.unitsInWindow)}</td>
+                  <td className="px-3 py-2 text-center tabular-nums border border-slate-200">{fmt2(r.avgMonthly)}</td>
+                  <td className="px-3 py-2 text-center tabular-nums font-medium border border-slate-200">
+                    {fmt0(r.suggestedMonthlyPAR)}
+                  </td>
+                  <td className="px-3 py-2 text-center tabular-nums border border-slate-200">
+                    {r.agreedPar != null ? fmt0(r.agreedPar) : "—"}
+                  </td>
+                  <td className={`px-3 py-2 text-center tabular-nums border border-slate-200 ${deltaClass}`}>{fmt0(delta)}</td>
 
-                  <td className="px-3 py-2 text-center">
+                  <td className="px-3 py-2 text-center border border-slate-200">
                     <input
                       className="w-24 border border-slate-300 rounded-md px-2 py-1 text-center tabular-nums"
                       type="number"
@@ -557,7 +577,7 @@ export default function StockOrderParPage() {
                     />
                   </td>
 
-                  <td className="px-3 py-2 text-right">
+                  <td className="px-3 py-2 text-right border border-slate-200">
                     <button
                       className="px-3 py-1 rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
                       onClick={() => saveOne(r.sku)}
@@ -573,7 +593,7 @@ export default function StockOrderParPage() {
 
             {!rows.length && !loading && !error && (
               <tr>
-                <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
+                <td colSpan={9} className="px-3 py-6 text-center text-slate-500 border border-slate-200">
                   No data yet. Choose a customer and brand, then run the report.
                 </td>
               </tr>
