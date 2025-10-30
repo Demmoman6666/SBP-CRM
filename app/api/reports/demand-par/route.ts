@@ -21,9 +21,23 @@ function computeWindow(tf: Timeframe): { start: Date; end: Date; monthsEq: numbe
     const end = now;
     return { start, end, monthsEq: now.getUTCDate() / daysInMonthUTC(y, m) };
   }
-  if (tf === "lm")  return { start: new Date(Date.UTC(y, m - 1, 1)), end: endOfMonthUTC(new Date(Date.UTC(y, m - 1, 1))), monthsEq: 1 };
-  if (tf === "l2m") return { start: new Date(Date.UTC(y, m - 2, 1)), end: endOfMonthUTC(new Date(Date.UTC(y, m - 1, 1))), monthsEq: 2 };
-  return { start: new Date(Date.UTC(y, m - 3, 1)), end: endOfMonthUTC(new Date(Date.UTC(y, m - 1, 1))), monthsEq: 3 };
+  if (tf === "lm")
+    return {
+      start: new Date(Date.UTC(y, m - 1, 1)),
+      end: endOfMonthUTC(new Date(Date.UTC(y, m - 1, 1))),
+      monthsEq: 1,
+    };
+  if (tf === "l2m")
+    return {
+      start: new Date(Date.UTC(y, m - 2, 1)),
+      end: endOfMonthUTC(new Date(Date.UTC(y, m - 1, 1))),
+      monthsEq: 2,
+    };
+  return {
+    start: new Date(Date.UTC(y, m - 3, 1)),
+    end: endOfMonthUTC(new Date(Date.UTC(y, m - 1, 1))),
+    monthsEq: 3,
+  };
 }
 
 export async function GET(req: Request) {
@@ -42,32 +56,46 @@ export async function GET(req: Request) {
 
     const { start, end, monthsEq } = computeWindow(timeframe);
 
-    type Row = { sku: string | null; product_title: string | null; units_window: number };
+    // --- Variant-aware, grouped by SKU (uses variantTitle when present) ---
+    type Row = {
+      sku: string | null;
+      product_title: string | null;
+      variant_title: string | null;
+      units_window: number | null;
+    };
 
-    // Prisma.SQL for TS-safe tagged template + explicit cast on return.
-    const sql = Prisma.sql`
+    const rows = (await prisma.$queryRaw<Row[]>(Prisma.sql`
       SELECT
         oli."sku" AS sku,
-        oli."productTitle" AS product_title,
+        MAX(NULLIF(oli."productTitle", '')) AS product_title,
+        MAX(NULLIF(oli."variantTitle", '')) AS variant_title,
         COALESCE(SUM(oli."quantity" - COALESCE(oli."refundedQuantity", 0)), 0) AS units_window
       FROM "OrderLineItem" oli
       JOIN "Order" o ON o."id" = oli."orderId"
       WHERE o."customerId" = ${customerId}
         AND oli."productVendor" = ${brand}
         AND o."processedAt" >= ${start} AND o."processedAt" <= ${end}
-      GROUP BY oli."sku", oli."productTitle"
-      ORDER BY oli."productTitle" ASC;
-    `;
-    const rows = (await prisma.$queryRaw(sql)) as Row[];
+      GROUP BY oli."sku"
+      ORDER BY product_title ASC NULLS LAST, variant_title ASC NULLS LAST;
+    `));
 
-    const data = rows.map((r) => {
-      const units = Number(r.units_window) || 0;
+    const data = (rows || []).map((r) => {
+      const units = Number(r.units_window ?? 0);
       const avgMonthly = monthsEq > 0 ? units / monthsEq : 0;
       const suggestedRaw = avgMonthly * (1 + safetyPct) * coverageMonths;
       const suggestedRounded = Math.max(packSize, Math.ceil(suggestedRaw / packSize) * packSize);
+
+      const product = (r.product_title || "").trim();
+      const variant = (r.variant_title || "").trim();
+      const showVariant =
+        variant &&
+        !/^default title$/i.test(variant) &&
+        !product.toLowerCase().includes(variant.toLowerCase());
+      const productName = showVariant ? `${product} — ${variant}` : product;
+
       return {
         sku: r.sku ?? "",
-        productName: r.product_title ?? "",
+        productName,
         unitsInWindow: units,
         avgMonthly,
         suggestedMonthlyPAR: suggestedRounded,
