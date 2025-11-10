@@ -23,6 +23,19 @@ export default function Page() {
   );
 }
 
+// normalise shapes from /api/reports/sales-by-customer
+function normaliseRows(data: any): CustomerRow[] {
+  const arr = Array.isArray(data) ? data : data?.rows ?? data?.byCustomer ?? [];
+  return arr.map((r: any, i: number): CustomerRow => ({
+    id: String(r.id ?? r.customerId ?? i),
+    name: r.name ?? r.customerName ?? "(no name)",
+    email: r.email ?? r.customerEmail ?? null,
+    city: r.city ?? r.customerCity ?? null,
+    orders: Number(r.orders ?? r.orderCount ?? 0),
+    revenue: Number(r.revenue ?? r.total ?? r.sales ?? 0),
+  }));
+}
+
 function CustomersClient() {
   const sp = useSearchParams();
   const router = useRouter();
@@ -38,11 +51,18 @@ function CustomersClient() {
     let ok = true;
     (async () => {
       setLoading(true);
-      const qs = new URLSearchParams({ vendor, start, end, limit: "500" });
-      const res = await fetch(`/api/reports/vendors/customers?${qs}`, { cache: "no-store" });
-      const data = await res.json();
+
+      // use existing sales-by-customer API, filtering by vendor + date range
+      const qs = new URLSearchParams();
+      if (start) qs.set("start", start);
+      if (end) qs.set("end", end);
+      if (vendor) qs.set("vendors", vendor); // API expects comma-separated vendors
+
+      const res = await fetch(`/api/reports/sales-by-customer?${qs.toString()}`, { cache: "no-store" });
+      const data = await res.json().catch(() => ({ rows: [] }));
       if (!ok) return;
-      setRows(Array.isArray(data) ? data : data?.rows ?? []);
+
+      setRows(normaliseRows(data));
       setLoading(false);
     })();
     return () => { ok = false; };
