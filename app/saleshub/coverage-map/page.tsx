@@ -51,8 +51,11 @@ function normReps(payload: any): Rep[] {
     : [];
 
   return arr
-    .map((r: any): Rep =>
-      typeof r === "string" ? { id: r, name: r } : { id: String(r.id ?? r.name ?? ""), name: String(r.name ?? r.id ?? "") }
+    .map(
+      (r: any): Rep =>
+        typeof r === "string"
+          ? { id: r, name: r }
+          : { id: String(r.id ?? r.name ?? ""), name: String(r.name ?? r.id ?? "") }
     )
     .filter((r) => r.name);
 }
@@ -62,6 +65,20 @@ function yyyy_mm_dd(d: Date) {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
+}
+
+function addDaysJS(d: Date, n: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+function startOfWeekMonday(d: Date) {
+  const x = new Date(d);
+  const dow = x.getDay(); // 0=Sun..6=Sat
+  const back = (dow + 6) % 7; // Monday as first day
+  x.setDate(x.getDate() - back);
+  return x;
 }
 
 function svgPin(color: string) {
@@ -87,6 +104,26 @@ function colorForType(t?: string | null) {
   return "#6b7280";                           // grey (unknown)
 }
 
+/** Normalize and validate a start/end string pair.
+ * - If both present and out of order, swap.
+ * - If only one present, mirror to the other (single-day behaviour).
+ * - If neither present, return ["",""].
+ */
+function normaliseRange(fromStr: string, toStr: string): [string, string] {
+  const hasFrom = !!fromStr;
+  const hasTo = !!toStr;
+  if (hasFrom && hasTo) {
+    const f = new Date(fromStr);
+    const t = new Date(toStr);
+    return f > t ? [toStr, fromStr] : [fromStr, toStr];
+  }
+  if (hasFrom || hasTo) {
+    const v = hasFrom ? fromStr : toStr;
+    return [v, v];
+  }
+  return ["", ""];
+}
+
 export default function CoverageMapPage() {
   const mapDivRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
@@ -98,19 +135,20 @@ export default function CoverageMapPage() {
   // filters
   const [reps, setReps] = useState<Rep[]>([]);
   const [repFilter, setRepFilter] = useState<string>("");
-  const [day, setDay] = useState<string>(yyyy_mm_dd(new Date())); // default today
+
+  // NEW: date range (start + end). Default to today -> today.
+  const todayStr = yyyy_mm_dd(new Date());
+  const [fromDay, setFromDay] = useState<string>(todayStr);
+  const [toDay, setToDay] = useState<string>(todayStr);
 
   // load reps + maps
   useEffect(() => {
     (async () => {
       try {
-        const [repRes] = await Promise.all([
-          fetch("/api/sales-reps", { cache: "no-store" }),
-        ]);
+        const [repRes] = await Promise.all([fetch("/api/sales-reps", { cache: "no-store" })]);
         const repJson = await repRes.json().catch(() => []);
         setReps(normReps(repJson));
       } finally {
-        // maps
         const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!;
         await loadGoogleMaps(key);
         if (!mapRef.current && mapDivRef.current && window.google?.maps) {
@@ -138,12 +176,12 @@ export default function CoverageMapPage() {
         for (const m of markersRef.current) m.setMap(null);
         markersRef.current = [];
 
+        const [fromNorm, toNorm] = normaliseRange(fromDay, toDay);
+
         const qs = new URLSearchParams({ limit: "1000" });
         if (repFilter) qs.set("staff", repFilter);
-        if (day) {
-          qs.set("from", day);
-          qs.set("to", day);
-        }
+        if (fromNorm) qs.set("from", fromNorm);
+        if (toNorm) qs.set("to", toNorm);
 
         const res = await fetch(`/api/calls?${qs.toString()}`, { cache: "no-store" });
         const rows: CallRow[] = await res.json();
@@ -159,7 +197,12 @@ export default function CoverageMapPage() {
             position: { lat, lng },
             map: mapRef.current,
             icon,
-            title: r.customer?.salonName || r.customer?.customerName || r.summary || r.callType || "Call",
+            title:
+              r.customer?.salonName ||
+              r.customer?.customerName ||
+              r.summary ||
+              r.callType ||
+              "Call",
           });
 
           marker.addListener("click", () => {
@@ -187,11 +230,14 @@ export default function CoverageMapPage() {
         // fit or reset
         if (markersRef.current.length > 0) {
           mapRef.current.fitBounds(bounds);
-          // prevent zooming in too far for a single marker
           const l = markersRef.current.length;
-          const listener = window.google.maps.event.addListenerOnce(mapRef.current, "bounds_changed", () => {
-            if (l === 1 && mapRef.current.getZoom() > 14) mapRef.current.setZoom(14);
-          });
+          const listener = window.google.maps.event.addListenerOnce(
+            mapRef.current,
+            "bounds_changed",
+            () => {
+              if (l === 1 && mapRef.current.getZoom() > 14) mapRef.current.setZoom(14);
+            }
+          );
           setTimeout(() => window.google.maps.event.removeListener(listener), 1000);
         } else {
           // nothing to show – recentre UK
@@ -202,55 +248,103 @@ export default function CoverageMapPage() {
         console.error("Failed to load markers:", e);
       }
     })();
-  }, [repFilter, day, loading]);
+  }, [repFilter, fromDay, toDay, loading]);
+
+  // Quick preset handlers
+  const setToday = () => {
+    const t = new Date();
+    const s = yyyy_mm_dd(t);
+    setFromDay(s);
+    setToDay(s);
+  };
+
+  const setYesterday = () => {
+    const y = addDaysJS(new Date(), -1);
+    const s = yyyy_mm_dd(y);
+    setFromDay(s);
+    setToDay(s);
+  };
+
+  const setLast7 = () => {
+    const to = new Date();
+    const from = addDaysJS(to, -6);
+    setFromDay(yyyy_mm_dd(from));
+    setToDay(yyyy_mm_dd(to));
+  };
+
+  const setThisWeek = () => {
+    const to = new Date();
+    const from = startOfWeekMonday(to);
+    setFromDay(yyyy_mm_dd(from));
+    setToDay(yyyy_mm_dd(to));
+  };
+
+  const clearRange = () => {
+    setFromDay("");
+    setToDay("");
+  };
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
         <h1>Coverage map</h1>
-        <p className="small">View logged calls; filter by sales rep and day. Pins are colour-coded by call type.</p>
+        <p className="small">
+          View logged calls; filter by sales rep and date range. Pins are colour-coded by call type.
+        </p>
       </section>
 
       {/* Filters */}
-      <section className="card" style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+      <section
+        className="card"
+        style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}
+      >
         <div className="field" style={{ width: 320 }}>
           <label>Sales rep</label>
           <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)}>
             <option value="">All reps</option>
             {reps.map((r) => (
-              <option key={r.id || r.name} value={r.name}>{r.name}</option>
+              <option key={r.id || r.name} value={r.name}>
+                {r.name}
+              </option>
             ))}
           </select>
         </div>
 
-        <div className="field" style={{ width: 220 }}>
-          <label>Day</label>
-          <input type="date" value={day} onChange={(e) => setDay(e.target.value)} />
-          <div className="row" style={{ gap: 8, marginTop: 6 }}>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setDay(yyyy_mm_dd(new Date()))}
-            >
+        {/* NEW: Date range */}
+        <div className="field" style={{ width: 360 }}>
+          <label>Date range</label>
+          <div className="row" style={{ display: "flex", gap: 8 }}>
+            <input
+              type="date"
+              value={fromDay}
+              onChange={(e) => setFromDay(e.target.value)}
+              aria-label="From date"
+            />
+            <span className="small" style={{ alignSelf: "center" }}>
+              to
+            </span>
+            <input
+              type="date"
+              value={toDay}
+              onChange={(e) => setToDay(e.target.value)}
+              aria-label="To date"
+            />
+          </div>
+
+          <div className="row" style={{ gap: 8, marginTop: 6, display: "flex", flexWrap: "wrap" }}>
+            <button type="button" className="btn" onClick={setToday}>
               Today
             </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => {
-                const d = new Date();
-                d.setDate(d.getDate() - 1);
-                setDay(yyyy_mm_dd(d));
-              }}
-            >
+            <button type="button" className="btn" onClick={setYesterday}>
               Yesterday
             </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setDay("")}
-              title="Show all dates"
-            >
+            <button type="button" className="btn" onClick={setLast7}>
+              Last 7 days
+            </button>
+            <button type="button" className="btn" onClick={setThisWeek}>
+              This week
+            </button>
+            <button type="button" className="btn" onClick={clearRange} title="Show all dates">
               Clear
             </button>
           </div>
@@ -258,9 +352,45 @@ export default function CoverageMapPage() {
 
         {/* Legend */}
         <div className="row" style={{ gap: 14, marginLeft: "auto" }}>
-          <span className="small"><span style={{ display: "inline-block", width: 12, height: 12, background: "#3b82f6", borderRadius: 3, marginRight: 6 }} />Cold Call</span>
-          <span className="small"><span style={{ display: "inline-block", width: 12, height: 12, background: "#fb923c", borderRadius: 3, marginRight: 6 }} />Booked Call</span>
-          <span className="small"><span style={{ display: "inline-block", width: 12, height: 12, background: "#ef4444", borderRadius: 3, marginRight: 6 }} />Booked Demo</span>
+          <span className="small">
+            <span
+              style={{
+                display: "inline-block",
+                width: 12,
+                height: 12,
+                background: "#3b82f6",
+                borderRadius: 3,
+                marginRight: 6,
+              }}
+            />
+            Cold Call
+          </span>
+          <span className="small">
+            <span
+              style={{
+                display: "inline-block",
+                width: 12,
+                height: 12,
+                background: "#fb923c",
+                borderRadius: 3,
+                marginRight: 6,
+              }}
+            />
+            Booked Call
+          </span>
+          <span className="small">
+            <span
+              style={{
+                display: "inline-block",
+                width: 12,
+                height: 12,
+                background: "#ef4444",
+                borderRadius: 3,
+                marginRight: 6,
+              }}
+            />
+            Booked Demo
+          </span>
         </div>
       </section>
 
