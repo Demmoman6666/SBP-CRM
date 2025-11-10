@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type ScoreRow = {
   vendor: string;
@@ -130,6 +131,8 @@ function MultiSelect({
 }
 
 export default function VendorScorecardPage() {
+  const router = useRouter();
+
   // Filters
   const [start, setStart] = useState<string | null>(null);
   const [end, setEnd] = useState<string | null>(null);
@@ -221,6 +224,16 @@ export default function VendorScorecardPage() {
   }
 
   const totalVendors = resp?.byVendor?.length ?? 0;
+
+  const gotoOrders = (vendor: string) => {
+    const qs = new URLSearchParams({ vendor, start: start ?? "", end: end ?? "" });
+    router.push(`/reports/vendors/orders?${qs.toString()}`);
+  };
+
+  const gotoCustomers = (vendor: string) => {
+    const qs = new URLSearchParams({ vendor, start: start ?? "", end: end ?? "" });
+    router.push(`/reports/vendors/customers?${qs.toString()}`);
+  };
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -338,8 +351,28 @@ export default function VendorScorecardPage() {
               >
                 <div>{r.vendor}</div>
                 <div>{fmtMoney(r.revenue)}</div>
-                <div>{r.orders.toLocaleString()}</div>
-                <div>{r.customers.toLocaleString()}</div>
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => gotoOrders(r.vendor)}
+                    className="link"
+                    title="View orders for this vendor in the selected range"
+                    style={{ background: "none", border: 0, padding: 0, cursor: "pointer", textDecoration: "underline" }}
+                  >
+                    {r.orders.toLocaleString()}
+                  </button>
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => gotoCustomers(r.vendor)}
+                    className="link"
+                    title="View customers who bought from this vendor in the selected range"
+                    style={{ background: "none", border: 0, padding: 0, cursor: "pointer", textDecoration: "underline" }}
+                  >
+                    {r.customers.toLocaleString()}
+                  </button>
+                </div>
                 <div>{fmtMoney(r.aov)}</div>
                 <div style={{ color }}>{fmtPct(growth)}</div>
               </div>
