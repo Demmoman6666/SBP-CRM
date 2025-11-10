@@ -11,6 +11,7 @@ type CustomerRow = {
   city?: string | null;
   orders: number;
   revenue: number;
+  vendorName?: string | null; // used for client-side filtering if API ignores vendor param
 };
 
 const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
@@ -33,7 +34,16 @@ function normaliseRows(data: any): CustomerRow[] {
     city: r.city ?? r.customerCity ?? null,
     orders: Number(r.orders ?? r.orderCount ?? 0),
     revenue: Number(r.revenue ?? r.total ?? r.sales ?? 0),
+    vendorName: r.vendor ?? r.vendorName ?? r.brand ?? r.brands ?? r.supplier ?? r.manufacturer ?? null,
   }));
+}
+
+async function fetchVariant(baseQS: URLSearchParams, vendor: string | null, key: "vendors" | "vendor" | "brands" | null) {
+  const qs = new URLSearchParams(baseQS);
+  if (key && vendor) qs.set(key, vendor);
+  const res = await fetch(`/api/reports/sales-by-customer?${qs.toString()}`, { cache: "no-store" });
+  const data = await res.json().catch(() => ({ rows: [] }));
+  return normaliseRows(data);
 }
 
 function CustomersClient() {
@@ -52,17 +62,28 @@ function CustomersClient() {
     (async () => {
       setLoading(true);
 
-      // use existing sales-by-customer API, filtering by vendor + date range
-      const qs = new URLSearchParams();
-      if (start) qs.set("start", start);
-      if (end) qs.set("end", end);
-      if (vendor) qs.set("vendors", vendor); // API expects comma-separated vendors
+      const baseQS = new URLSearchParams();
+      if (start) baseQS.set("start", start);
+      if (end)   baseQS.set("end", end);
 
-      const res = await fetch(`/api/reports/sales-by-customer?${qs.toString()}`, { cache: "no-store" });
-      const data = await res.json().catch(() => ({ rows: [] }));
+      // Try multiple parameter shapes your API may accept
+      let best = await fetchVariant(baseQS, vendor, "vendors");
+      if (!best.length) best = await fetchVariant(baseQS, vendor, "vendor");
+      if (!best.length) best = await fetchVariant(baseQS, vendor, "brands");
+      if (!best.length) best = await fetchVariant(baseQS, null, null); // unfiltered fallback
+
+      // If API didn't filter by vendor, filter client-side when we can detect vendor on rows
+      if (best.length && vendor) {
+        const v = vendor.toLowerCase();
+        const filtered = best.filter(r => (r.vendorName ?? "").toLowerCase() === v);
+        if (filtered.length) best = filtered;
+      }
+
+      // sort by revenue desc
+      best.sort((a, b) => b.revenue - a.revenue);
+
       if (!ok) return;
-
-      setRows(normaliseRows(data));
+      setRows(best);
       setLoading(false);
     })();
     return () => { ok = false; };
@@ -82,7 +103,7 @@ function CustomersClient() {
         {loading ? (
           <div className="small">Loading…</div>
         ) : rows.length === 0 ? (
-          <div className="small">No customers found.</div>
+          <div className="small">No customers found for this vendor and date range.</div>
         ) : (
           <table className="table">
             <thead>
@@ -92,18 +113,23 @@ function CustomersClient() {
                 <th>City</th>
                 <th style={{ textAlign: "right" }}>Orders</th>
                 <th style={{ textAlign: "right" }}>Revenue</th>
+                <th style={{ textAlign: "right" }}>AOV</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.id}>
-                  <td><Link className="link" href={`/customers/${r.id}`}>{r.name}</Link></td>
-                  <td>{r.email || "-"}</td>
-                  <td>{r.city || "-"}</td>
-                  <td style={{ textAlign: "right" }}>{r.orders}</td>
-                  <td style={{ textAlign: "right" }}>{gbp.format(r.revenue ?? 0)}</td>
-                </tr>
-              ))}
+              {rows.map((r) => {
+                const aov = r.orders ? r.revenue / r.orders : 0;
+                return (
+                  <tr key={r.id}>
+                    <td><Link className="link" href={`/customers/${r.id}`}>{r.name}</Link></td>
+                    <td>{r.email || "-"}</td>
+                    <td>{r.city || "-"}</td>
+                    <td style={{ textAlign: "right" }}>{r.orders}</td>
+                    <td style={{ textAlign: "right" }}>{gbp.format(r.revenue ?? 0)}</td>
+                    <td style={{ textAlign: "right" }}>{gbp.format(aov)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
