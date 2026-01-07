@@ -563,19 +563,21 @@ export default function NewCallPage() {
     </div>
   );
 
-  const BlockCallType = (
-    <div className="field">
-      <label>Call Type</label>
-      <select name="callType" defaultValue="">
-        <option value="" disabled>
-          — Select —
-        </option>
-        <option>Cold Call</option>
-        <option>Booked Call</option>
-        <option>Booked Demo</option>
-      </select>
-    </div>
-  );
+const BlockCallType = (
+  <div className="field">
+    <label>Call Type</label>
+    <select name="callType" defaultValue="">
+      <option value="" disabled>
+        — Select —
+      </option>
+
+      <option value="Cold Call">Cold Call</option>
+      <option value="1st Booked Call">1st Booked Call</option>
+      <option value="Sample Review">Sample Review</option>
+      <option value="Account Manage">Account Manage</option>
+    </select>
+  </div>
+);
 
   const BlockTimes = (
     <div className="grid grid-2">
