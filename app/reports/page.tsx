@@ -10,6 +10,12 @@ export default function ReportsHub() {
       </section>
 
       <section className="home-actions">
+        {/* Company Overview (new) */}
+        <Link href="/reports/company-overview" className="action-tile">
+          <div className="action-title">Company Overview</div>
+          <div className="action-sub">360° KPIs, cohorts &amp; forecast</div>
+        </Link>
+
         <Link href="/reports/calls" className="action-tile">
           <div className="action-title">Call Report</div>
           <div className="action-sub">Volumes, bookings &amp; conversion</div>
