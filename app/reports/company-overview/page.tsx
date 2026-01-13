@@ -23,13 +23,28 @@ type ApiOne = {
     newCustomersCreated: number;
     newCustomersFirstOrderCount: number;
     firstOrderAovExVat: number;
+    newCustomersNoOrder: number; // NEW
   };
   section3: {
     periodDays: number;
     elapsedDays: number;
+    remainingDays: number;
     runRatePerDay: number;
     projectedSalesEx: number;
     projectedProfit: number;
+    projectedIncrementalFromAcquisition: number; // NEW
+    projectedSalesExIfAcquisitionContinues: number; // NEW
+    byRepAcquisitionProjection: Array<{
+      repId: string | null;
+      repName: string;
+      acqRunRatePerDay: number;
+      firstOrderAovExVat: number;
+      remainingDays: number;
+      projectedNewFirstOrders: number;
+      projectedIncrementalSalesEx: number;
+      currentSalesEx: number;
+      projectedSalesExTotal: number;
+    }>;
   };
   section4: {
     revenueByRep: Array<{
@@ -53,6 +68,7 @@ type ApiOne = {
       newCustomersCreated: number;
       newCustomersFirstOrderCount: number;
       firstOrderAovExVat: number;
+      newCustomersNoOrder: number; // NEW per rep
     }>;
   };
 };
@@ -79,13 +95,20 @@ type Overview = {
   newCustomersCreated: number;
   newCustomersFirstOrderCount: number;
   firstOrderAovExVat: number;
+  newCustomersNoOrder: number; // NEW
 
   // forecast
   periodDays: number;
   elapsedDays: number;
+  remainingDays: number;
   runRatePerDay: number;
   projectedSalesEx: number;
   projectedProfit: number;
+
+  // acquisition-driven projection
+  projectedIncrementalFromAcquisition: number; // NEW
+  projectedSalesExIfAcquisitionContinues: number; // NEW
+  byRepAcquisitionProjection: ApiOne["section3"]["byRepAcquisitionProjection"]; // NEW
 
   // by rep
   revenueByRep: ApiOne["section4"]["revenueByRep"];
@@ -129,12 +152,12 @@ const fmtPct = (n: number | null | undefined) =>
 const fmtInt = (n: number | null | undefined) =>
   n == null ? "—" : `${Math.round(n)}`;
 
+/* ---------- Delta ---------- */
 const trendPct = (cur?: number | null, base?: number | null) => {
   if (cur == null || base == null) return null;
   if (base === 0) return cur === 0 ? 0 : 100;
   return ((cur - base) / Math.abs(base)) * 100;
 };
-
 function Delta({ cur, base }: { cur?: number | null; base?: number | null }) {
   const t = trendPct(cur, base);
   if (t == null) return <span className="small muted">—</span>;
@@ -144,8 +167,7 @@ function Delta({ cur, base }: { cur?: number | null; base?: number | null }) {
   const color = up ? "#059669" : down ? "#dc2626" : "var(--muted)";
   return (
     <span className="small" style={{ color, fontWeight: 600 }}>
-      {sign}
-      {Math.abs(t).toFixed(1)}%
+      {sign}{Math.abs(t).toFixed(1)}%
     </span>
   );
 }
@@ -171,12 +193,18 @@ function toOverview(api: ApiOne): Overview {
     newCustomersCreated: api?.section2?.newCustomersCreated ?? 0,
     newCustomersFirstOrderCount: api?.section2?.newCustomersFirstOrderCount ?? 0,
     firstOrderAovExVat: api?.section2?.firstOrderAovExVat ?? 0,
+    newCustomersNoOrder: api?.section2?.newCustomersNoOrder ?? 0,
 
     periodDays: api?.section3?.periodDays ?? 0,
     elapsedDays: api?.section3?.elapsedDays ?? 0,
+    remainingDays: api?.section3?.remainingDays ?? 0,
     runRatePerDay: api?.section3?.runRatePerDay ?? 0,
     projectedSalesEx: api?.section3?.projectedSalesEx ?? 0,
     projectedProfit: api?.section3?.projectedProfit ?? 0,
+
+    projectedIncrementalFromAcquisition: api?.section3?.projectedIncrementalFromAcquisition ?? 0,
+    projectedSalesExIfAcquisitionContinues: api?.section3?.projectedSalesExIfAcquisitionContinues ?? 0,
+    byRepAcquisitionProjection: api?.section3?.byRepAcquisitionProjection ?? [],
 
     revenueByRep: api?.section4?.revenueByRep ?? [],
     assignedSalesEx: api?.section4?.totals?.assignedSalesEx ?? 0,
@@ -567,7 +595,7 @@ export default function CompanyOverviewPage() {
                 r.repName || "Unassigned",
                 fmtMoney(r.salesEx, ccy),
                 fmtMoney(r.profit, ccy),
-                fmtPct(r.marginPct),
+                `${(r.marginPct ?? 0).toFixed(1)}%`,
                 fmtInt(r.ordersCount),
                 fmtInt(r.activeCustomers),
               ]}
@@ -608,15 +636,22 @@ export default function CompanyOverviewPage() {
             kind="money"
             currency={ccy}
           />
+          {/* NEW: Drop-offs */}
+          <MetricRow
+            label="New Customers with No Orders (drop-offs)"
+            cur={current?.newCustomersNoOrder}
+            compares={comparisons.map((c) => c.data.newCustomersNoOrder)}
+            kind="int"
+          />
         </div>
 
-        {/* New-customer attribution by rep */}
+        {/* New-customer attribution by rep (incl. no-order) */}
         <div style={{ padding: "10px 12px" }}>
           <div className="small muted">
-            New customers <b>by Rep</b> (current selection)
+            New customers <b>by Rep</b> (created, first orders, AOV, no-order)
           </div>
         </div>
-        <TableHeader cols={["Rep", "Created", "First Orders", "First-Order AOV (ex VAT)"]} />
+        <TableHeader cols={["Rep", "Created", "First Orders", "First-Order AOV (ex VAT)", "No Order"]} />
         <div>
           {current?.newCustomersByRep?.map((r) => (
             <TableRow
@@ -626,6 +661,7 @@ export default function CompanyOverviewPage() {
                 fmtInt(r.newCustomersCreated),
                 fmtInt(r.newCustomersFirstOrderCount),
                 fmtMoney(r.firstOrderAovExVat, ccy),
+                fmtInt(r.newCustomersNoOrder ?? 0),
               ]}
             />
           ))}
@@ -637,7 +673,7 @@ export default function CompanyOverviewPage() {
 
       {/* ---------------- Outlook / Forecast ---------------- */}
       <section className="card" style={{ padding: 0 }}>
-        <SectionHead title="Outlook" subtitle="Simple run-rate projection to the end of the selected period" />
+        <SectionHead title="Outlook" subtitle="Run-rate to period end + acquisition-driven growth" />
         <div>
           <MetricRow
             label="Run Rate (ex VAT) per Day"
@@ -647,19 +683,69 @@ export default function CompanyOverviewPage() {
             currency={ccy}
           />
           <MetricRow
-            label="Projected Sales (ex VAT) for Period"
+            label="Projected Sales (ex VAT) for Period (run-rate)"
             cur={current?.projectedSalesEx}
             compares={comparisons.map((c) => c.data.projectedSalesEx)}
             kind="money"
             currency={ccy}
           />
           <MetricRow
-            label="Projected Profit for Period"
+            label="Projected Profit for Period (run-rate)"
             cur={current?.projectedProfit}
             compares={comparisons.map((c) => c.data.projectedProfit)}
             kind="money"
             currency={ccy}
           />
+          {/* NEW: acquisition-driven company-level */}
+          <MetricRow
+            label="Projected Incremental Sales from New-Customer Acquisition"
+            cur={current?.projectedIncrementalFromAcquisition}
+            compares={comparisons.map((c) => c.data.projectedIncrementalFromAcquisition)}
+            kind="money"
+            currency={ccy}
+          />
+          <MetricRow
+            label="Projected Sales if Acquisition Continues (current + incremental)"
+            cur={current?.projectedSalesExIfAcquisitionContinues}
+            compares={comparisons.map((c) => c.data.projectedSalesExIfAcquisitionContinues)}
+            kind="money"
+            currency={ccy}
+          />
+        </div>
+
+        {/* NEW: Acquisition-driven growth by rep */}
+        <div style={{ padding: "10px 12px" }}>
+          <div className="small muted">
+            If each rep keeps acquiring at the current <b>first-order</b> run rate:
+          </div>
+        </div>
+        <TableHeader cols={[
+          "Rep",
+          "First-Order Run Rate / day",
+          "First-Order AOV (ex VAT)",
+          "Remaining days",
+          "Projected Extra Sales (ex VAT)",
+          "Projected Total Sales (ex VAT)"
+        ]} />
+        <div>
+          {current?.byRepAcquisitionProjection?.map((r) => (
+            <TableRow
+              key={`proj-${r.repId ?? "none"}:${r.repName}`}
+              cells={[
+                r.repName || "Unassigned",
+                (r.acqRunRatePerDay ?? 0).toFixed(2),
+                fmtMoney(r.firstOrderAovExVat, ccy),
+                fmtInt(r.remainingDays),
+                fmtMoney(r.projectedIncrementalSalesEx, ccy),
+                fmtMoney(r.projectedSalesExTotal, ccy),
+              ]}
+            />
+          ))}
+          {!current?.byRepAcquisitionProjection?.length && (
+            <div className="small muted" style={{ padding: "10px 12px" }}>
+              No acquisition activity detected in this period.
+            </div>
+          )}
         </div>
       </section>
     </div>
