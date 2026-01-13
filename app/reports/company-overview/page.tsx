@@ -31,6 +31,30 @@ type ApiOne = {
     projectedSalesEx: number;
     projectedProfit: number;
   };
+  section4: {
+    revenueByRep: Array<{
+      repId: string | null;
+      repName: string;
+      salesEx: number;
+      profit: number;
+      marginPct: number;
+      ordersCount: number;
+      activeCustomers: number;
+    }>;
+    totals: {
+      assignedSalesEx: number;
+      assignedProfit: number;
+      unassignedSalesEx: number;
+      unassignedProfit: number;
+    };
+    newCustomersByRep: Array<{
+      repId: string | null;
+      repName: string;
+      newCustomersCreated: number;
+      newCustomersFirstOrderCount: number;
+      firstOrderAovExVat: number;
+    }>;
+  };
 };
 
 type Overview = {
@@ -62,6 +86,15 @@ type Overview = {
   runRatePerDay: number;
   projectedSalesEx: number;
   projectedProfit: number;
+
+  // by rep
+  revenueByRep: ApiOne["section4"]["revenueByRep"];
+  assignedSalesEx: number;
+  assignedProfit: number;
+  unassignedSalesEx: number;
+  unassignedProfit: number;
+
+  newCustomersByRep: ApiOne["section4"]["newCustomersByRep"];
 };
 
 /* ---------- Date helpers ---------- */
@@ -91,15 +124,10 @@ function addDays(d: Date, n: number) {
 /* ---------- Formatting ---------- */
 const fmtMoney = (n: number | null | undefined, currency = "GBP") =>
   n == null ? "—" : new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(n);
-
 const fmtPct = (n: number | null | undefined) =>
   n == null ? "—" : `${n.toFixed(1)}%`;
-
 const fmtInt = (n: number | null | undefined) =>
   n == null ? "—" : `${Math.round(n)}`;
-
-const fmtMins = (n: number | null | undefined) =>
-  n == null ? "—" : `${(n as number).toFixed(1)}`;
 
 const trendPct = (cur?: number | null, base?: number | null) => {
   if (cur == null || base == null) return null;
@@ -149,15 +177,23 @@ function toOverview(api: ApiOne): Overview {
     runRatePerDay: api?.section3?.runRatePerDay ?? 0,
     projectedSalesEx: api?.section3?.projectedSalesEx ?? 0,
     projectedProfit: api?.section3?.projectedProfit ?? 0,
+
+    revenueByRep: api?.section4?.revenueByRep ?? [],
+    assignedSalesEx: api?.section4?.totals?.assignedSalesEx ?? 0,
+    assignedProfit: api?.section4?.totals?.assignedProfit ?? 0,
+    unassignedSalesEx: api?.section4?.totals?.unassignedSalesEx ?? 0,
+    unassignedProfit: api?.section4?.totals?.unassignedProfit ?? 0,
+
+    newCustomersByRep: api?.section4?.newCustomersByRep ?? [],
   };
 }
 
-/* ---------- Metric row (supports many compare columns) ---------- */
+/* ---------- Metric row ---------- */
 function MetricRow(props: {
   label: string;
   cur: number | null | undefined;
   compares?: Array<number | null | undefined>;
-  kind?: "money" | "pct" | "int" | "mins";
+  kind?: "money" | "pct" | "int";
   currency?: string;
 }) {
   const { label, cur, compares = [], kind, currency } = props;
@@ -166,7 +202,6 @@ function MetricRow(props: {
     switch (kind) {
       case "money": return fmtMoney(v as number, currency);
       case "pct":   return fmtPct(v as number);
-      case "mins":  return fmtMins(v as number);
       default:      return fmtInt(v as number);
     }
   };
@@ -195,6 +230,39 @@ function MetricRow(props: {
   );
 }
 
+/* ---------- Small tables ---------- */
+function TableHeader({ cols }: { cols: string[] }) {
+  return (
+    <div
+      className="row"
+      style={{
+        padding: "8px 12px",
+        borderTop: "1px solid var(--border)",
+        borderBottom: "1px solid var(--border)",
+        background: "#fafafa",
+        fontSize: 12,
+        fontWeight: 600,
+        color: "var(--muted)",
+      }}
+    >
+      {cols.map((c, i) => (
+        <div key={i} style={{ flex: i === 0 ? 2 : 1, textAlign: i === 0 ? "left" : "right" }}>{c}</div>
+      ))}
+    </div>
+  );
+}
+function TableRow({ cells }: { cells: (string | number)[] }) {
+  return (
+    <div className="row" style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", fontSize: 14 }}>
+      {cells.map((c, i) => (
+        <div key={i} style={{ flex: i === 0 ? 2 : 1, textAlign: i === 0 ? "left" : "right", fontWeight: i === 0 ? 600 : 500 }}>
+          {c}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* =======================================================================
    Page
    ======================================================================= */
@@ -203,7 +271,7 @@ export default function CompanyOverviewPage() {
   const [from, setFrom] = useState<string>(ymdLocal(firstOfMonth(today)));
   const [to, setTo] = useState<string>(ymdLocal(today));
 
-  // Compare mode
+  // Compare mode (date)
   type CmpMode = "date";
   const [showCompare, setShowCompare] = useState<boolean>(false);
   const [cmpMode] = useState<CmpMode>("date");
@@ -264,7 +332,6 @@ export default function CompanyOverviewPage() {
 
       const next: Array<{ label: string; data: Overview }> = [];
 
-      // date range compares
       if (dateMode === "custom") {
         const sc = await fetchOne(cmpFromDraft, cmpToDraft);
         next.push({ label: "Custom range", data: sc });
@@ -274,7 +341,7 @@ export default function CompanyOverviewPage() {
         const sc = await fetchOne(pf, pt);
         next.push({ label: "Previous year", data: sc });
       } else {
-        // previous-period: same span immediately before [from, to]
+        // previous-period
         const dFrom = parseYMD(from);
         const dTo = parseYMD(to);
         if (dFrom && dTo) {
@@ -301,7 +368,7 @@ export default function CompanyOverviewPage() {
     setComparisons([]);
   }
 
-  // Column headers above value/compare/delta
+  // Column header
   function SectionHead(props: { title: string; subtitle?: string }) {
     return (
       <>
@@ -483,7 +550,37 @@ export default function CompanyOverviewPage() {
           />
         </div>
 
-        {/* ---------------- Customers ---------------- */}
+        {/* Per-rep revenue/margin */}
+        <div style={{ padding: "10px 12px" }}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+            <div className="small muted">
+              Revenue & margin <b>by Rep</b> (current selection){current ? <> — assigned {fmtMoney(current.assignedSalesEx, ccy)} vs unassigned {fmtMoney(current.unassignedSalesEx, ccy)}</> : null}
+            </div>
+          </div>
+        </div>
+        <TableHeader cols={["Rep", "Sales (ex VAT)", "Profit", "Margin %", "Orders", "Active Cust."]} />
+        <div>
+          {current?.revenueByRep?.map((r) => (
+            <TableRow
+              key={`${r.repId ?? "none"}:${r.repName}`}
+              cells={[
+                r.repName || "Unassigned",
+                fmtMoney(r.salesEx, ccy),
+                fmtMoney(r.profit, ccy),
+                fmtPct(r.marginPct),
+                fmtInt(r.ordersCount),
+                fmtInt(r.activeCustomers),
+              ]}
+            />
+          ))}
+          {!current?.revenueByRep?.length && (
+            <div className="small muted" style={{ padding: "10px 12px" }}>No rep-attributed sales in this period.</div>
+          )}
+        </div>
+      </section>
+
+      {/* ---------------- Customers ---------------- */}
+      <section className="card" style={{ padding: 0 }}>
         <SectionHead title="Customers" subtitle="Engagement & acquisition" />
         <div>
           <MetricRow
@@ -513,31 +610,33 @@ export default function CompanyOverviewPage() {
           />
         </div>
 
-        {/* ---------------- New Customer Cohort ---------------- */}
-        <SectionHead title="New Customers Cohort" subtitle="First-order acquisition & quality" />
-        <div>
-          <MetricRow
-            label="New Customers Created"
-            cur={current?.newCustomersCreated}
-            compares={comparisons.map((c) => c.data.newCustomersCreated)}
-            kind="int"
-          />
-          <MetricRow
-            label="New Customers (first order in period)"
-            cur={current?.newCustomersFirstOrderCount}
-            compares={comparisons.map((c) => c.data.newCustomersFirstOrderCount)}
-            kind="int"
-          />
-          <MetricRow
-            label="First-Order AOV (ex VAT, > £0)"
-            cur={current?.firstOrderAovExVat}
-            compares={comparisons.map((c) => c.data.firstOrderAovExVat)}
-            kind="money"
-            currency={ccy}
-          />
+        {/* New-customer attribution by rep */}
+        <div style={{ padding: "10px 12px" }}>
+          <div className="small muted">
+            New customers <b>by Rep</b> (current selection)
+          </div>
         </div>
+        <TableHeader cols={["Rep", "Created", "First Orders", "First-Order AOV (ex VAT)"]} />
+        <div>
+          {current?.newCustomersByRep?.map((r) => (
+            <TableRow
+              key={`new-${r.repId ?? "none"}:${r.repName}`}
+              cells={[
+                r.repName || "Unassigned",
+                fmtInt(r.newCustomersCreated),
+                fmtInt(r.newCustomersFirstOrderCount),
+                fmtMoney(r.firstOrderAovExVat, ccy),
+              ]}
+            />
+          ))}
+          {!current?.newCustomersByRep?.length && (
+            <div className="small muted" style={{ padding: "10px 12px" }}>No new customers in this period.</div>
+          )}
+        </div>
+      </section>
 
-        {/* ---------------- Outlook / Forecast ---------------- */}
+      {/* ---------------- Outlook / Forecast ---------------- */}
+      <section className="card" style={{ padding: 0 }}>
         <SectionHead title="Outlook" subtitle="Simple run-rate projection to the end of the selected period" />
         <div>
           <MetricRow
