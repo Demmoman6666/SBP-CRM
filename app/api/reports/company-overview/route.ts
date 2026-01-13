@@ -342,16 +342,9 @@ export async function GET(req: Request) {
     const firstOrderAovExVat =
       newCustomersFirstOrderCount > 0 ? newCustomersFirstOrderAovSum / newCustomersFirstOrderCount : 0;
 
-    /* =============== SECTION 3: Forecast / Outlook (simple run-rate) =============== */
-    const today = new Date();
-    const clampedEnd = lte < today ? lte : today;
-    const totalDays = Math.max(1, Math.round((lte.getTime() - gte.getTime()) / 86400000) + 1);
-    const elapsedDays = clampedEnd >= gte ? Math.max(1, Math.round((clampedEnd.getTime() - gte.getTime()) / 86400000) + 1) : 1;
-    const runRatePerDay = elapsedDays > 0 ? salesEx / elapsedDays : 0;
-    const projectedSalesEx = lte > today ? runRatePerDay * totalDays : salesEx;
-    const projectedProfit = projectedSalesEx * (marginPct / 100);
-
-    /* =============== SECTION 4: Per-rep attribution for new customers =============== */
+    /* =============== SECTION 2b: New customers who have NOT ordered (drop-offs) =============== */
+    let newCustomersNoOrder = 0;
+    const newNoOrderByRep = new Map<string, { repId: string | null; repName: string; count: number }>();
     const newCreatedList = await prisma.customer.findMany({
       where: { createdAt: { gte, lte } },
       select: {
@@ -361,6 +354,96 @@ export async function GET(req: Request) {
         rep: { select: { id: true, name: true } },
       },
     });
+    if (newCreatedList.length) {
+      const newIds = newCreatedList.map(c => c.id);
+      const ordersByNew = await prisma.order.groupBy({
+        by: ["customerId"],
+        where: { customerId: { in: newIds }, processedAt: { lte } },
+        _count: { _all: true },
+      });
+      const hasOrderSet = new Set(ordersByNew.filter(r => (r._count?._all ?? 0) > 0).map(r => String(r.customerId)));
+
+      for (const c of newCreatedList) {
+        if (!hasOrderSet.has(c.id)) {
+          newCustomersNoOrder += 1;
+          const r = repFromCustomer(c as any);
+          const entry = newNoOrderByRep.get(r.key) ?? { repId: r.repId, repName: r.repName, count: 0 };
+          entry.count += 1;
+          newNoOrderByRep.set(r.key, entry);
+        }
+      }
+    }
+
+    /* =============== SECTION 3: Forecast / Outlook (run-rate + acquisition-driven) =============== */
+    const today = new Date();
+    const clampedEnd = lte < today ? lte : today;
+    const totalDays = Math.max(1, Math.round((lte.getTime() - gte.getTime()) / 86400000) + 1);
+    const elapsedDays = clampedEnd >= gte ? Math.max(1, Math.round((clampedEnd.getTime() - gte.getTime()) / 86400000) + 1) : 1;
+    const remainingDays = Math.max(0, totalDays - elapsedDays);
+
+    const runRatePerDay = elapsedDays > 0 ? salesEx / elapsedDays : 0;
+    const projectedSalesEx = lte > today ? runRatePerDay * totalDays : salesEx;
+    const projectedProfit = projectedSalesEx * (marginPct / 100);
+
+    // Acquisition-driven projection by rep: use FIRST-ORDER run-rate ✕ remaining days ✕ first-order AOV
+    const revenueByRepMap = new Map<string, { salesEx: number }>();
+    for (const r of revenueByRep) revenueByRepMap.set((r.repId ?? r.repName).toString(), { salesEx: r.salesEx });
+
+    // Build lookups for first-order stats by rep
+    const newCustomersByRep: Array<{
+      repId: string | null;
+      repName: string;
+      newCustomersCreated: number;
+      newCustomersFirstOrderCount: number;
+      firstOrderAovExVat: number;
+    }> = Array.from(
+      new Set([
+        ...Array.from(new Map(Array.from(firstOrderCountByRep).map(([key, v]) => [key, v])) .keys()),
+        ...Array.from(new Map(newCreatedList.map(c => [repFromCustomer(c as any).key, c])).keys()),
+      ])
+    ).map((key) => {
+      // created per rep
+      const created = newCreatedList.filter(c => repFromCustomer(c as any).key === key).length;
+      // first-order stats per rep
+      const f = firstOrderCountByRep.get(key);
+      const repId = f?.repId ?? null;
+      const repName = f?.repName ?? (newCreatedList.find(c => repFromCustomer(c as any).key === key) ? repFromCustomer(newCreatedList.find(c => repFromCustomer(c as any).key === key) as any).repName : "Unassigned");
+      const firstOrderCount = f?.cnt ?? 0;
+      const firstOrderAov = firstOrderCount > 0 ? (f?.sum ?? 0) / firstOrderCount : 0;
+      return {
+        repId,
+        repName,
+        newCustomersCreated: created,
+        newCustomersFirstOrderCount: firstOrderCount,
+        firstOrderAovExVat: firstOrderAov,
+      };
+    }).sort((a, b) => b.newCustomersFirstOrderCount - a.newCustomersFirstOrderCount);
+
+    const byRepAcquisitionProjection = newCustomersByRep.map((r) => {
+      const acqRunRatePerDay = elapsedDays > 0 ? r.newCustomersFirstOrderCount / elapsedDays : 0;
+      const projectedNewFirstOrders = acqRunRatePerDay * remainingDays;
+      const projectedIncrementalSalesEx = projectedNewFirstOrders * (r.firstOrderAovExVat || 0);
+      const key = (r.repId ?? r.repName).toString();
+      const currentRepSales = revenueByRepMap.get(key)?.salesEx ?? 0;
+      const projectedSalesExTotal = currentRepSales + projectedIncrementalSalesEx;
+      return {
+        repId: r.repId,
+        repName: r.repName,
+        acqRunRatePerDay,
+        firstOrderAovExVat: r.firstOrderAovExVat || 0,
+        remainingDays,
+        projectedNewFirstOrders,
+        projectedIncrementalSalesEx,
+        currentSalesEx: currentRepSales,
+        projectedSalesExTotal,
+      };
+    });
+
+    const projectedIncrementalFromAcquisition =
+      byRepAcquisitionProjection.reduce((s, r) => s + r.projectedIncrementalSalesEx, 0);
+    const projectedSalesExIfAcquisitionContinues = salesEx + projectedIncrementalFromAcquisition;
+
+    /* =============== SECTION 4: Per-rep attribution: created + first-order + no-order =============== */
     const createdByRepMap = new Map<string, { repId: string | null; repName: string; created: number }>();
     for (const c of newCreatedList) {
       const r = repFromCustomer(c as any);
@@ -369,16 +452,18 @@ export async function GET(req: Request) {
       createdByRepMap.set(r.key, row);
     }
 
-    const newCustomersByRep = Array.from(
+    const newCustomersByRepCombined = Array.from(
       new Set([
         ...Array.from(createdByRepMap.keys()),
         ...Array.from(firstOrderCountByRep.keys()),
+        ...Array.from(newNoOrderByRep.keys()),
       ])
     ).map((key) => {
       const created = createdByRepMap.get(key);
       const first   = firstOrderCountByRep.get(key);
-      const repId = created?.repId ?? first?.repId ?? null;
-      const repName = created?.repName ?? first?.repName ?? "Unassigned";
+      const noord   = newNoOrderByRep.get(key);
+      const repId = created?.repId ?? first?.repId ?? noord?.repId ?? null;
+      const repName = created?.repName ?? first?.repName ?? noord?.repName ?? "Unassigned";
       const firstOrderCount = first?.cnt ?? 0;
       const firstOrderAov = firstOrderCount > 0 ? (first?.sum ?? 0) / firstOrderCount : 0;
       return {
@@ -387,6 +472,7 @@ export async function GET(req: Request) {
         newCustomersCreated: created?.created ?? 0,
         newCustomersFirstOrderCount: firstOrderCount,
         firstOrderAovExVat: firstOrderAov,
+        newCustomersNoOrder: noord?.count ?? 0,
       };
     }).sort((a, b) => b.newCustomersCreated - a.newCustomersCreated);
 
@@ -410,13 +496,18 @@ export async function GET(req: Request) {
           newCustomersCreated,
           newCustomersFirstOrderCount,
           firstOrderAovExVat,
+          newCustomersNoOrder, // <-- NEW (company-wide drop-offs)
         },
         section3: {
           periodDays: totalDays,
           elapsedDays,
+          remainingDays,
           runRatePerDay,
           projectedSalesEx,
           projectedProfit,
+          projectedIncrementalFromAcquisition, // <-- NEW (company-wide)
+          projectedSalesExIfAcquisitionContinues, // <-- NEW
+          byRepAcquisitionProjection, // <-- NEW (array)
         },
         section4: {
           revenueByRep,
@@ -426,7 +517,7 @@ export async function GET(req: Request) {
             unassignedSalesEx,
             unassignedProfit,
           },
-          newCustomersByRep,
+          newCustomersByRep: newCustomersByRepCombined, // includes created, first-order, AOV, no-order
         },
       },
       { headers: { "cache-control": "no-store" } }
