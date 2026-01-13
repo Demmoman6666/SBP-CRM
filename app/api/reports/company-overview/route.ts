@@ -31,25 +31,15 @@ function sumLinesEx(
 }
 const approxEq = (a: number, b: number, eps = 0.02) => Math.abs(a - b) <= eps;
 
-/**
- * Compute effective ex-VAT revenue for an order after returns/exchanges.
- * Uses:
- *  - original subtotal/discounts
- *  - aggregated refundedNet (ex VAT)
- *  - refundedQuantity on line items (for exchanges without monetary refund)
- */
+/** Compute effective ex-VAT revenue for an order after returns/exchanges. */
 function liveNetExFromOrder(
   o: any,
   lines: { price: any | null; total: any | null; quantity: number | null; refundedQuantity?: number | null }[]
 ): { netEx: number; grossEx: number; discountsUsed: number } {
-  // Originals from DB
   const origSubtotal = toNum(o?.subtotal);   // ex VAT AFTER discounts
   const origDiscounts = toNum(o?.discounts); // ex VAT
-
-  // Gross from line items (original)
   const lineSumOriginal = sumLinesEx(lines);
 
-  // Derive base gross/net ex VAT
   let grossExBase: number;
   let netExBase: number;
   if (origSubtotal && approxEq(origSubtotal, lineSumOriginal)) {
@@ -60,16 +50,13 @@ function liveNetExFromOrder(
     netExBase = Math.max(0, grossExBase - origDiscounts);
   }
 
-  // Monetary refunds aggregated by your sync (ex VAT)
   const aggRefundNet = toNum(o?.refundedNet);
-
   if (aggRefundNet > 0) {
     const netEx = Math.max(0, netExBase - aggRefundNet);
     const grossEx = Math.max(0, grossExBase - aggRefundNet);
     return { netEx, grossEx, discountsUsed: origDiscounts };
   }
 
-  // Fallback: proportional adjustment by refundedQuantity (exchanges)
   const anyRefundQty = lines.some((li) => Number(li.refundedQuantity ?? 0) > 0);
   if (anyRefundQty && lineSumOriginal > 0) {
     const keptSum = lines.reduce((s, li) => {
@@ -79,7 +66,6 @@ function liveNetExFromOrder(
       const unit = li.total != null ? toNum(li.total) / Math.max(1, qty) : toNum(li.price);
       return s + unit * kept;
     }, 0);
-
     const ratio = Math.max(0, Math.min(1, keptSum / lineSumOriginal));
     const effectiveDiscount = origDiscounts * ratio;
 
@@ -88,8 +74,19 @@ function liveNetExFromOrder(
     return { netEx, grossEx, discountsUsed: effectiveDiscount };
   }
 
-  // Default
   return { netEx: netExBase, grossEx: grossExBase, discountsUsed: origDiscounts };
+}
+
+/* ----------------- helpers: rep attribution ----------------- */
+type RepInfo = { repId: string | null; repName: string; key: string };
+const UNASSIGNED_KEY = "__unassigned__";
+function repFromCustomer(c?: { salesRepId: string | null; salesRep: string | null; rep?: { id: string; name: string | null } | null }): RepInfo {
+  const id = c?.salesRepId ?? c?.rep?.id ?? null;
+  const name = (c?.rep?.name ?? c?.salesRep ?? "").trim();
+  if (id || name) {
+    return { repId: id, repName: name || "(Unnamed rep)", key: id ?? name.toLowerCase() };
+  }
+  return { repId: null, repName: "Unassigned", key: UNASSIGNED_KEY };
 }
 
 /* ----------------- route ----------------- */
@@ -114,26 +111,35 @@ export async function GET(req: Request) {
     let activeCustomers = 0;
     const activeCustomerSet = new Set<string>();
 
-    // Pull orders in range
+    // Per-rep aggregates
+    const repAgg = new Map<string, {
+      repId: string | null;
+      repName: string;
+      salesEx: number;
+      profit: number;
+      ordersCount: number;
+      activeCustomers: Set<string>;
+    }>();
+
     const orders = await prisma.order.findMany({
       where: { processedAt: { gte, lte } },
       select: {
         id: true,
         processedAt: true,
         currency: true,
-
-        // originals
-        subtotal: true,        // ex VAT AFTER discounts
-        discounts: true,       // ex VAT
-        taxes: true,           // VAT
-
-        // refunds (aggregated ex VAT)
+        subtotal: true,
+        discounts: true,
+        taxes: true,
         refundedNet: true,
         refundedTax: true,
-
         customerId: true,
-
-        // include refundedQuantity to adjust cost on exchanges
+        customer: {
+          select: {
+            salesRepId: true,
+            salesRep: true,
+            rep: { select: { id: true, name: true } },
+          },
+        },
         lineItems: {
           select: {
             variantId: true,
@@ -150,7 +156,6 @@ export async function GET(req: Request) {
     if (orders.length) {
       currency = orders[0]?.currency || currency;
 
-      // Costs map
       const allVariantIds = Array.from(
         new Set(
           orders.flatMap((o) =>
@@ -183,11 +188,6 @@ export async function GET(req: Request) {
       for (const o of orders) {
         const { netEx } = liveNetExFromOrder(o as any, o.lineItems);
 
-        if (netEx > 0.0001) {
-          ordersCount++;
-          if (o.customerId) activeCustomerSet.add(o.customerId);
-        }
-
         // Cost on kept quantity only
         let cost = 0;
         for (const li of o.lineItems) {
@@ -200,9 +200,33 @@ export async function GET(req: Request) {
           const kept = Math.max(0, qty - rqty);
           cost += unit * kept;
         }
+        const orderProfit = Math.max(0, netEx - cost);
 
+        // Overall
         salesEx += netEx;
-        profit  += Math.max(0, netEx - cost);
+        profit  += orderProfit;
+        if (netEx > 0.0001) {
+          ordersCount++;
+          if (o.customerId) activeCustomerSet.add(o.customerId);
+        }
+
+        // Per-rep
+        const r = repFromCustomer(o.customer || undefined);
+        const bucket = repAgg.get(r.key) ?? {
+          repId: r.repId,
+          repName: r.repName,
+          salesEx: 0,
+          profit: 0,
+          ordersCount: 0,
+          activeCustomers: new Set<string>(),
+        };
+        bucket.salesEx += netEx;
+        bucket.profit  += orderProfit;
+        if (netEx > 0.0001) {
+          bucket.ordersCount += 1;
+          if (o.customerId) bucket.activeCustomers.add(o.customerId);
+        }
+        repAgg.set(r.key, bucket);
       }
 
       activeCustomers = activeCustomerSet.size;
@@ -214,41 +238,71 @@ export async function GET(req: Request) {
     const avgRevenuePerActiveCustomer = activeCustomers > 0 ? salesEx / activeCustomers : 0;
     const activeRate = totalCustomers > 0 ? (activeCustomers / totalCustomers) * 100 : 0;
 
-    /* =============== SECTION 2: New customers & First-order AOV =============== */
-    // Customers created within the range
+    /* Produce per-rep rows + assigned/unassigned totals */
+    const revenueByRep = Array.from(repAgg.values())
+      .map((b) => ({
+        repId: b.repId,
+        repName: b.repName,
+        salesEx: b.salesEx,
+        profit: b.profit,
+        marginPct: b.salesEx > 0 ? (b.profit / b.salesEx) * 100 : 0,
+        ordersCount: b.ordersCount,
+        activeCustomers: b.activeCustomers.size,
+      }))
+      .sort((a, b) => b.salesEx - a.salesEx);
+
+    const assigned = revenueByRep.filter(r => r.repId !== null && r.repName !== "Unassigned");
+    const unassigned = revenueByRep.filter(r => r.repId === null || r.repName === "Unassigned");
+    const assignedSalesEx = assigned.reduce((s, r) => s + r.salesEx, 0);
+    const assignedProfit  = assigned.reduce((s, r) => s + r.profit, 0);
+    const unassignedSalesEx = unassigned.reduce((s, r) => s + r.salesEx, 0);
+    const unassignedProfit  = unassigned.reduce((s, r) => s + r.profit, 0);
+
+    /* =============== SECTION 2: New customers & First-order AOV (overall) =============== */
     const newCustomersCreated = await prisma.customer.count({
       where: { createdAt: { gte, lte } },
     });
 
-    // Determine customers whose FIRST-EVER order falls within [from, to]
+    // First-ever order cohort inside the window
     let newCustomersFirstOrderCount = 0;
     let newCustomersFirstOrderAovSum = 0;
 
+    // For per-rep attribution later
+    const firstOrderCountByRep = new Map<string, { repId: string | null; repName: string; cnt: number; sum: number }>();
+
     if (orders.length) {
       const custIds = Array.from(new Set(orders.map((o) => String(o.customerId || "")).filter(Boolean)));
-
       if (custIds.length) {
-        // Earliest order date per customer (only for customers seen in range to keep it tight)
         const mins = await prisma.order.groupBy({
           by: ["customerId"],
           where: { customerId: { in: custIds } },
           _min: { processedAt: true },
         });
 
-        // Build a lookup: cid -> earliest date
         const firstByCustomer = new Map<string, Date>();
         for (const row of mins) {
           if (!row.customerId || !row._min?.processedAt) continue;
           firstByCustomer.set(row.customerId, row._min.processedAt);
         }
 
-        // For each customer whose earliest falls within range, find that earliest order and compute netEx
         const firstCids = Array.from(firstByCustomer.entries())
           .filter(([, d]) => d >= gte && d <= lte)
           .map(([cid]) => cid);
 
         if (firstCids.length) {
-          // Fetch the first order per customer (ordered asc, take first)
+          // rep info for those customers
+          const firstCusts = await prisma.customer.findMany({
+            where: { id: { in: firstCids } },
+            select: {
+              id: true,
+              salesRepId: true,
+              salesRep: true,
+              rep: { select: { id: true, name: true } },
+            },
+          });
+          const firstCustRep = new Map<string, RepInfo>();
+          for (const c of firstCusts) firstCustRep.set(c.id, repFromCustomer(c as any));
+
           const firstOrders = await prisma.order.findMany({
             where: { customerId: { in: firstCids } },
             select: {
@@ -258,14 +312,11 @@ export async function GET(req: Request) {
               subtotal: true,
               discounts: true,
               refundedNet: true,
-              lineItems: {
-                select: { variantId: true, quantity: true, refundedQuantity: true, price: true, total: true },
-              },
+              lineItems: { select: { variantId: true, quantity: true, refundedQuantity: true, price: true, total: true } },
             },
             orderBy: [{ customerId: "asc" }, { processedAt: "asc" }, { id: "asc" }],
           });
 
-          // Take the first by customerId
           const seen = new Set<string>();
           for (const o of firstOrders) {
             const cid = String(o.customerId || "");
@@ -273,10 +324,15 @@ export async function GET(req: Request) {
             seen.add(cid);
 
             const { netEx } = liveNetExFromOrder(o as any, o.lineItems);
-            // Exclude zero-value "sample" orders from this average
             if (netEx > 0.0001) {
               newCustomersFirstOrderCount++;
               newCustomersFirstOrderAovSum += netEx;
+
+              const r = firstCustRep.get(cid) ?? { repId: null, repName: "Unassigned", key: UNASSIGNED_KEY };
+              const row = firstOrderCountByRep.get(r.key) ?? { repId: r.repId, repName: r.repName, cnt: 0, sum: 0 };
+              row.cnt += 1;
+              row.sum += netEx;
+              firstOrderCountByRep.set(r.key, row);
             }
           }
         }
@@ -294,6 +350,45 @@ export async function GET(req: Request) {
     const runRatePerDay = elapsedDays > 0 ? salesEx / elapsedDays : 0;
     const projectedSalesEx = lte > today ? runRatePerDay * totalDays : salesEx;
     const projectedProfit = projectedSalesEx * (marginPct / 100);
+
+    /* =============== SECTION 4: Per-rep attribution for new customers =============== */
+    const newCreatedList = await prisma.customer.findMany({
+      where: { createdAt: { gte, lte } },
+      select: {
+        id: true,
+        salesRepId: true,
+        salesRep: true,
+        rep: { select: { id: true, name: true } },
+      },
+    });
+    const createdByRepMap = new Map<string, { repId: string | null; repName: string; created: number }>();
+    for (const c of newCreatedList) {
+      const r = repFromCustomer(c as any);
+      const row = createdByRepMap.get(r.key) ?? { repId: r.repId, repName: r.repName, created: 0 };
+      row.created += 1;
+      createdByRepMap.set(r.key, row);
+    }
+
+    const newCustomersByRep = Array.from(
+      new Set([
+        ...Array.from(createdByRepMap.keys()),
+        ...Array.from(firstOrderCountByRep.keys()),
+      ])
+    ).map((key) => {
+      const created = createdByRepMap.get(key);
+      const first   = firstOrderCountByRep.get(key);
+      const repId = created?.repId ?? first?.repId ?? null;
+      const repName = created?.repName ?? first?.repName ?? "Unassigned";
+      const firstOrderCount = first?.cnt ?? 0;
+      const firstOrderAov = firstOrderCount > 0 ? (first?.sum ?? 0) / firstOrderCount : 0;
+      return {
+        repId,
+        repName,
+        newCustomersCreated: created?.created ?? 0,
+        newCustomersFirstOrderCount: firstOrderCount,
+        firstOrderAovExVat: firstOrderAov,
+      };
+    }).sort((a, b) => b.newCustomersCreated - a.newCustomersCreated);
 
     return NextResponse.json(
       {
@@ -322,6 +417,16 @@ export async function GET(req: Request) {
           runRatePerDay,
           projectedSalesEx,
           projectedProfit,
+        },
+        section4: {
+          revenueByRep,
+          totals: {
+            assignedSalesEx,
+            assignedProfit,
+            unassignedSalesEx,
+            unassignedProfit,
+          },
+          newCustomersByRep,
         },
       },
       { headers: { "cache-control": "no-store" } }
