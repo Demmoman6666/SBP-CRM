@@ -357,6 +357,9 @@ model Order {
 
   lineItems          OrderLineItem[]
 
+  // Shopify order tags (e.g. "sample", "wholesale")
+  tags               String[]   @default([])
+
   @@index([customerId, processedAt])
   @@index([shopifyCustomerId])
 }
