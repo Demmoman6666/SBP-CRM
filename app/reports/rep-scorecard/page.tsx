@@ -18,6 +18,8 @@ type ApiOne = {
     marginPct: number;
     avgOrderValueExVat?: number;
     ordersCount?: number;
+    firstTimeBuyerAov?: number | null;
+    firstTimeBuyerCount?: number;
   };
   section2: {
     totalCalls: number;
@@ -32,12 +34,11 @@ type ApiOne = {
     sampleReviewsToSale: number;
     avgTimePerCallMins: number;
     avgCallsPerDay: number;
-    activeDays: number; // API calls it activeDays
+    activeDays: number;
   };
   section3: {
     totalCustomers: number;
     newCustomers: number;
-    // Any of these may be present from the API; we’ll coalesce them.
     activeCustomers?: number;
     uniqueBuyers?: number;
     buyers?: number;
@@ -58,6 +59,8 @@ type Scorecard = {
   profit: number;
   avgOrderValueExVat: number;
   ordersCount: number;
+  firstTimeBuyerAov: number | null;
+  firstTimeBuyerCount: number;
   // calls
   totalCalls: number;
   coldCalls: number;
@@ -71,7 +74,7 @@ type Scorecard = {
   sampleReviewsToSale: number;
   avgTimePerCallMins: number;
   avgCallsPerDay: number;
-  daysActive: number; // local naming
+  daysActive: number;
   // customers
   totalCustomers: number;
   newCustomers: number;
@@ -177,6 +180,8 @@ function toScore(api: ApiOne): Scorecard {
     profit: api?.section1?.profit ?? 0,
     avgOrderValueExVat: api?.section1?.avgOrderValueExVat ?? 0,
     ordersCount: api?.section1?.ordersCount ?? 0,
+    firstTimeBuyerAov: api?.section1?.firstTimeBuyerAov ?? null,
+    firstTimeBuyerCount: api?.section1?.firstTimeBuyerCount ?? 0,
     totalCalls: api?.section2?.totalCalls ?? 0,
     coldCalls: api?.section2?.coldCalls ?? 0,
     bookedCalls: api?.section2?.bookedCalls ?? 0,
@@ -226,7 +231,6 @@ function ConversionRow(props: {
   return (
     <div className="row" style={rowStyle}>
       <div style={{ flex: 2 }}>{label}</div>
-      {/* Current: ratio + pct */}
       <div style={{ width: 180, textAlign: "right", fontWeight: 600 }}>
         <span>{fmtRatio(numerator, denominator)}</span>
         <span className="small muted" style={{ marginLeft: 6, fontWeight: 400 }}>
@@ -325,7 +329,7 @@ export default function RepScorecardPage() {
 
   // Drafts (not applied until user clicks Apply)
   const [cmpRepsDraft, setCmpRepsDraft] = useState<string[]>([]);
-  const [cmpRepsOpen, setCmpRepsOpen] = useState<boolean>(false); // dropdown open/close
+  const [cmpRepsOpen, setCmpRepsOpen] = useState<boolean>(false);
 
   const [cmpFromDraft, setCmpFromDraft] = useState<string>(ymdLocal(firstOfMonth(today)));
   const [cmpToDraft, setCmpToDraft] = useState<string>(ymdLocal(today));
@@ -363,7 +367,6 @@ export default function RepScorecardPage() {
       try {
         setLoading(true);
         setErr(null);
-        // IMPORTANT: send both rep and staff (same value) to satisfy API filters in all envs
         const qs = new URLSearchParams({ rep, staff: rep, from, to });
         const r = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
           cache: "no-store",
@@ -382,7 +385,6 @@ export default function RepScorecardPage() {
   }, [rep, from, to]);
 
   async function fetchOne(repName: string, f: string, t: string): Promise<Scorecard> {
-    // IMPORTANT: also pass staff for robustness
     const qs = new URLSearchParams({ rep: repName, staff: repName, from: f, to: t });
     const r = await fetch(`/api/reports/rep-scorecard?${qs.toString()}`, {
       cache: "no-store",
@@ -409,7 +411,6 @@ export default function RepScorecardPage() {
         }
         setCmpRepsOpen(false);
       } else {
-        // date range compares (against SAME rep)
         if (dateMode === "custom") {
           const sc = await fetchOne(rep, cmpFromDraft, cmpToDraft);
           next.push({ label: "Custom range", data: sc });
@@ -419,7 +420,6 @@ export default function RepScorecardPage() {
           const sc = await fetchOne(rep, pf, pt);
           next.push({ label: "Previous year", data: sc });
         } else {
-          // previous-period: same span immediately before [from, to]
           const dFrom = parseYMD(from);
           const dTo = parseYMD(to);
           if (dFrom && dTo) {
@@ -447,19 +447,6 @@ export default function RepScorecardPage() {
     setComparisons([]);
   }
 
-  const viewingLine = (
-    <div className="small muted">
-      Viewing <b>{rep || "—"}</b> {from ? <span> {from} </span> : null}
-      {to ? <>→ {to}</> : null}
-      {comparisons.length ? (
-        <>
-          {" "}• comparing to <b>{comparisons.map((c) => c.label).join(", ")}</b>
-        </>
-      ) : null}
-    </div>
-  );
-
-  // Column headers above value/compare/delta
   function SectionHead(props: { title: string; subtitle?: string }) {
     return (
       <>
@@ -526,7 +513,7 @@ export default function RepScorecardPage() {
           </div>
         </div>
 
-        {/* Compare toggle & panel (NOT auto-applied) */}
+        {/* Compare toggle & panel */}
         <div className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <button type="button" className="btn" onClick={() => setShowCompare((v) => !v)}>
             {showCompare ? "Hide compare" : "Compare…"}
@@ -543,7 +530,6 @@ export default function RepScorecardPage() {
                 width: "100%",
               }}
             >
-              {/* Mode selector */}
               <div className="row" style={{ gap: 12, alignItems: "center", marginBottom: 8 }}>
                 <label className="small muted">Compare mode</label>
                 <select value={cmpMode} onChange={(e) => setCmpMode(e.target.value as CmpMode)}>
@@ -553,7 +539,6 @@ export default function RepScorecardPage() {
               </div>
 
               {cmpMode === "reps" ? (
-                // Dropdown-style multi-select for reps + date range
                 <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr auto auto auto" }}>
                   <div className="field">
                     <label>Compare to (multi-select)</label>
@@ -647,7 +632,6 @@ export default function RepScorecardPage() {
                   </div>
                 </div>
               ) : (
-                // Date range compare: custom / previous period / previous year
                 <div className="grid" style={{ gap: 8, gridTemplateColumns: "1fr auto auto auto" }}>
                   <div className="field">
                     <label>Mode</label>
@@ -701,7 +685,6 @@ export default function RepScorecardPage() {
             className="btn"
             onClick={() => {
               if (!rep || !from || !to) return;
-              // re-run primary fetch (effect already watches rep/from/to)
               setFrom((s) => s);
               if (comparisons.length) applyCompare();
             }}
@@ -761,6 +744,13 @@ export default function RepScorecardPage() {
             kind="money"
             currency={ccy}
           />
+          <MetricRow
+            label={`First-Time Buyer AOV (ex VAT)${current?.firstTimeBuyerCount ? ` — ${current.firstTimeBuyerCount} new buyer${current.firstTimeBuyerCount !== 1 ? "s" : ""}` : ""}`}
+            cur={current?.firstTimeBuyerAov ?? undefined}
+            compares={comparisons.map((c) => c.data.firstTimeBuyerAov ?? undefined)}
+            kind="money"
+            currency={ccy}
+          />
         </div>
 
         {/* ---------------- Calls ---------------- */}
@@ -780,7 +770,6 @@ export default function RepScorecardPage() {
         {/* ---------------- Conversion Rates ---------------- */}
         <SectionHead title="Conversion Rates" subtitle="Outcomes as a ratio & % of call type" />
         <div>
-          {/* Cold Call → Appointment Booked */}
           <ConversionRow
             label="Cold Call → Appointment Booked"
             numerator={current?.coldCallsToAppointment}
@@ -788,7 +777,6 @@ export default function RepScorecardPage() {
             cmpNumerators={comparisons.map((c) => c.data.coldCallsToAppointment)}
             cmpDenominators={comparisons.map((c) => c.data.coldCalls)}
           />
-          {/* 1st Booked Call → Appointment Booked */}
           <ConversionRow
             label="1st Booked Call → Appointment Booked"
             numerator={current?.firstBookedToAppointment}
@@ -796,7 +784,6 @@ export default function RepScorecardPage() {
             cmpNumerators={comparisons.map((c) => c.data.firstBookedToAppointment)}
             cmpDenominators={comparisons.map((c) => c.data.firstBookedCalls)}
           />
-          {/* Sample Review → Sale */}
           <ConversionRow
             label="Sample Review → Sale"
             numerator={current?.sampleReviewsToSale}
