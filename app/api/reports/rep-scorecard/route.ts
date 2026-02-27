@@ -157,10 +157,12 @@ export async function GET(req: Request) {
     let salesEx = 0;
     let profit = 0;
     let currency = "GBP";
-    let ordersCount = 0;               // number of counted orders (netEx > 0)
+    let ordersCount = 0;
     let avgOrderValueExVat = 0;
-    let activeCustomers = 0;           // <-- NEW: distinct buyers in range for this rep
-    const activeCustomerIds = new Set<string>(); // <-- NEW
+    let activeCustomers = 0;
+    let firstTimeBuyerAov: number | null = null;
+    let firstTimeBuyerCount = 0;
+    const activeCustomerIds = new Set<string>();
 
     try {
       const orders = await prisma.order.findMany({
@@ -272,7 +274,64 @@ export async function GET(req: Request) {
         avgOrderValueExVat = ordersCount > 0 ? salesEx / ordersCount : 0;
 
         // Compute Active Customers (unique buyers)
-        activeCustomers = activeCustomerIds.size; // <-- NEW
+        activeCustomers = activeCustomerIds.size;
+      }
+
+      /* ---- First-time buyer AOV ----
+       * For every customer linked to this rep, fetch ALL their orders (all time),
+       * sorted ascending. Skip any orders tagged "sample".
+       * The first non-sample order per customer is their "first paid order".
+       * If that order falls within [gte, lte], include its netEx in the average.
+       */
+      if (repCustomerIdSet.size > 0) {
+        const allTimeOrders = await prisma.order.findMany({
+          where: { customerId: { in: Array.from(repCustomerIdSet) } },
+          select: {
+            id: true,
+            customerId: true,
+            processedAt: true,
+            subtotal: true,
+            discounts: true,
+            refundedNet: true,
+            tags: true,
+            lineItems: {
+              select: { variantId: true, quantity: true, refundedQuantity: true, price: true, total: true },
+            },
+          },
+          orderBy: { processedAt: "asc" },
+        });
+
+        // Group by customer
+        const byCustomer = new Map<string, typeof allTimeOrders>();
+        for (const o of allTimeOrders) {
+          if (!o.customerId) continue;
+          if (!byCustomer.has(o.customerId)) byCustomer.set(o.customerId, []);
+          byCustomer.get(o.customerId)!.push(o);
+        }
+
+        let ftbTotal = 0;
+        let ftbCount = 0;
+
+        for (const [, custOrders] of byCustomer) {
+          // Find the first order that is NOT tagged "sample" (case-insensitive)
+          let firstPaidOrder: typeof custOrders[0] | null = null;
+          for (const o of custOrders) {
+            const isSample = o.tags.some(t => t.trim().toLowerCase() === "sample");
+            if (!isSample) { firstPaidOrder = o; break; }
+          }
+          if (!firstPaidOrder) continue;
+
+          // Only count it if it falls within the selected date range
+          const pAt = firstPaidOrder.processedAt ? new Date(firstPaidOrder.processedAt) : null;
+          if (!pAt || pAt < gte || pAt > lte) continue;
+
+          const { netEx } = liveNetExFromOrder(firstPaidOrder as any, firstPaidOrder.lineItems);
+          ftbTotal += netEx;
+          ftbCount++;
+        }
+
+        firstTimeBuyerAov = ftbCount > 0 ? ftbTotal / ftbCount : null;
+        firstTimeBuyerCount = ftbCount;
       }
     } catch (e) {
       console.error("[rep-scorecard] orders section failed:", e);
@@ -377,8 +436,10 @@ export async function GET(req: Request) {
           salesEx,
           profit,
           marginPct,
-          ordersCount,             // number of orders counted in AOV
-          avgOrderValueExVat,      // AOV (ex VAT)
+          ordersCount,
+          avgOrderValueExVat,
+          firstTimeBuyerAov,
+          firstTimeBuyerCount,
         },
         section2: {
           totalCalls, coldCalls, bookedCalls, bookedDemos,
