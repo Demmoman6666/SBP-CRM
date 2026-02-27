@@ -24,6 +24,12 @@ type ApiOne = {
     coldCalls: number;
     bookedCalls: number;
     bookedDemos: number;
+    firstBookedCalls: number;
+    sampleReviews: number;
+    accountManage: number;
+    coldCallsToAppointment: number;
+    firstBookedToAppointment: number;
+    sampleReviewsToSale: number;
     avgTimePerCallMins: number;
     avgCallsPerDay: number;
     activeDays: number; // API calls it activeDays
@@ -57,6 +63,12 @@ type Scorecard = {
   coldCalls: number;
   bookedCalls: number;
   bookedDemos: number;
+  firstBookedCalls: number;
+  sampleReviews: number;
+  accountManage: number;
+  coldCallsToAppointment: number;
+  firstBookedToAppointment: number;
+  sampleReviewsToSale: number;
   avgTimePerCallMins: number;
   avgCallsPerDay: number;
   daysActive: number; // local naming
@@ -169,6 +181,12 @@ function toScore(api: ApiOne): Scorecard {
     coldCalls: api?.section2?.coldCalls ?? 0,
     bookedCalls: api?.section2?.bookedCalls ?? 0,
     bookedDemos: api?.section2?.bookedDemos ?? 0,
+    firstBookedCalls: api?.section2?.firstBookedCalls ?? 0,
+    sampleReviews: api?.section2?.sampleReviews ?? 0,
+    accountManage: api?.section2?.accountManage ?? 0,
+    coldCallsToAppointment: api?.section2?.coldCallsToAppointment ?? 0,
+    firstBookedToAppointment: api?.section2?.firstBookedToAppointment ?? 0,
+    sampleReviewsToSale: api?.section2?.sampleReviewsToSale ?? 0,
     avgTimePerCallMins: api?.section2?.avgTimePerCallMins ?? 0,
     avgCallsPerDay: api?.section2?.avgCallsPerDay ?? 0,
     daysActive: api?.section2?.activeDays ?? 0,
@@ -176,6 +194,73 @@ function toScore(api: ApiOne): Scorecard {
     newCustomers: api?.section3?.newCustomers ?? 0,
     activeCustomers: activeCustomersCoalesced,
   };
+}
+
+/* ---------- Conversion rate row ---------- */
+function convPct(num: number | null | undefined, den: number | null | undefined): number | null {
+  if (num == null || den == null || den === 0) return null;
+  return (num / den) * 100;
+}
+function fmtRatio(num: number | null | undefined, den: number | null | undefined): string {
+  if (num == null || den == null) return "—";
+  return `${Math.round(num)} / ${Math.round(den)}`;
+}
+
+function ConversionRow(props: {
+  label: string;
+  numerator: number | null | undefined;
+  denominator: number | null | undefined;
+  cmpNumerators?: Array<number | null | undefined>;
+  cmpDenominators?: Array<number | null | undefined>;
+}) {
+  const { label, numerator, denominator, cmpNumerators = [], cmpDenominators = [] } = props;
+
+  const curPct = convPct(numerator, denominator);
+  const rowStyle: React.CSSProperties = {
+    alignItems: "center",
+    padding: "16px 12px",
+    borderBottom: "1px solid var(--border)",
+    fontSize: 15,
+  };
+
+  return (
+    <div className="row" style={rowStyle}>
+      <div style={{ flex: 2 }}>{label}</div>
+      {/* Current: ratio + pct */}
+      <div style={{ width: 180, textAlign: "right", fontWeight: 600 }}>
+        <span>{fmtRatio(numerator, denominator)}</span>
+        <span className="small muted" style={{ marginLeft: 6, fontWeight: 400 }}>
+          {curPct != null ? `(${curPct.toFixed(1)}%)` : ""}
+        </span>
+      </div>
+      {cmpNumerators.map((cn, i) => {
+        const cmpPct = convPct(cn, cmpDenominators[i]);
+        const delta = curPct != null && cmpPct != null ? curPct - cmpPct : null;
+        const up = delta != null && delta > 0;
+        const down = delta != null && delta < 0;
+        const deltaColor = up ? "#059669" : down ? "#dc2626" : "var(--muted)";
+        return (
+          <div key={`cmpconv-${i}`} className="row" style={{ gap: 0, width: 270, justifyContent: "flex-end" }}>
+            <div style={{ width: 180, textAlign: "right", fontWeight: 600 }}>
+              <span>{fmtRatio(cn, cmpDenominators[i])}</span>
+              <span className="small muted" style={{ marginLeft: 6, fontWeight: 400 }}>
+                {cmpPct != null ? `(${cmpPct.toFixed(1)}%)` : ""}
+              </span>
+            </div>
+            <div style={{ width: 90, textAlign: "right" }}>
+              {delta != null ? (
+                <span className="small" style={{ color: deltaColor, fontWeight: 600 }}>
+                  {up ? "+" : down ? "−" : ""}{Math.abs(delta).toFixed(1)}pp
+                </span>
+              ) : (
+                <span className="small muted">—</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /* ---------- Metric row (supports many compare columns) ---------- */
@@ -683,11 +768,42 @@ export default function RepScorecardPage() {
         <div>
           <MetricRow label="Total Calls" cur={current?.totalCalls} compares={comparisons.map((c) => c.data.totalCalls)} kind="int" />
           <MetricRow label="Cold Calls" cur={current?.coldCalls} compares={comparisons.map((c) => c.data.coldCalls)} kind="int" />
-          <MetricRow label="Booked Calls" cur={current?.bookedCalls} compares={comparisons.map((c) => c.data.bookedCalls)} kind="int" />
+          <MetricRow label="1st Booked Calls" cur={current?.firstBookedCalls} compares={comparisons.map((c) => c.data.firstBookedCalls)} kind="int" />
+          <MetricRow label="Sample Reviews" cur={current?.sampleReviews} compares={comparisons.map((c) => c.data.sampleReviews)} kind="int" />
+          <MetricRow label="Account Manage" cur={current?.accountManage} compares={comparisons.map((c) => c.data.accountManage)} kind="int" />
           <MetricRow label="Booked Demos" cur={current?.bookedDemos} compares={comparisons.map((c) => c.data.bookedDemos)} kind="int" />
           <MetricRow label="Average Time Per Call (mins)" cur={current?.avgTimePerCallMins} compares={comparisons.map((c) => c.data.avgTimePerCallMins)} kind="mins" />
           <MetricRow label="Average Calls per Day" cur={current?.avgCallsPerDay} compares={comparisons.map((c) => c.data.avgCallsPerDay)} kind="mins" />
           <MetricRow label="Days Active" cur={current?.daysActive} compares={comparisons.map((c) => c.data.daysActive)} kind="int" />
+        </div>
+
+        {/* ---------------- Conversion Rates ---------------- */}
+        <SectionHead title="Conversion Rates" subtitle="Outcomes as a ratio & % of call type" />
+        <div>
+          {/* Cold Call → Appointment Booked */}
+          <ConversionRow
+            label="Cold Call → Appointment Booked"
+            numerator={current?.coldCallsToAppointment}
+            denominator={current?.coldCalls}
+            cmpNumerators={comparisons.map((c) => c.data.coldCallsToAppointment)}
+            cmpDenominators={comparisons.map((c) => c.data.coldCalls)}
+          />
+          {/* 1st Booked Call → Appointment Booked */}
+          <ConversionRow
+            label="1st Booked Call → Appointment Booked"
+            numerator={current?.firstBookedToAppointment}
+            denominator={current?.firstBookedCalls}
+            cmpNumerators={comparisons.map((c) => c.data.firstBookedToAppointment)}
+            cmpDenominators={comparisons.map((c) => c.data.firstBookedCalls)}
+          />
+          {/* Sample Review → Sale */}
+          <ConversionRow
+            label="Sample Review → Sale"
+            numerator={current?.sampleReviewsToSale}
+            denominator={current?.sampleReviews}
+            cmpNumerators={comparisons.map((c) => c.data.sampleReviewsToSale)}
+            cmpDenominators={comparisons.map((c) => c.data.sampleReviews)}
+          />
         </div>
 
         {/* ---------------- Customers ---------------- */}
