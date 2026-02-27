@@ -266,6 +266,7 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
       taxes: toNumber(order.total_tax),
       discounts: toNumber(order.total_discounts),
       shipping,
+      tags: parseShopifyTags(order.tags),
     },
     update: {
       shopifyOrderNumber: order.order_number ?? null,
@@ -282,6 +283,7 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
       taxes: toNumber(order.total_tax),
       discounts: toNumber(order.total_discounts),
       shipping,
+      tags: parseShopifyTags(order.tags),
     },
   });
 
