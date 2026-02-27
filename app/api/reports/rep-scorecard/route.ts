@@ -283,6 +283,8 @@ export async function GET(req: Request) {
     /* =============== SECTION 2: Calls (case-insensitive staff match) =============== */
     let totalCalls = 0, coldCalls = 0, bookedCalls = 0, bookedDemos = 0;
     let totalDuration = 0, activeDays = 0, avgTimePerCallMins = 0, avgCallsPerDay = 0;
+    let firstBookedCalls = 0, sampleReviews = 0, accountManage = 0;
+    let coldCallsToAppointment = 0, firstBookedToAppointment = 0, sampleReviewsToSale = 0;
 
     try {
       const where =
@@ -298,6 +300,7 @@ export async function GET(req: Request) {
         select: {
           createdAt: true,
           callType: true,
+          outcome: true,
           durationMinutes: true,
           startTime: true,
           endTime: true,
@@ -310,13 +313,27 @@ export async function GET(req: Request) {
       const activeDaysSet = new Set<string>();
       for (const c of calls) {
         const ct = norm(c.callType);
-        if (ct.includes("cold")) coldCalls++;
-        if (ct.includes("booked call")) bookedCalls++;
+        const oc = norm(c.outcome);
+
+        if (ct.includes("cold")) {
+          coldCalls++;
+          if (oc.includes("appointment")) coldCallsToAppointment++;
+        }
+        if (ct.includes("1st booked") || ct === "booked call") {
+          firstBookedCalls++;
+          bookedCalls++; // keep legacy counter
+          if (oc.includes("appointment")) firstBookedToAppointment++;
+        }
         if (ct.includes("booked demo")) bookedDemos++;
+        if (ct.includes("sample review")) {
+          sampleReviews++;
+          if (oc === "sale") sampleReviewsToSale++;
+        }
+        if (ct.includes("account manage")) accountManage++;
 
         totalDuration += durationMins(c);
 
-        const dayKey = new Date(c.createdAt).toISOString().slice(0, 10); // UTC YYYY-MM-DD
+        const dayKey = new Date(c.createdAt).toISOString().slice(0, 10);
         activeDaysSet.add(dayKey);
       }
       activeDays = activeDaysSet.size;
@@ -365,6 +382,8 @@ export async function GET(req: Request) {
         },
         section2: {
           totalCalls, coldCalls, bookedCalls, bookedDemos,
+          firstBookedCalls, sampleReviews, accountManage,
+          coldCallsToAppointment, firstBookedToAppointment, sampleReviewsToSale,
           avgTimePerCallMins, avgCallsPerDay, activeDays,
         },
         section3: { totalCustomers, newCustomers, activeCustomers }, // <-- NEW
