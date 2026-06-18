@@ -209,7 +209,8 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     const line_items: Stripe.PaymentLinkCreateParams.LineItem[] = [];
     for (const li of draftLines) {
       const inc = Number(li.price??0) * (1 + VAT_RATE);
-      const price = await stripe.prices.create({ currency: "gbp", unit_amount: Math.round(inc*100), tax_behavior: "inclusive", product_data: { name: `${li.title??"Item"}${li.variant_title?` — ${li.variant_title}`:""}` } });
+      const itemName = (li.title || "Item") + (li.variant_title ? " — " + li.variant_title : "");
+      const price = await stripe.prices.create({ currency: "gbp", unit_amount: Math.round(inc*100), tax_behavior: "inclusive", product_data: { name: itemName } });
       line_items.push({ price: price.id, quantity: Number(li.quantity||1) });
     }
     const origin = process.env.APP_URL?.replace(/\/$/,"") || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
