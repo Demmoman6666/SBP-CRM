@@ -743,14 +743,13 @@ const BlockCallType = (
           </>
         ) : (
           <>
-            {/* Mobile layout in requested order */}
+            {/* Mobile layout - existing toggle first */}
+            {BlockExistingToggle}
             {BlockCustomer}
             {BlockSalesRep}
             {BlockStage}
             {BlockCallType}
             {BlockOutcome}
-            {/* Then the rest */}
-            {BlockExistingToggle}
             {BlockLocation}
             {BlockTimes}
             {BlockDuration}
