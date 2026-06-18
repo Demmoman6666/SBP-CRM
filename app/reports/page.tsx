@@ -46,16 +46,16 @@ export default function ReportsHub() {
           <div className="action-sub">Individual performance</div>
         </Link>
 
-        {/* Sales Reps Directory */}
-        <Link href="/reps" className="action-tile">
-          <div className="action-title">Sales Reps</div>
-          <div className="action-sub">Profiles, customers &amp; calls</div>
+        {/* Brand Penetration */}
+        <Link href="/reports/brand-penetration" className="action-tile">
+          <div className="action-title">Brand Penetration</div>
+          <div className="action-sub">Which customers stock which brands</div>
         </Link>
 
-        {/* Sales Reps Directory */}
-        <Link href="/reps" className="action-tile">
-          <div className="action-title">Sales Reps</div>
-          <div className="action-sub">Profiles, customers &amp; calls</div>
+        {/* Brand Penetration */}
+        <Link href="/reports/brand-penetration" className="action-tile">
+          <div className="action-title">Brand Penetration</div>
+          <div className="action-sub">Which customers stock which brands</div>
         </Link>
       </section>
     </div>
