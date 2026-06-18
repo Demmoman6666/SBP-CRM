@@ -166,6 +166,18 @@ export default function SettingsMenu() {
                   <span>➕</span>
                   <span>Add New User</span>
                 </Link>
+                <Link href="/settings/global/stocked-brands" style={itemStyle} onClick={() => setOpen(false)}>
+                  <span>🏷️</span>
+                  <span>Brand Management</span>
+                </Link>
+                <Link href="/settings?tab=reps" style={itemStyle} onClick={() => setOpen(false)}>
+                  <span>👤</span>
+                  <span>Sales Rep Management</span>
+                </Link>
+                <Link href="/settings?tab=tools" style={itemStyle} onClick={() => setOpen(false)}>
+                  <span>🔧</span>
+                  <span>Admin Tools</span>
+                </Link>
               </>
             )}
 
