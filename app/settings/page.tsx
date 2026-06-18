@@ -8,7 +8,7 @@ type Me = {
   email: string;
   fullName?: string | null;
   phone?: string | null;
-  role: "USER" | "ADMIN";
+  role: "ADMIN" | "MANAGER" | "REP" | "VIEWER";
   features: Record<string, boolean> | null;
 };
 
@@ -17,7 +17,8 @@ type UserRow = {
   email: string;
   fullName?: string | null;
   phone?: string | null;
-  role: "USER" | "ADMIN";
+  role: "ADMIN" | "MANAGER" | "REP" | "VIEWER";
+  isActive: boolean;
   features: Record<string, boolean> | null;
 };
 
@@ -40,12 +41,13 @@ const FEATURE_LIST: Array<{ key: string; label: string }> = [
 
 function SettingsInner() {
   const searchParams = useSearchParams();
-  const initialTab = searchParams.get("tab") === "reps" ? "reps" : "account";
+  const initialTab = searchParams.get("tab") === "reps" ? "reps" : searchParams.get("tab") === "admin" ? "admin" : "account";
 
   const [tab, setTab] = useState<"account" | "admin" | "reps">(initialTab as any);
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // account
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
@@ -54,9 +56,12 @@ function SettingsInner() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
+  // admin users
   const [users, setUsers] = useState<UserRow[]>([]);
+  const [userMsg, setUserMsg] = useState<string | null>(null);
   const isAdmin = me?.role === "ADMIN";
 
+  // sales reps
   const [reps, setReps] = useState<SalesRep[]>([]);
   const [repsLoading, setRepsLoading] = useState(false);
   const [editingRep, setEditingRep] = useState<SalesRep | null>(null);
@@ -67,7 +72,7 @@ function SettingsInner() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("/api/settings/account", { cache: "no-store" });
+        const r = await fetch("/api/me", { cache: "no-store" });
         if (!r.ok) throw new Error("Unauthenticated");
         const j = (await r.json()) as Me;
         setMe(j);
@@ -75,8 +80,7 @@ function SettingsInner() {
         setPhone(j.phone ?? "");
         setEmail(j.email ?? "");
         if (j.role === "ADMIN") {
-          const list = await fetch("/api/admin/users", { cache: "no-store" }).then((x) => x.json());
-          setUsers(list ?? []);
+          await loadUsers();
         }
       } catch {
       } finally {
@@ -84,6 +88,11 @@ function SettingsInner() {
       }
     })();
   }, []);
+
+  async function loadUsers() {
+    const list = await fetch("/api/admin/users", { cache: "no-store" }).then((x) => x.json());
+    setUsers(list ?? []);
+  }
 
   async function loadReps() {
     setRepsLoading(true);
@@ -123,14 +132,47 @@ function SettingsInner() {
   }
 
   async function saveUser(u: UserRow) {
+    setUserMsg(null);
     const r = await fetch(`/api/admin/users/${u.id}/permissions`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ role: u.role, features: u.features || {} }),
     });
-    if (!r.ok) {
+    if (r.ok) {
+      setUserMsg("Saved.");
+    } else {
       const j = await r.json().catch(() => ({}));
-      alert(j?.error || "Update failed");
+      setUserMsg(j?.error || "Update failed");
+    }
+  }
+
+  async function deleteUser(u: UserRow) {
+    if (!confirm(`Delete user "${u.fullName || u.email}"? This cannot be undone.`)) return;
+    setUserMsg(null);
+    const r = await fetch(`/api/admin/users/${u.id}`, { method: "DELETE" });
+    if (r.ok) {
+      setUserMsg("User deleted.");
+      await loadUsers();
+    } else {
+      const j = await r.json().catch(() => ({}));
+      setUserMsg(j?.error || "Delete failed");
+    }
+  }
+
+  async function syncUserAsRep(u: UserRow) {
+    setRepMsg(null);
+    try {
+      const r = await fetch("/api/salesreps", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: u.fullName || u.email, email: u.email, phone: u.phone }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Failed");
+      setRepMsg(`${u.fullName || u.email} added as a sales rep.`);
+      if (tab === "reps") await loadReps();
+    } catch (e: any) {
+      setRepMsg(e.message || "Failed");
     }
   }
 
@@ -209,6 +251,7 @@ function SettingsInner() {
         </div>
       </section>
 
+      {/* ---- Account ---- */}
       {tab === "account" && (
         <section className="card grid" style={{ gap: 12 }}>
           <div className="grid grid-2" style={{ gap: 12 }}>
@@ -225,10 +268,35 @@ function SettingsInner() {
         </section>
       )}
 
+      {/* ---- Sales Reps ---- */}
       {tab === "reps" && isAdmin && (
         <div className="grid" style={{ gap: 16 }}>
+
+          {/* Promote a user to rep */}
+          {users.filter(u => u.isActive).length > 0 && (
+            <section className="card">
+              <h2 style={{ marginBottom: 4 }}>Add User as Sales Rep</h2>
+              <p className="small muted" style={{ marginBottom: 12 }}>Quickly add an existing CRM user as a sales rep.</p>
+              <div style={{ display: "grid", gap: 8 }}>
+                {users.filter(u => u.isActive && u.fullName).map(u => (
+                  <div key={u.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, background: "#fff" }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: "0.9rem" }}>{u.fullName}</div>
+                      <div className="small muted">{u.email}</div>
+                    </div>
+                    <button className="btn" style={{ fontSize: "0.8rem", padding: "5px 12px" }} onClick={() => syncUserAsRep(u)}>
+                      + Add as Rep
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {repMsg && <div className="small muted" style={{ marginTop: 8 }}>{repMsg}</div>}
+            </section>
+          )}
+
+          {/* Add rep manually */}
           <section className="card">
-            <h2 style={{ marginBottom: 12 }}>Add Sales Rep</h2>
+            <h2 style={{ marginBottom: 12 }}>Add Rep Manually</h2>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
               <div className="field"><label>Name *</label><input placeholder="e.g. Sarah Jones" value={newRep.name} onChange={(e) => setNewRep((p) => ({ ...p, name: e.target.value }))} /></div>
               <div className="field"><label>Email</label><input placeholder="sarah@example.com" value={newRep.email} onChange={(e) => setNewRep((p) => ({ ...p, email: e.target.value }))} /></div>
@@ -237,10 +305,10 @@ function SettingsInner() {
             </div>
             <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center" }}>
               <button className="primary" onClick={addRep} disabled={addingRep}>{addingRep ? "Adding…" : "Add Rep"}</button>
-              {repMsg && <span className="small muted">{repMsg}</span>}
             </div>
           </section>
 
+          {/* Existing reps */}
           <section className="card">
             <h2 style={{ marginBottom: 12 }}>Existing Reps</h2>
             {repsLoading ? <p className="small muted">Loading…</p> : reps.length === 0 ? <p className="small muted">No reps yet.</p> : (
@@ -285,29 +353,45 @@ function SettingsInner() {
         </div>
       )}
 
+      {/* ---- Admin ---- */}
       {tab === "admin" && isAdmin && (
         <section className="card">
-          <h2>User Permissions</h2>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h2>User Management</h2>
+            {userMsg && <span className="small muted">{userMsg}</span>}
+          </div>
           {users.length === 0 ? <p className="small">No users.</p> : (
             <div className="grid" style={{ gap: 12 }}>
               {users.map((u) => {
                 const feats = (u.features || {}) as Record<string, boolean>;
                 return (
                   <div key={u.id} className="card" style={{ border: "1px solid var(--border)", padding: 12 }}>
-                    <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                    <div className="row" style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                       <div>
                         <b>{u.fullName || u.email}</b>
                         <div className="small muted">{u.email}</div>
+                        <div className="small muted">{u.isActive ? "Active" : "Inactive"}</div>
                       </div>
-                      <div className="row" style={{ gap: 8 }}>
+                      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                         <label className="small row" style={{ gap: 6 }}>
                           Role:
                           <select value={u.role} onChange={(e) => setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, role: e.target.value as any } : x)))}>
-                            <option value="USER">User</option>
                             <option value="ADMIN">Admin</option>
+                            <option value="MANAGER">Manager</option>
+                            <option value="REP">Rep</option>
+                            <option value="VIEWER">Viewer</option>
                           </select>
                         </label>
                         <button className="primary" onClick={() => saveUser(u)}>Save</button>
+                        {u.id !== me?.id && (
+                          <button
+                            className="btn"
+                            style={{ color: "#dc2626", borderColor: "#dc2626" }}
+                            onClick={() => deleteUser(u)}
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
                     </div>
                     <div className="grid" style={{ gap: 6, marginTop: 8 }}>
