@@ -403,10 +403,12 @@ function SettingsInner() {
                     if (!confirm(`This will remove the rep assignment from ${toolPreview.wouldUnassign} customers. Continue?`)) return;
                     setToolRunning(true); setToolMsg(null);
                     try {
-                      const r = await fetch(`/api/admin/unassign-inactive-reps?days=${toolDays}&confirm=1`);
+                      const r = await fetch(`/api/admin/unassign-inactive-reps?days=${toolDays}&confirm=1&shopify=1`);
                       const j = await r.json();
                       if (!r.ok) throw new Error(j.error || "Failed");
-                      setToolMsg(j.message);
+                      const shopifyLine = j.shopifyUpdated > 0 ? ` ${j.shopifyUpdated} Shopify tags removed.` : '';
+                      const failLine = j.shopifyFailed > 0 ? ` ${j.shopifyFailed} Shopify updates failed.` : '';
+                      setToolMsg(j.message + shopifyLine + failLine);
                       setToolPreview(null);
                     } catch (e: any) { setToolMsg(e.message); }
                     finally { setToolRunning(false); }
@@ -433,6 +435,10 @@ function SettingsInner() {
                   <div className="card" style={{ textAlign: "center", flex: "1 1 120px" }}>
                     <div style={{ fontSize: "1.8rem", fontWeight: 800, color: "#16a34a" }}>{toolPreview.total - toolPreview.wouldUnassign}</div>
                     <div className="small muted">Would remain</div>
+                  </div>
+                  <div className="card" style={{ textAlign: "center", flex: "1 1 120px" }}>
+                    <div style={{ fontSize: "1.8rem", fontWeight: 800, color: "#2563eb" }}>{toolPreview.withShopifyId || 0}</div>
+                    <div className="small muted">Shopify tags to remove</div>
                   </div>
                 </div>
 
