@@ -65,94 +65,7 @@ export default function BrandPenetrationPage() {
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
         <h1>Brand Penetration</h1>
-        <p className="small muted">See which of your customers stock each of your brands — and who's missing opportunities.</p>
-      </section>
-
-      <section className="card">
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 10 }}>
-          <div className="field"><label>From</label><input type="date" value={from} onChange={e => setFrom(e.target.value)} /></div>
-          <div className="field"><label>To</label><input type="date" value={to} onChange={e => setTo(e.target.value)} /></div>
-          <div className="field">
-            <label>Sales Rep</label>
-            <select value={repId} onChange={e => setRepId(e.target.value)}>
-              <option value="">All reps</option>
-              {reps.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
-
-
-
-
-
-mkdir -p 'app/reports/brand-penetration'
-cat > 'app/reports/brand-penetration/page.tsx' << 'EOF'
-"use client";
-
-import { useEffect, useState } from "react";
-
-type Rep = { id: string; name: string };
-type Row = { customerId: string; salonName: string; salesRep: string | null; stage: string; brands: Record<string, boolean>; count: number; allFour: boolean };
-type Summary = { brand: string; customers: number; pct: number };
-type Buckets = { all: number; three: number; two: number; one: number; none: number };
-
-export default function BrandPenetrationPage() {
-  const [reps, setReps] = useState<Rep[]>([]);
-  const [brands, setBrands] = useState<string[]>([]);
-  const [rows, setRows] = useState<Row[]>([]);
-  const [summary, setSummary] = useState<Summary[]>([]);
-  const [buckets, setBuckets] = useState<Buckets | null>(null);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [repId, setRepId] = useState("");
-  const [filterBrand, setFilterBrand] = useState("");
-  const [filterCount, setFilterCount] = useState("");
-  const [search, setSearch] = useState("");
-
-  useEffect(() => {
-    fetch("/api/sales-reps", { cache: "no-store" }).then(r => r.json()).then(j => setReps(Array.isArray(j) ? j : [])).catch(() => setReps([]));
-  }, []);
-
-  async function run() {
-    setLoading(true); setError(null);
-    try {
-      const qs = new URLSearchParams();
-      if (from) qs.set("from", from);
-      if (to) qs.set("to", to);
-      if (repId) qs.set("repId", repId);
-      const r = await fetch(`/api/reports/brand-penetration?${qs}`, { cache: "no-store" });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || "Failed");
-      setBrands(j.brands || []); setRows(j.rows || []); setSummary(j.summary || []); setBuckets(j.buckets || null); setTotal(j.total || 0);
-    } catch (e: any) { setError(e.message); } finally { setLoading(false); }
-  }
-
-  const filtered = rows.filter(r => {
-    if (search && !r.salonName.toLowerCase().includes(search.toLowerCase())) return false;
-    if (filterBrand && !r.brands[filterBrand]) return false;
-    if (filterCount === "all" && !r.allFour) return false;
-    if (filterCount === "0" && r.count !== 0) return false;
-    if (filterCount === "1" && r.count !== 1) return false;
-    if (filterCount === "2" && r.count !== 2) return false;
-    if (filterCount === "3" && r.count !== 3) return false;
-    return true;
-  });
-
-  function setRange(type: "30" | "month" | "year") {
-    const now = new Date(); const e = now.toISOString().slice(0, 10); let s: string;
-    if (type === "month") s = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-    else if (type === "year") s = new Date(now.getFullYear(), 0, 1).toISOString().slice(0, 10);
-    else { const d = new Date(now); d.setDate(d.getDate() - 30); s = d.toISOString().slice(0, 10); }
-    setFrom(s); setTo(e);
-  }
-
-  return (
-    <div className="grid" style={{ gap: 16 }}>
-      <section className="card">
-        <h1>Brand Penetration</h1>
-        <p className="small muted">See which of your customers stock each of your brands — and who's missing opportunities.</p>
+        <p className="small muted">See which of your customers stock each of your brands — and who is missing opportunities.</p>
       </section>
 
       <section className="card">
@@ -174,7 +87,7 @@ export default function BrandPenetrationPage() {
           <button className="btn" style={{ fontSize: "0.8rem" }} onClick={() => setRange("year")}>Year to date</button>
           <button className="btn" style={{ fontSize: "0.8rem" }} onClick={() => { setFrom(""); setTo(""); }}>All time</button>
         </div>
-        <button className="primary" onClick={run} disabled={loading}>{loading ? "Running…" : "Run Report"}</button>
+        <button className="primary" onClick={run} disabled={loading}>{loading ? "Running..." : "Run Report"}</button>
         {error && <div className="small" style={{ color: "var(--red)", marginTop: 8 }}>{error}</div>}
       </section>
 
@@ -217,7 +130,7 @@ export default function BrandPenetrationPage() {
 
           <section className="card">
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12, alignItems: "flex-end" }}>
-              <div className="field" style={{ flex: "1 1 160px" }}><label>Search</label><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Salon name…" /></div>
+              <div className="field" style={{ flex: "1 1 160px" }}><label>Search</label><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Salon name..." /></div>
               <div className="field" style={{ flex: "1 1 140px" }}>
                 <label>Filter by brand</label>
                 <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)}>
