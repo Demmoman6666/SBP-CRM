@@ -508,20 +508,22 @@ function AiBriefPanel({ customerId, salonName }: { customerId: string; salonName
     if (!win) return;
     const title = mode === "snapshot" ? "Business Snapshot - " + salonName : "Pre-Call Brief - " + salonName;
     const date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-    win.document.write(`<!DOCTYPE html><html><head><title>${title}</title><style>
-      body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #111; }
-      h1 { font-size: 1.4rem; border-bottom: 2px solid #FEB3E4; padding-bottom: 8px; }
-      h2 { font-size: 1rem; margin-top: 20px; color: #9d174d; }
-      p { line-height: 1.6; }
-      .meta { color: #666; font-size: 0.85rem; margin-bottom: 20px; }
-      pre { white-space: pre-wrap; font-family: Arial, sans-serif; line-height: 1.7; }
-    </style></head><body>
-      <h1>${title}</h1>
-      <div class="meta">Generated: ${date} | Salon Brands Pro CRM</div>
-      <pre>${brief.replace(/## /g, "
-## ").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
-      <script>window.onload = function() { window.print(); }</script>
-    </body></html>`);
+    const safeBrief = brief.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const html = [
+      "<!DOCTYPE html><html><head><title>" + title + "</title>",
+      "<style>",
+      "body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #111; }",
+      "h1 { font-size: 1.4rem; border-bottom: 2px solid #FEB3E4; padding-bottom: 8px; }",
+      ".meta { color: #666; font-size: 0.85rem; margin-bottom: 20px; }",
+      "pre { white-space: pre-wrap; font-family: Arial, sans-serif; line-height: 1.7; }",
+      "</style></head><body>",
+      "<h1>" + title + "</h1>",
+      "<div class='meta'>Generated: " + date + " | Salon Brands Pro CRM</div>",
+      "<pre>" + safeBrief + "</pre>",
+      "<scr" + "ipt>window.onload = function() { window.print(); }</scr" + "ipt>",
+      "</body></html>",
+    ].join("");
+    win.document.write(html);
     win.document.close();
   }
 
