@@ -232,12 +232,13 @@ model Note {
 }
 
 model SalesRep {
-  id        String   @id @default(cuid())
-  name      String   @unique
-  email     String?
-  phone     String?
-  territory String?
-  createdAt DateTime @default(now())
+  id             String    @id @default(cuid())
+  name           String    @unique
+  email          String?
+  phone          String?
+  territory      String?
+  cycleStartDate DateTime?
+  createdAt      DateTime  @default(now())
 
   tagRules  SalesRepTagRule[]
 

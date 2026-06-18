@@ -12,7 +12,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     return NextResponse.json({ error: "Admin only" }, { status: 403 });
   }
   try {
-    const { name, email, phone, territory } = await req.json();
+    const { name, email, phone, territory, cycleStartDate } = await req.json();
     if (name !== undefined && !String(name).trim()) {
       return NextResponse.json({ error: "Name cannot be empty" }, { status: 400 });
     }
@@ -23,6 +23,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         ...(email !== undefined ? { email: email ? String(email).trim() : null } : {}),
         ...(phone !== undefined ? { phone: phone ? String(phone).trim() : null } : {}),
         ...(territory !== undefined ? { territory: territory ? String(territory).trim() : null } : {}),
+        ...(cycleStartDate !== undefined ? { cycleStartDate: cycleStartDate ? new Date(cycleStartDate) : null } : {}),
       },
     });
     return NextResponse.json(rep);
