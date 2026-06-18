@@ -197,7 +197,7 @@ export default function RoutePlanPage() {
                   }}>W{week}</span>
                 </div>
                 {DAYS.map((day, di) => {
-                  const isTodayCell = isTodayCell(week, day);
+                  const isCellToday = isTodayCell(week, day);
                   const isSelected = selectedWeek === week && selectedDay === day;
                   return (
                     <button
@@ -205,15 +205,15 @@ export default function RoutePlanPage() {
                       onClick={() => { setSelectedWeek(week); setSelectedDay(day); }}
                       style={{
                         padding: "8px 4px", borderRadius: 8, textAlign: "center", cursor: "pointer",
-                        border: isSelected ? "2px solid var(--pink)" : isTodayCell ? "2px solid var(--text)" : "1px solid var(--border)",
-                        background: isSelected ? "var(--pink-light)" : isTodayCell ? "#f8fafc" : "#fff",
-                        fontSize: "0.75rem", fontWeight: isTodayCell ? 700 : 400,
+                        border: isSelected ? "2px solid var(--pink)" : isCellToday ? "2px solid var(--text)" : "1px solid var(--border)",
+                        background: isSelected ? "var(--pink-light)" : isCellToday ? "#f8fafc" : "#fff",
+                        fontSize: "0.75rem", fontWeight: isCellToday ? 700 : 400,
                         color: isSelected ? "var(--pink-dark)" : "var(--text)",
                         transition: "all 0.1s",
                       }}
                     >
                       {DAY_SHORT[di]}
-                      {isTodayCell && <div style={{ fontSize: "0.6rem", color: "var(--pink-dark)", marginTop: 2 }}>Today</div>}
+                      {isCellToday && <div style={{ fontSize: "0.6rem", color: "var(--pink-dark)", marginTop: 2 }}>Today</div>}
                     </button>
                   );
                 })}

@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
 import { shopifyRest } from "@/lib/shopify";
+import { savePaymentTerms, createPaymentLink } from "./actions";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -179,45 +180,8 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
   const lastOrder = orders[0];
   const lastOrderDate = lastOrder ? fmtDate((lastOrder as any).processedAt||(lastOrder as any).createdAt) : null;
 
-  async function savePaymentTermsAction(formData: FormData) {
-    "use server";
-    const enabled = formData.get("paymentDueLater") === "on";
-    if (!enabled) {
-      await prisma.customer.update({ where: { id: customer.id }, data: { paymentDueLater: false, paymentTermsName: null, paymentTermsDueInDays: null } });
-      redirect(`/customers/${customer.id}?saved=1`);
-    }
-    const nameRaw = String(formData.get("paymentTermsName")||"Due on receipt").trim();
-    const canonicalName = uiLabelToCanonicalName(nameRaw)||"Due on receipt";
-    const term = TERMS.find(t => t.value === canonicalName);
-    const dueDays = (typeof term?.dueInDays === "number" ? term?.dueInDays : null) as number | null;
-    await prisma.customer.update({ where: { id: customer.id }, data: { paymentDueLater: true, paymentTermsName: canonicalName, paymentTermsDueInDays: dueDays } });
-    redirect(`/customers/${customer.id}?saved=1`);
-  }
-
-  async function createPaymentLinkAction(formData: FormData) {
-    "use server";
-    const draftId = String(formData.get("draftId")||"");
-    if (!draftId) throw new Error("Missing draftId");
-    const stripeSecret = process.env.STRIPE_SECRET_KEY||"";
-    if (!stripeSecret) throw new Error("Missing STRIPE_SECRET_KEY");
-    const resp = await shopifyRest(`/draft_orders/${draftId}.json`, { method: "GET" });
-    if (!resp.ok) throw new Error(`Failed to load draft: ${resp.status}`);
-    const draft = (await resp.json())?.draft_order as any;
-    const draftLines = (draft?.line_items||[]) as any[];
-    if (!draftLines.length) throw new Error("Draft has no line items");
-    const stripe = new Stripe(stripeSecret, { apiVersion: "2023-10-16" });
-    const line_items: Stripe.PaymentLinkCreateParams.LineItem[] = [];
-    for (const li of draftLines) {
-      const inc = Number(li.price??0) * (1 + VAT_RATE);
-      const itemName = (li.title || "Item") + (li.variant_title ? " — " + li.variant_title : "");
-      const price = await stripe.prices.create({ currency: "gbp", unit_amount: Math.round(inc*100), tax_behavior: "inclusive", product_data: { name: itemName } });
-      line_items.push({ price: price.id, quantity: Number(li.quantity||1) });
-    }
-    const origin = process.env.APP_URL?.replace(/\/$/,"") || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
-    const sharedMeta = { crmCustomerId: customer.id, shopifyCustomerId: shopifyCustomerId||"", crmDraftOrderId: String(draftId), source: "SBP-CRM" };
-    const link = await stripe.paymentLinks.create({ line_items, after_completion: { type: "redirect", redirect: { url: `${origin}/customers/${customer.id}?paid=1` } }, metadata: sharedMeta, payment_intent_data: { metadata: sharedMeta }, automatic_tax: { enabled: false } });
-    redirect(link.url!);
-  }
+  const savePaymentTermsAction = savePaymentTerms.bind(null, customer.id);
+  const createPaymentLinkAction = createPaymentLink.bind(null, customer.id, shopifyCustomerId);
 
   const stage = c.stage || "LEAD";
   const tabs = [
