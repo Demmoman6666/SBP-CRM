@@ -45,6 +45,18 @@ export default function ReportsHub() {
           <div className="action-title">Rep Scorecard</div>
           <div className="action-sub">Individual performance</div>
         </Link>
+
+        {/* Sales Reps Directory */}
+        <Link href="/reps" className="action-tile">
+          <div className="action-title">Sales Reps</div>
+          <div className="action-sub">Profiles, customers &amp; calls</div>
+        </Link>
+
+        {/* Sales Reps Directory */}
+        <Link href="/reps" className="action-tile">
+          <div className="action-title">Sales Reps</div>
+          <div className="action-sub">Profiles, customers &amp; calls</div>
+        </Link>
       </section>
     </div>
   );
