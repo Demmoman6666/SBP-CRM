@@ -18,13 +18,11 @@ async function fetchShopifyProductsByVendor(vendor: string): Promise<Product[]> 
   let pageInfo: string | null = null;
 
   for (let i = 0; i < 10; i++) {
-    const qs = new URLSearchParams({
-      vendor,
-      limit: "250",
-      fields: "id,title,vendor,variants",
-      status: "active",
-    });
-    const url = `/products.json?${qs.toString()}${pageInfo ? `&page_info=${encodeURIComponent(pageInfo)}` : ""}`;
+    // On page 2+, Shopify only allows page_info + limit — no other params
+    const qs = pageInfo
+      ? new URLSearchParams({ limit: "250", page_info: pageInfo })
+      : new URLSearchParams({ vendor, limit: "250", fields: "id,title,vendor,variants", status: "active" });
+    const url = `/products.json?${qs.toString()}`;
 
     const r = await shopifyRest(url, { method: "GET" });
     if (!r.ok) {
