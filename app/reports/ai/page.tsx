@@ -189,19 +189,16 @@ A brief bullet summary of the most important numbers.
 
 Be direct and specific. Use the actual data. Don't be vague. If something is concerning, say so clearly. If something is impressive, say so. This report will be used in a real sales management 1:1 meeting.`;
 
-      // Step 2: Call Claude API
-      const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
+      // Step 2: Call our server-side API route (keeps API key secure)
+      const aiRes = await fetch("/api/ai/report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: prompt }],
-        }),
+        body: JSON.stringify({ prompt }),
       });
 
       const aiJson = await aiRes.json();
-      const text = aiJson?.content?.[0]?.text || "";
+      if (!aiRes.ok) throw new Error(aiJson?.error || "AI request failed");
+      const text = aiJson?.text || "";
       if (!text) throw new Error("No response from AI");
       setReport(text);
 
