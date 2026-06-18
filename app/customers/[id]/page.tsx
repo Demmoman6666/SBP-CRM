@@ -1,15 +1,12 @@
 // @refreshed
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
-import Stripe from "stripe";
+import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { shopifyRest } from "@/lib/shopify";
 import { savePaymentTerms, createPaymentLink } from "./actions";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-const VAT_RATE = Number(process.env.VAT_RATE ?? "0.20");
 
 function money(n?: any, currency = "GBP") {
   if (n == null) return "—";
@@ -101,28 +98,7 @@ async function loadNotes(customerId: string) {
   } catch { return []; }
 }
 
-const TERMS = [
-  { value: "Due on receipt", label: "Due on receipt", dueInDays: null },
-  { value: "Due on fulfillment", label: "Due on fulfillment", dueInDays: null },
-  { value: "Net 7", label: "Within 7 days", dueInDays: 7 },
-  { value: "Net 15", label: "Within 15 days", dueInDays: 15 },
-  { value: "Net 30", label: "Within 30 days", dueInDays: 30 },
-  { value: "Net 45", label: "Within 45 days", dueInDays: 45 },
-  { value: "Net 60", label: "Within 60 days", dueInDays: 60 },
-  { value: "Net 90", label: "Within 90 days", dueInDays: 90 },
-];
-function uiLabelToCanonicalName(input?: string|null): string|null {
-  if (!input) return null;
-  const s = input.trim();
-  if (/^(Due on receipt|Due on fulfillment|Net (7|15|30|45|60|90)|Fixed date)$/i.test(s)) return s;
-  const within = s.match(/within\s+(\d+)\s*days?/i);
-  if (within) return `Net ${Number(within[1])}`;
-  const m = s.match(/net\s*(\d+)/i)||s.match(/\b(\d{1,3})\b/);
-  if (m) { const d = Number(m[1]); if ([7,15,30,45,60,90].includes(d)) return `Net ${d}`; }
-  if (/receipt/i.test(s)) return "Due on receipt";
-  if (/fulfil?ment/i.test(s)) return "Due on fulfillment";
-  return null;
-}
+
 
 type PageProps = { params: { id: string }; searchParams?: Record<string, string|string[]|undefined> };
 
