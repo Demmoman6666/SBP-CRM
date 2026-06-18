@@ -91,7 +91,7 @@ function MultiSelect({ label, options, value, onChange, placeholder = "All" }: {
             <button className="btn" style={{ fontSize: "0.75rem", padding: "3px 10px" }} onClick={() => onChange([])}>All</button>
             <button className="btn" style={{ fontSize: "0.75rem", padding: "3px 10px" }} onClick={() => onChange(options)}>None</button>
           </div>
-          <div style={{ maxHeight: 220, overflowY: "auto", display: "grid", gap: 4 }}>
+          <div style={{ display: "grid", gap: 4 }}>
             {filtered.map((o) => (
               <label key={o} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: "0.875rem", cursor: "pointer" }}>
                 <input
