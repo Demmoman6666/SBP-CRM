@@ -793,3 +793,10 @@ model CustomerProductPar {
   @@unique([customerId, sku], map: "customer_sku_unique")
   @@index([sku])
 }
+
+// ---------------- Route Cycle Settings ----------------
+model CycleSettings {
+  id             Int      @id @default(1)
+  cycleStartDate DateTime // The Monday of Week 1
+  updatedAt      DateTime @updatedAt
+}
