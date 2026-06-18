@@ -140,7 +140,6 @@ export default function RoutePlanPage() {
   }
 
   const todayDay = getTodayDay();
-  const checkIsToday = (week: number, day: string) => week === currentWeek && day === todayDay && cycleStart !== null;
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
@@ -200,7 +199,7 @@ export default function RoutePlanPage() {
                   }}>{"W" + week}</span>
                 </div>
                 {DAYS.map((day, di) => {
-                  const cellIsToday = checkIsToday(week, day);
+                  const cellIsToday = (week === currentWeek && day === todayDay && cycleStart !== null);
                   const isSelected = selectedWeek === week && selectedDay === day;
                   return (
                     <button
@@ -232,7 +231,7 @@ export default function RoutePlanPage() {
             <div>
               <h2 style={{ marginBottom: 2 }}>
                 {"Week " + selectedWeek + " — " + DAY_SHORT[DAYS.indexOf(selectedDay)]}
-                {checkIsToday(selectedWeek, selectedDay) && (
+                {(selectedWeek === currentWeek && selectedDay === todayDay && cycleStart !== null) && (
                   <span style={{ marginLeft: 8, padding: "2px 10px", borderRadius: 999, fontSize: "0.75rem", background: "var(--pink)", color: "#fff", fontWeight: 600 }}>Today</span>
                 )}
               </h2>
