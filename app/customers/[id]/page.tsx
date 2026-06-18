@@ -1,4 +1,5 @@
 // @refreshed
+import React from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
@@ -479,10 +480,10 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
 }
 
 function AiBriefPanel({ customerId, salonName }: { customerId: string; salonName: string }) {
-  const [mode, setMode] = (require("react") as any).useState<"precall" | "snapshot" | null>(null);
-  const [loading, setLoading] = (require("react") as any).useState(false);
-  const [brief, setBrief] = (require("react") as any).useState("");
-  const [error, setError] = (require("react") as any).useState<string | null>(null);
+  const [mode, setMode] = React.useState<"precall" | "snapshot" | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [brief, setBrief] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
 
   function generate(selectedMode: "precall" | "snapshot") {
     setMode(selectedMode);
