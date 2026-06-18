@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
 type Me = {
@@ -38,7 +38,7 @@ const FEATURE_LIST: Array<{ key: string; label: string }> = [
   { key: "tools.profitCalculator", label: "Tool: Profit Calculator" },
 ];
 
-export default function SettingsPage() {
+function SettingsInner() {
   const searchParams = useSearchParams();
   const initialTab = searchParams.get("tab") === "reps" ? "reps" : "account";
 
@@ -330,5 +330,13 @@ export default function SettingsPage() {
         </section>
       )}
     </div>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<section className="card"><h1>Settings</h1><p className="small">Loading…</p></section>}>
+      <SettingsInner />
+    </Suspense>
   );
 }
