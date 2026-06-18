@@ -43,7 +43,7 @@ function SettingsInner() {
   const searchParams = useSearchParams();
   const initialTab = searchParams.get("tab") === "reps" ? "reps" : searchParams.get("tab") === "admin" ? "admin" : "account";
 
-  const [tab, setTab] = useState<"account" | "admin" | "reps">(initialTab as any);
+  const [tab, setTab] = useState<"account" | "admin" | "reps" | "tools">(initialTab as any);
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -64,6 +64,10 @@ function SettingsInner() {
   // sales reps
   const [reps, setReps] = useState<SalesRep[]>([]);
   const [repsLoading, setRepsLoading] = useState(false);
+  const [toolDays, setToolDays] = useState(90);
+  const [toolPreview, setToolPreview] = useState<any>(null);
+  const [toolRunning, setToolRunning] = useState(false);
+  const [toolMsg, setToolMsg] = useState<string | null>(null);
   const [editingRep, setEditingRep] = useState<SalesRep | null>(null);
   const [newRep, setNewRep] = useState({ name: "", email: "", phone: "", territory: "" });
   const [repMsg, setRepMsg] = useState<string | null>(null);
@@ -245,6 +249,7 @@ function SettingsInner() {
               <>
                 <button className={tab === "reps" ? "chip primary" : "chip"} onClick={() => setTab("reps")}>Sales Reps</button>
                 <button className={tab === "admin" ? "chip primary" : "chip"} onClick={() => setTab("admin")}>Admin</button>
+                <button className={tab === "tools" ? "chip primary" : "chip"} onClick={() => setTab("tools")}>Tools</button>
               </>
             )}
           </div>
@@ -354,6 +359,109 @@ function SettingsInner() {
       )}
 
       {/* ---- Admin ---- */}
+      {tab === "tools" && isAdmin && (
+        <div className="grid" style={{ gap: 16 }}>
+          <section className="card">
+            <h2 style={{ marginBottom: 4 }}>Unassign Inactive Customers</h2>
+            <p className="small muted" style={{ marginBottom: 16 }}>
+              Removes the sales rep tag from customers who have not placed an order within the selected number of days.
+              Run a preview first to see who would be affected before committing.
+            </p>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 12 }}>
+              <div className="field">
+                <label>Inactive threshold (days)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={toolDays}
+                  onChange={e => setToolDays(Math.max(1, parseInt(e.target.value) || 90))}
+                  style={{ width: 120 }}
+                />
+              </div>
+              <button
+                className="btn"
+                disabled={toolRunning}
+                onClick={async () => {
+                  setToolRunning(true); setToolMsg(null); setToolPreview(null);
+                  try {
+                    const r = await fetch(`/api/admin/unassign-inactive-reps?days=${toolDays}`);
+                    const j = await r.json();
+                    if (!r.ok) throw new Error(j.error || "Failed");
+                    setToolPreview(j);
+                  } catch (e: any) { setToolMsg(e.message); }
+                  finally { setToolRunning(false); }
+                }}
+              >
+                {toolRunning ? "Checking..." : "Preview"}
+              </button>
+              {toolPreview && (
+                <button
+                  className="primary"
+                  disabled={toolRunning || toolPreview.wouldUnassign === 0}
+                  onClick={async () => {
+                    if (!confirm(`This will remove the rep assignment from ${toolPreview.wouldUnassign} customers. Continue?`)) return;
+                    setToolRunning(true); setToolMsg(null);
+                    try {
+                      const r = await fetch(`/api/admin/unassign-inactive-reps?days=${toolDays}&confirm=1`);
+                      const j = await r.json();
+                      if (!r.ok) throw new Error(j.error || "Failed");
+                      setToolMsg(j.message);
+                      setToolPreview(null);
+                    } catch (e: any) { setToolMsg(e.message); }
+                    finally { setToolRunning(false); }
+                  }}
+                >
+                  Confirm &amp; Run ({toolPreview.wouldUnassign} customers)
+                </button>
+              )}
+            </div>
+
+            {toolMsg && <div className="small" style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: "#dcfce7", color: "#16a34a", fontWeight: 600 }}>{toolMsg}</div>}
+
+            {toolPreview && (
+              <div>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
+                  <div className="card" style={{ textAlign: "center", flex: "1 1 120px" }}>
+                    <div style={{ fontSize: "1.8rem", fontWeight: 800, color: "#dc2626" }}>{toolPreview.wouldUnassign}</div>
+                    <div className="small muted">Would be unassigned</div>
+                  </div>
+                  <div className="card" style={{ textAlign: "center", flex: "1 1 120px" }}>
+                    <div style={{ fontSize: "1.8rem", fontWeight: 800 }}>{toolPreview.total}</div>
+                    <div className="small muted">Total assigned</div>
+                  </div>
+                  <div className="card" style={{ textAlign: "center", flex: "1 1 120px" }}>
+                    <div style={{ fontSize: "1.8rem", fontWeight: 800, color: "#16a34a" }}>{toolPreview.total - toolPreview.wouldUnassign}</div>
+                    <div className="small muted">Would remain</div>
+                  </div>
+                </div>
+
+                {toolPreview.preview?.length > 0 && (
+                  <div>
+                    <div className="small muted" style={{ marginBottom: 8 }}>
+                      Showing first {toolPreview.preview.length} of {toolPreview.wouldUnassign} — customers with no orders since {toolPreview.cutoff}:
+                    </div>
+                    <div style={{ display: "grid", gap: 6, maxHeight: 320, overflowY: "auto" }}>
+                      {toolPreview.preview.map((c: any) => (
+                        <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 8, background: "#fff", gap: 8 }}>
+                          <div>
+                            <div style={{ fontWeight: 600, fontSize: "0.9rem" }}>{c.salonName}</div>
+                            <div className="small muted">Rep: {c.repName || "—"}</div>
+                          </div>
+                          <div className="small muted" style={{ flexShrink: 0 }}>
+                            {c.lastOrderAt ? `Last order: ${c.lastOrderAt}` : "Never ordered"}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
       {tab === "admin" && isAdmin && (
         <section className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
