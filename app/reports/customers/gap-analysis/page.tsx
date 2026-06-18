@@ -396,17 +396,33 @@ export default function GapAnalysisPage() {
                 <label>Filter by customer (optional)</label>
                 <input
                   value={customerQuery}
-                  onChange={(e) => { setCustomerQuery(e.target.value); setCustomerOpen(true); if (!e.target.value) { setCustomerId(""); } }}
-                  placeholder="Search salon…"
+                  onChange={(e) => {
+                    setCustomerQuery(e.target.value);
+                    setCustomerOpen(true);
+                    if (!e.target.value) setCustomerId("");
+                  }}
+                  placeholder="Type to search salons…"
                 />
                 {customerOpen && customerResults.length > 0 && (
-                  <div style={{ position: "absolute", zIndex: 50, top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,.10)", maxHeight: 200, overflowY: "auto" }}>
+                  <div style={{ position: "absolute", zIndex: 50, top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,.12)", maxHeight: 240, overflowY: "auto" }}>
                     {customerResults.map((c) => (
-                      <div key={c.id} style={{ padding: "8px 12px", cursor: "pointer", fontSize: "0.875rem" }}
-                        onClick={() => { setCustomerId(c.id); setCustomerQuery(c.name); setCustomerOpen(false); }}>
+                      <div
+                        key={c.id}
+                        style={{ padding: "10px 14px", cursor: "pointer", fontSize: "0.875rem", borderBottom: "1px solid var(--border)" }}
+                        onMouseDown={() => { setCustomerId(c.id); setCustomerQuery(c.name); setCustomerOpen(false); }}
+                      >
                         {c.name}
                       </div>
                     ))}
+                  </div>
+                )}
+                {customerId && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                    <span style={{ fontSize: "0.75rem", background: "var(--pink-light)", color: "var(--pink-dark)", padding: "2px 8px", borderRadius: 999, fontWeight: 600 }}>
+                      ✓ {customerQuery}
+                    </span>
+                    <button className="btn" style={{ fontSize: "0.75rem", padding: "2px 8px", minHeight: "unset" }}
+                      onClick={() => { setCustomerId(""); setCustomerQuery(""); }}>✕</button>
                   </div>
                 )}
               </div>
@@ -415,7 +431,6 @@ export default function GapAnalysisPage() {
               <button className="primary" onClick={runProduct} disabled={runningProduct || !selVendor || loadingLists}>
                 {runningProduct ? "Running…" : "Run Report"}
               </button>
-              {customerId && <button className="btn" style={{ fontSize: "0.8rem" }} onClick={() => { setCustomerId(""); setCustomerQuery(""); }}>Clear customer</button>}
             </div>
             {productError && <div className="small" style={{ color: "#dc2626", marginTop: 8 }}>{productError}</div>}
           </section>
@@ -431,52 +446,84 @@ export default function GapAnalysisPage() {
             </section>
           )}
 
-          {productRows && productsByTitle.length === 0 && (
+          {productRows && (productRows as any)?.products?.length === 0 && (
             <section className="card"><p className="small muted">No data found for this brand and date range.</p></section>
           )}
 
-          {productsByTitle.length > 0 && (
-            <div style={{ display: "grid", gap: 12 }}>
-              {productsByTitle.map((p) => (
-                <section key={p.title} className="card">
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-                    <div>
-                      <div style={{ fontWeight: 700 }}>{p.title}</div>
-                      {p.sku && <div className="small muted">SKU: {p.sku}</div>}
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <span style={{ padding: "3px 12px", borderRadius: 999, fontSize: "0.75rem", fontWeight: 600, background: "#dcfce7" }}>
-                        {p.buyers.length} buying
-                      </span>
-                      <span style={{ padding: "3px 12px", borderRadius: 999, fontSize: "0.75rem", fontWeight: 600, background: "#fee2e2" }}>
-                        {p.nonBuyers.length} not buying
-                      </span>
-                    </div>
+          {productRows && (productRows as any)?.products?.length > 0 && (() => {
+            const data = productRows as any;
+            const products: { id: number; title: string; sku: string | null }[] = data.products || [];
+            const customers: { customerId: string; customerName: string; products: { productId: number; bought: boolean }[]; boughtCount: number; gapCount: number }[] = data.customers || [];
+
+            return (
+              <section className="card">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{selVendor}</div>
+                    <div className="small muted">{products.length} products · {customers.length} customers</div>
                   </div>
-                  {p.nonBuyers.length > 0 && (
-                    <div>
-                      <div className="small" style={{ fontWeight: 600, marginBottom: 4, color: "#dc2626" }}>Not buying:</div>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {p.nonBuyers.map((n) => (
-                          <span key={n} style={{ padding: "2px 10px", borderRadius: 999, fontSize: "0.75rem", background: "#fee2e2", border: "1px solid #fecaca" }}>{n}</span>
+                </div>
+                <div className="table-wrap">
+                  <table className="table" style={{ minWidth: Math.max(500, customers.length * 130 + 220) }}>
+                    <thead>
+                      <tr>
+                        <th style={{ minWidth: 200, position: "sticky", left: 0, background: "var(--surface-2)", zIndex: 2 }}>Product</th>
+                        <th style={{ minWidth: 60, textAlign: "center" }}>SKU</th>
+                        {customers.map((c) => (
+                          <th key={c.customerId} style={{ minWidth: 120, textAlign: "center", fontSize: "0.7rem" }}>
+                            {c.customerName}
+                          </th>
                         ))}
-                      </div>
-                    </div>
-                  )}
-                  {p.buyers.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      <div className="small" style={{ fontWeight: 600, marginBottom: 4, color: "#16a34a" }}>Buying:</div>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {p.buyers.map((n) => (
-                          <span key={n} style={{ padding: "2px 10px", borderRadius: 999, fontSize: "0.75rem", background: "#dcfce7", border: "1px solid #bbf7d0" }}>{n}</span>
+                        <th style={{ minWidth: 80, textAlign: "center", background: "var(--surface-2)" }}>Buying</th>
+                        <th style={{ minWidth: 80, textAlign: "center", background: "#FEF2F2" }}>Gap</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {products.map((p, pi) => {
+                        const buyingCount = customers.filter(c => c.products.find(cp => cp.productId === p.id)?.bought).length;
+                        const gapCount = customers.length - buyingCount;
+                        return (
+                          <tr key={p.id}>
+                            <td style={{ fontWeight: 600, position: "sticky", left: 0, background: pi % 2 === 0 ? "#fff" : "#FAFBFC", zIndex: 1 }}>
+                              {p.title}
+                            </td>
+                            <td style={{ textAlign: "center", color: "var(--muted)", fontSize: "0.75rem" }}>{p.sku || "—"}</td>
+                            {customers.map((c) => {
+                              const bought = c.products.find(cp => cp.productId === p.id)?.bought ?? false;
+                              return (
+                                <td key={c.customerId} style={{ textAlign: "center", padding: "10px 8px" }}>
+                                  {bought
+                                    ? <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, borderRadius: "50%", background: "#DCFCE7", color: "#16A34A", fontSize: "0.8rem", fontWeight: 700 }}>✓</span>
+                                    : <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, borderRadius: "50%", background: "#FEE2E2", color: "#DC2626", fontSize: "0.8rem", fontWeight: 700 }}>✕</span>
+                                  }
+                                </td>
+                              );
+                            })}
+                            <td style={{ textAlign: "center", fontWeight: 700, color: "#16A34A", background: "#F0FDF4" }}>{buyingCount}</td>
+                            <td style={{ textAlign: "center", fontWeight: 700, color: "#DC2626", background: "#FEF2F2" }}>{gapCount}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{ borderTop: "2px solid var(--border-dark)" }}>
+                        <td style={{ fontWeight: 700, fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.04em", position: "sticky", left: 0, background: "var(--surface-2)" }}>Totals</td>
+                        <td></td>
+                        {customers.map((c) => (
+                          <td key={c.customerId} style={{ textAlign: "center", fontWeight: 700, fontSize: "0.8rem" }}>
+                            <div style={{ color: "#16A34A" }}>{c.boughtCount}✓</div>
+                            <div style={{ color: "#DC2626" }}>{c.gapCount}✕</div>
+                          </td>
                         ))}
-                      </div>
-                    </div>
-                  )}
-                </section>
-              ))}
-            </div>
-          )}
+                        <td></td>
+                        <td></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </section>
+            );
+          })()}
         </>
       )}
     </div>
