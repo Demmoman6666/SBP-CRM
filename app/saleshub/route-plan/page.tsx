@@ -37,28 +37,6 @@ function getTodayDay(): string {
   return d >= 1 && d <= 5 ? DAYS[d-1] : "MONDAY";
 }
 
-function BriefLine({ line, i }: { line: string; i: number }) {
-  if (line.startsWith("## ")) {
-    return <div key={i} style={{ fontWeight: 700, fontSize: "0.9rem", marginTop: 14, marginBottom: 4, color: "var(--text)" }}>{line.slice(3)}</div>;
-  }
-  if (line.startsWith("- ") || line.startsWith("\u2022 ")) {
-    return <div key={i} style={{ paddingLeft: 14, marginBottom: 3, fontSize: "0.82rem", lineHeight: 1.5, color: "var(--text-2)" }}>{"\u2022 " + line.slice(2)}</div>;
-  }
-  if (line.trim() === "") {
-    return <div key={i} style={{ height: 4 }} />;
-  }
-  return <div key={i} style={{ fontSize: "0.82rem", lineHeight: 1.5, color: "var(--text-2)", marginBottom: 2 }}>{line}</div>;
-}
-
-function BriefContent({ text }: { text: string }) {
-  const lines = text.split("\n");
-  return (
-    <div>
-      {lines.map((line, i) => <BriefLine key={i} line={line} i={i} />)}
-    </div>
-  );
-}
-
 export default function RoutePlanPage() {
   const [reps, setReps] = useState<Rep[]>([]);
   const [selectedRepId, setSelectedRepId] = useState("");
@@ -306,7 +284,21 @@ export default function RoutePlanPage() {
                               <button className="btn" style={{ fontSize: "0.72rem", padding: "3px 8px", minHeight: "unset" }} onClick={() => { setBriefCustomerId(null); setBriefText(""); }}>Close</button>
                             </div>
                           </div>
-                          <BriefContent text={briefText} />
+                          <div>
+                            {briefText.split("\n").map((ln, i) => (
+                              <div key={i} style={{
+                                fontWeight: ln.startsWith("## ") ? 700 : 400,
+                                fontSize: "0.82rem",
+                                lineHeight: 1.5,
+                                marginBottom: 3,
+                                paddingLeft: ln.startsWith("- ") ? 14 : 0,
+                                marginTop: ln.startsWith("## ") ? 14 : 0,
+                                height: ln.trim() === "" ? 4 : "auto",
+                              }}>
+                                {ln.startsWith("## ") ? ln.slice(3) : ln.startsWith("- ") ? "- " + ln.slice(2) : ln}
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>
