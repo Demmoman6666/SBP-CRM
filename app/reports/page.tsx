@@ -10,6 +10,11 @@ export default function ReportsHub() {
 
       <section className="home-actions">
 
+        <Link href="/reports/ai" className="action-tile">
+          <div className="action-title">✨ AI Report</div>
+          <div className="action-sub">Claude analyses your call logs and writes a full performance report</div>
+        </Link>
+
         <Link href="/reports/performance" className="action-tile">
           <div className="action-title">Performance Dashboard</div>
           <div className="action-sub">Calls, sales, conversions & customers — all reps or individual</div>
