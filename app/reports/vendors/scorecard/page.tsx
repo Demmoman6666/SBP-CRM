@@ -152,7 +152,7 @@ export default function VendorScorecardPage() {
     (async () => {
       try {
         const [vendorsRes, repsRes] = await Promise.all([
-          fetch("/api/vendors", { cache: "no-store" }).then((r) => r.json()).catch(() => ({ names: [] })),
+          fetch("/api/vendors?context=reports", { cache: "no-store" }).then((r) => r.json()).catch(() => ({ names: [] })),
           fetch("/api/sales-reps", { cache: "no-store" }).then((r) => r.json()).catch(() => [] as Rep[]),
         ]);
 

@@ -49,7 +49,7 @@ export default function VendorSpendReportPage() {
 
   useEffect(() => {
     fetch("/api/sales-reps").then(r => r.json()).then(setReps).catch(() => setReps([]));
-    fetch("/api/vendors").then(r => r.json()).then(setVendors).catch(() => setVendors([]));
+    fetch("/api/vendors?context=reports").then(r => r.json()).then(setVendors).catch(() => setVendors([]));
   }, []);
 
   async function run() {

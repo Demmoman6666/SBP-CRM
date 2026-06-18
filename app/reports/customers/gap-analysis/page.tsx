@@ -222,7 +222,7 @@ export default function GapAnalysisPage() {
             .then((r) => r.json())
             .catch(() => []),
           // ✅ use the vendors endpoint and normalize
-          fetch("/api/vendors?ts=" + Date.now(), { cache: "no-store", credentials: "include" })
+          fetch("/api/vendors?ts=&context=reports" + Date.now(), { cache: "no-store", credentials: "include" })
             .then((r) => r.json())
             .then(normalizeVendorNames)
             .catch(() => []),
