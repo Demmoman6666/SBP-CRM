@@ -38,16 +38,15 @@ function getTodayDay(): string {
   return d >= 1 && d <= 5 ? DAYS[d-1] : "MONDAY";
 }
 
-function renderBrief(text: string) {
-  return text.split("\n").map((line, i) => {
-    if (line.startsWith("## ")) return <div key={i} style={{ fontWeight: 700, fontSize: "0.9rem", marginTop: 14, marginBottom: 4, color: "var(--text)" }}>{line.slice(3)}</div>;
-    if (line.startsWith("- ") || line.startsWith("• ")) return <div key={i} style={{ paddingLeft: 14, marginBottom: 3, fontSize: "0.82rem", lineHeight: 1.5, color: "var(--text-2)" }}>• {line.slice(2)}</div>;
-    if (line.trim() === "") return <div key={i} style={{ height: 4 }} />;
-    return <div key={i} style={{ fontSize: "0.82rem", lineHeight: 1.5, color: "var(--text-2)", marginBottom: 2 }}>{line}</div>;
-  });
-}
-
 export default function RoutePlanPage() {
+  function renderBrief(text: string) {
+    return text.split("\n").map((line, i) => {
+      if (line.startsWith("## ")) return <div key={i} style={{ fontWeight: 700, fontSize: "0.9rem", marginTop: 14, marginBottom: 4, color: "var(--text)" }}>{line.slice(3)}</div>;
+      if (line.startsWith("- ") || line.startsWith("• ")) return <div key={i} style={{ paddingLeft: 14, marginBottom: 3, fontSize: "0.82rem", lineHeight: 1.5, color: "var(--text-2)" }}>• {line.slice(2)}</div>;
+      if (line.trim() === "") return <div key={i} style={{ height: 4 }} />;
+      return <div key={i} style={{ fontSize: "0.82rem", lineHeight: 1.5, color: "var(--text-2)", marginBottom: 2 }}>{line}</div>;
+    });
+  }
   const [reps, setReps] = useState<Rep[]>([]);
   const [selectedRepId, setSelectedRepId] = useState("");
   const [selectedRepName, setSelectedRepName] = useState("");
