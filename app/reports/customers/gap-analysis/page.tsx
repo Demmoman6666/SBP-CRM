@@ -311,32 +311,68 @@ export default function GapAnalysisPage() {
           )}
 
           {brandRows && brandRows.length > 0 && (
-            <section className="card" style={{ overflowX: "auto" }}>
+            <section className="card">
               <p className="small muted" style={{ marginBottom: 12 }}>{brandRows.length} customers</p>
-              <table className="table" style={{ minWidth: 600 }}>
-                <thead>
-                  <tr>
-                    <th>Customer</th>
-                    <th>Rep</th>
-                    {brandVendors.map((v) => <th key={v} style={{ textAlign: "right" }}>{v}</th>)}
-                    <th style={{ textAlign: "right" }}>Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {brandRows.map((row) => (
-                    <tr key={row.customerId}>
-                      <td className="small"><a href={`/customers/${row.customerId}`} style={{ color: "inherit" }}>{row.salonName}</a></td>
-                      <td className="small">{row.salesRep || "—"}</td>
+              <div className="table-wrap">
+                <table className="table" style={{ minWidth: Math.max(600, brandVendors.length * 160 + 300) }}>
+                  <thead>
+                    <tr>
+                      <th style={{ minWidth: 180 }}>Customer</th>
+                      <th style={{ minWidth: 120 }}>Rep</th>
                       {brandVendors.map((v) => (
-                        <td key={v} className="small" style={{ textAlign: "right", color: row.perVendor[v] ? "inherit" : "#ccc" }}>
-                          {row.perVendor[v] ? fmtMoney(row.perVendor[v]) : "—"}
-                        </td>
+                        <th key={v} style={{ textAlign: "right", minWidth: 140, background: "#FEF0F9", borderLeft: "2px solid #FEB3E4" }}>{v}</th>
                       ))}
-                      <td className="small" style={{ textAlign: "right", fontWeight: 600 }}>{fmtMoney(row.total)}</td>
+                      <th style={{ textAlign: "right", minWidth: 120, background: "#F1F5F9", borderLeft: "2px solid #CBD5E1" }}>Total</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {brandRows.map((row, i) => (
+                      <tr key={row.customerId}>
+                        <td style={{ fontWeight: 500 }}>
+                          <a href={`/customers/${row.customerId}`} style={{ color: "inherit", textDecoration: "none" }}>{row.salonName}</a>
+                        </td>
+                        <td style={{ color: "var(--muted)" }}>{row.salesRep || "—"}</td>
+                        {brandVendors.map((v) => (
+                          <td key={v} style={{
+                            textAlign: "right",
+                            borderLeft: "2px solid #FEB3E4",
+                            background: row.perVendor[v] ? (i % 2 === 0 ? "#FFF5FC" : "#FEF0F9") : (i % 2 === 0 ? "#FAFAFA" : "#F5F5F5"),
+                            color: row.perVendor[v] ? "var(--text)" : "#CCC",
+                            fontWeight: row.perVendor[v] ? 500 : 400,
+                          }}>
+                            {row.perVendor[v] ? fmtMoney(row.perVendor[v]) : "—"}
+                          </td>
+                        ))}
+                        <td style={{
+                          textAlign: "right",
+                          fontWeight: 700,
+                          borderLeft: "2px solid #CBD5E1",
+                          background: i % 2 === 0 ? "#F8FAFC" : "#F1F5F9",
+                        }}>
+                          {fmtMoney(row.total)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ borderTop: "2px solid var(--border-dark)" }}>
+                      <td style={{ fontWeight: 700, fontSize: "0.8rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>Totals</td>
+                      <td></td>
+                      {brandVendors.map((v) => {
+                        const total = brandRows.reduce((s, r) => s + (r.perVendor[v] || 0), 0);
+                        return (
+                          <td key={v} style={{ textAlign: "right", fontWeight: 700, borderLeft: "2px solid #FEB3E4", background: "#FEF0F9" }}>
+                            {total > 0 ? fmtMoney(total) : "—"}
+                          </td>
+                        );
+                      })}
+                      <td style={{ textAlign: "right", fontWeight: 700, borderLeft: "2px solid #CBD5E1", background: "#F1F5F9" }}>
+                        {fmtMoney(brandRows.reduce((s, r) => s + (r.total || 0), 0))}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
             </section>
           )}
         </>
