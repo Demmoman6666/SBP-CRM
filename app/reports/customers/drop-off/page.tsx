@@ -169,10 +169,10 @@ export default function CustomerDropOffPage() {
                 <div
                   style={{
                     position: "absolute",
-                    top: "100%",
+                    top: "calc(100% + 4px)",
                     left: 0,
-                    right: 0,
-                    zIndex: 50,
+                    minWidth: 240,
+                    zIndex: 9999,
                     background: "white",
                     border: "1px solid var(--border)",
                     borderRadius: 10,
