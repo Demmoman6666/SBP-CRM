@@ -189,7 +189,7 @@ export default async function CustomerPage({ params, searchParams }: PageProps) 
     const nameRaw = String(formData.get("paymentTermsName")||"Due on receipt").trim();
     const canonicalName = uiLabelToCanonicalName(nameRaw)||"Due on receipt";
     const term = TERMS.find(t => t.value === canonicalName);
-    const dueDays = typeof term?.dueInDays === "number" ? term!.dueInDays as number : null;
+    const dueDays = (typeof term?.dueInDays === "number" ? term?.dueInDays : null) as number | null;
     await prisma.customer.update({ where: { id: customer.id }, data: { paymentDueLater: true, paymentTermsName: canonicalName, paymentTermsDueInDays: dueDays } });
     redirect(`/customers/${customer.id}?saved=1`);
   }

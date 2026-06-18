@@ -133,8 +133,6 @@ export default function RoutePlanPage() {
   const todayDay = getTodayDay();
   const isToday = (week: number, day: string) => week === currentWeek && day === todayDay && cycleStart !== null;
 
-  const selectedCustomer = customers.find(c => c.id === briefCustomerId);
-
   return (
     <div style={{ display: "grid", gap: 16 }}>
 
