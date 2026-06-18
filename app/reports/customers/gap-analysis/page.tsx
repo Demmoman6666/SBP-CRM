@@ -138,6 +138,7 @@ export default function GapAnalysisPage() {
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
   const [productRows, setProductRows] = useState<ProductRow[] | null>(null);
+  const [productData, setProductData] = useState<any>(null);
   const [runningProduct, setRunningProduct] = useState(false);
   const [productError, setProductError] = useState<string | null>(null);
 
@@ -207,7 +208,7 @@ export default function GapAnalysisPage() {
       const arr = Array.isArray(j) ? j : (j?.customers || j?.items || j?.rows || []);
       setCustomerResults(arr.map((x: any) => ({
         id: String(x?.id || x?.customerId || ""),
-        name: String(x?.salonName || x?.name || x?.customerName || ""),
+        name: String(x?.label || x?.salonName || x?.name || x?.customerName || ""),
       })).filter((x: any) => x.id && x.name));
     } catch { setCustomerResults([]); }
   }
@@ -230,6 +231,7 @@ export default function GapAnalysisPage() {
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || "Failed");
       setProductRows(Array.isArray(j?.rows) ? j.rows : Array.isArray(j) ? j : []);
+      setProductData(j);
     } catch (e: any) {
       setProductError(e.message || "Failed");
     } finally {
@@ -385,7 +387,7 @@ export default function GapAnalysisPage() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 12 }}>
               <div className="field">
                 <label>Brand *</label>
-                <select value={selVendor} onChange={(e) => { setSelVendor(e.target.value); setProductRows(null); }}>
+                <select value={selVendor} onChange={(e) => { setSelVendor(e.target.value); setProductRows(null); setProductData(null); }}>
                   <option value="">— Select brand —</option>
                   {vendors.map((v) => <option key={v} value={v}>{v}</option>)}
                 </select>
@@ -446,12 +448,12 @@ export default function GapAnalysisPage() {
             </section>
           )}
 
-          {productRows && (productRows as any)?.products?.length === 0 && (
+          {productData && productData?.products?.length === 0 && (
             <section className="card"><p className="small muted">No data found for this brand and date range.</p></section>
           )}
 
-          {productRows && (productRows as any)?.products?.length > 0 && (() => {
-            const data = productRows as any;
+          {productData && productData?.products?.length > 0 && (() => {
+            const data = productData;
             const products: { id: number; title: string; sku: string | null }[] = data.products || [];
             const customers: { customerId: string; customerName: string; products: { productId: number; bought: boolean }[]; boughtCount: number; gapCount: number }[] = data.customers || [];
 
