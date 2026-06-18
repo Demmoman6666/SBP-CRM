@@ -317,6 +317,7 @@ model StockedBrand {
   updatedAt        DateTime @updatedAt
 
   visibleInCallLog Boolean  @default(false)
+  visibleInReports Boolean  @default(false)
 
   callLinks        CallLogStockedBrand[]
 

@@ -46,7 +46,7 @@ export default function GapByProductPage() {
       setLoadingLists(true);
       setListsError(null);
       try {
-        const vr = await fetch("/api/vendors", { headers: { Accept: "application/json" }, cache: "no-store" });
+        const vr = await fetch("/api/vendors?context=reports", { headers: { Accept: "application/json" }, cache: "no-store" });
         if (!vr.ok) throw new Error(`Vendors HTTP ${vr.status}`);
         const vj = await vr.json();
         const vList: Vendor[] = (() => {
