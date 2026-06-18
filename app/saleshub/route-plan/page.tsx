@@ -1,5 +1,4 @@
 "use client";
-// @refreshed
 
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
@@ -30,7 +29,7 @@ function getCycleWeek(today: Date, cycleStart: Date): number {
   const startMonday = getMondayOfWeek(cycleStart);
   const diffMs = monday.getTime() - startMonday.getTime();
   const diffWeeks = Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000));
-  return ((diffWeeks % 4) + 4) % 4 + 1; // 1-4
+  return ((diffWeeks % 4) + 4) % 4 + 1;
 }
 
 function getTodayDay(): string {
@@ -38,15 +37,29 @@ function getTodayDay(): string {
   return d >= 1 && d <= 5 ? DAYS[d-1] : "MONDAY";
 }
 
-export default function RoutePlanPage() {
-  function renderBrief(text: string) {
-    return text.split("\n").map((line, i) => {
-      if (line.startsWith("## ")) return <div key={i} style={{ fontWeight: 700, fontSize: "0.9rem", marginTop: 14, marginBottom: 4, color: "var(--text)" }}>{line.slice(3)}</div>;
-      if (line.startsWith("- ") || line.startsWith("• ")) return <div key={i} style={{ paddingLeft: 14, marginBottom: 3, fontSize: "0.82rem", lineHeight: 1.5, color: "var(--text-2)" }}>• {line.slice(2)}</div>;
-      if (line.trim() === "") return <div key={i} style={{ height: 4 }} />;
-      return <div key={i} style={{ fontSize: "0.82rem", lineHeight: 1.5, color: "var(--text-2)", marginBottom: 2 }}>{line}</div>;
-    });
+function BriefLine({ line, i }: { line: string; i: number }) {
+  if (line.startsWith("## ")) {
+    return <div key={i} style={{ fontWeight: 700, fontSize: "0.9rem", marginTop: 14, marginBottom: 4, color: "var(--text)" }}>{line.slice(3)}</div>;
   }
+  if (line.startsWith("- ") || line.startsWith("• ")) {
+    return <div key={i} style={{ paddingLeft: 14, marginBottom: 3, fontSize: "0.82rem", lineHeight: 1.5, color: "var(--text-2)" }}>{"• " + line.slice(2)}</div>;
+  }
+  if (line.trim() === "") {
+    return <div key={i} style={{ height: 4 }} />;
+  }
+  return <div key={i} style={{ fontSize: "0.82rem", lineHeight: 1.5, color: "var(--text-2)", marginBottom: 2 }}>{line}</div>;
+}
+
+function BriefContent({ text }: { text: string }) {
+  const lines = text.split("\n");
+  return (
+    <div>
+      {lines.map((line, i) => <BriefLine key={i} line={line} i={i} />)}
+    </div>
+  );
+}
+
+export default function RoutePlanPage() {
   const [reps, setReps] = useState<Rep[]>([]);
   const [selectedRepId, setSelectedRepId] = useState("");
   const [selectedRepName, setSelectedRepName] = useState("");
@@ -64,7 +77,6 @@ export default function RoutePlanPage() {
   const [briefError, setBriefError] = useState<string | null>(null);
   const briefRef = useRef<HTMLDivElement>(null);
 
-  // Load reps and cycle settings
   useEffect(() => {
     fetch("/api/sales-reps", { cache: "no-store" })
       .then(r => r.json()).then(j => setReps(Array.isArray(j) ? j : [])).catch(() => {});
@@ -80,7 +92,6 @@ export default function RoutePlanPage() {
       }).catch(() => {});
   }, []);
 
-  // Load customers when rep/week/day changes
   useEffect(() => {
     if (!selectedRepName || !selectedWeek || !selectedDay) { setCustomers([]); return; }
     setLoading(true);
@@ -88,7 +99,7 @@ export default function RoutePlanPage() {
       reps: selectedRepName, week: String(selectedWeek),
       day: selectedDay, onlyPlanned: "1", limit: "100",
     });
-    fetch(`/api/route-planning?${qs}`, { cache: "no-store" })
+    fetch("/api/route-planning?" + qs.toString(), { cache: "no-store" })
       .then(r => r.json()).then(j => setCustomers(Array.isArray(j) ? j : []))
       .catch(() => setCustomers([])).finally(() => setLoading(false));
   }, [selectedRepName, selectedWeek, selectedDay]);
@@ -129,26 +140,22 @@ export default function RoutePlanPage() {
   }
 
   const todayDay = getTodayDay();
-  const isTodayCell = (week: number, day: string) => week === currentWeek && day === todayDay && cycleStart !== null;
+  const checkIsToday = (week: number, day: string) => week === currentWeek && day === todayDay && cycleStart !== null;
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
 
-      {/* Header */}
       <section className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
           <div>
             <h1 style={{ marginBottom: 4 }}>Route Plan</h1>
             <p className="small muted">
-              {cycleStart
-                ? `Currently in Week ${currentWeek} of the 4-week cycle`
-                : "Set your cycle start date to track which week you're in"}
+              {cycleStart ? "Currently in Week " + currentWeek + " of the 4-week cycle" : "Set your cycle start date to track which week you are in"}
             </p>
           </div>
         </div>
       </section>
 
-      {/* Cycle setup + Rep selector */}
       <section className="card" style={{ overflow: "visible" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
           <div className="field">
@@ -157,7 +164,7 @@ export default function RoutePlanPage() {
               setSelectedRepId(e.target.value);
               setSelectedRepName(reps.find(r => r.id === e.target.value)?.name || "");
             }}>
-              <option value="">— Select rep —</option>
+              <option value="">Select rep</option>
               {reps.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
           </div>
@@ -166,26 +173,23 @@ export default function RoutePlanPage() {
             <div style={{ display: "flex", gap: 8 }}>
               <input type="date" value={cycleStartInput} onChange={e => setCycleStartInput(e.target.value)} />
               <button className="btn" onClick={saveCycleStart} disabled={savingCycle} style={{ flexShrink: 0 }}>
-                {savingCycle ? "…" : "Set"}
+                {savingCycle ? "..." : "Set"}
               </button>
             </div>
           </div>
         </div>
       </section>
 
-      {/* 4-week grid */}
       <section className="card">
         <h2 style={{ marginBottom: 12 }}>4-Week Cycle</h2>
         <div style={{ overflowX: "auto" }}>
           <div style={{ minWidth: 500 }}>
-            {/* Header row */}
             <div style={{ display: "grid", gridTemplateColumns: "60px repeat(5, 1fr)", gap: 4, marginBottom: 4 }}>
               <div />
               {DAY_SHORT.map(d => (
                 <div key={d} style={{ textAlign: "center", fontSize: "0.75rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--muted)", padding: "4px 0" }}>{d}</div>
               ))}
             </div>
-            {/* Week rows */}
             {WEEKS.map(week => (
               <div key={week} style={{ display: "grid", gridTemplateColumns: "60px repeat(5, 1fr)", gap: 4, marginBottom: 4 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -193,10 +197,10 @@ export default function RoutePlanPage() {
                     fontSize: "0.75rem", fontWeight: 700, padding: "3px 8px", borderRadius: 999,
                     background: week === currentWeek && cycleStart ? "var(--pink)" : "var(--surface-2)",
                     color: week === currentWeek && cycleStart ? "#fff" : "var(--muted)",
-                  }}>W{week}</span>
+                  }}>{"W" + week}</span>
                 </div>
                 {DAYS.map((day, di) => {
-                  const cellIsToday = isTodayCell(week, day);
+                  const cellIsToday = checkIsToday(week, day);
                   const isSelected = selectedWeek === week && selectedDay === day;
                   return (
                     <button
@@ -222,22 +226,21 @@ export default function RoutePlanPage() {
         </div>
       </section>
 
-      {/* Selected day customers */}
       {selectedRepName && (
         <section className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <div>
               <h2 style={{ marginBottom: 2 }}>
-                Week {selectedWeek} — {DAY_SHORT[DAYS.indexOf(selectedDay)]}
-                {isTodayCell(selectedWeek, selectedDay) && (
+                {"Week " + selectedWeek + " — " + DAY_SHORT[DAYS.indexOf(selectedDay)]}
+                {checkIsToday(selectedWeek, selectedDay) && (
                   <span style={{ marginLeft: 8, padding: "2px 10px", borderRadius: 999, fontSize: "0.75rem", background: "var(--pink)", color: "#fff", fontWeight: 600 }}>Today</span>
                 )}
               </h2>
-              <p className="small muted">{selectedRepName} · {loading ? "Loading…" : `${customers.length} stops`}</p>
+              <p className="small muted">{selectedRepName + " · " + (loading ? "Loading..." : customers.length + " stops")}</p>
             </div>
             {customers.length > 0 && (
               
-                href={`https://www.google.com/maps/dir/${customers.map(c => encodeURIComponent([c.addressLine1, c.town, c.postCode].filter(Boolean).join(", "))).join("/")}`}
+                href={"https://www.google.com/maps/dir/" + customers.map(c => encodeURIComponent([c.addressLine1, c.town, c.postCode].filter(Boolean).join(", "))).join("/")}
                 target="_blank" rel="noreferrer"
                 className="btn"
                 style={{ fontSize: "0.8rem" }}
@@ -248,7 +251,7 @@ export default function RoutePlanPage() {
           </div>
 
           {!loading && customers.length === 0 && (
-            <p className="small muted">No customers scheduled for this day. Add customers to this slot from their profile page.</p>
+            <p className="small muted">No customers scheduled for this day.</p>
           )}
 
           {customers.length > 0 && (
@@ -263,33 +266,32 @@ export default function RoutePlanPage() {
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontWeight: 700, fontSize: "0.95rem", marginBottom: 3 }}>{c.salonName}</div>
                         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          {c.customerName && <span className="small muted">👤 {c.customerName}</span>}
-                          {c.customerTelephone && <a href={`tel:${c.customerTelephone}`} className="small muted" style={{ textDecoration: "none" }}>📞 {c.customerTelephone}</a>}
-                          {(c.town || c.postCode) && <span className="small muted">📍 {[c.town, c.postCode].filter(Boolean).join(", ")}</span>}
+                          {c.customerName && <span className="small muted">{"👤 " + c.customerName}</span>}
+                          {c.customerTelephone && <a href={"tel:" + c.customerTelephone} className="small muted" style={{ textDecoration: "none" }}>{"📞 " + c.customerTelephone}</a>}
+                          {(c.town || c.postCode) && <span className="small muted">{"📍 " + [c.town, c.postCode].filter(Boolean).join(", ")}</span>}
                         </div>
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap" }}>
-                      <Link href={`/customers/${c.id}`} className="btn" style={{ fontSize: "0.78rem", padding: "5px 10px" }}>Profile</Link>
-                      <Link href={`/calls/new?customerId=${c.id}`} className="btn" style={{ fontSize: "0.78rem", padding: "5px 10px" }}>Log Call</Link>
+                      <Link href={"/customers/" + c.id} className="btn" style={{ fontSize: "0.78rem", padding: "5px 10px" }}>Profile</Link>
+                      <Link href={"/calls/new?customerId=" + c.id} className="btn" style={{ fontSize: "0.78rem", padding: "5px 10px" }}>Log Call</Link>
                       <button
                         className="primary"
                         style={{ fontSize: "0.78rem", padding: "5px 10px" }}
                         onClick={() => generateBrief(c.id)}
                         disabled={briefLoading && briefCustomerId === c.id}
                       >
-                        {briefLoading && briefCustomerId === c.id ? "…" : "✨ Brief"}
+                        {briefLoading && briefCustomerId === c.id ? "..." : "✨ Brief"}
                       </button>
                     </div>
                   </div>
 
-                  {/* AI Brief panel */}
                   {briefCustomerId === c.id && (briefLoading || briefText || briefError) && (
                     <div ref={briefRef} style={{ borderTop: "1px solid var(--border)", padding: "14px 14px 14px 54px", background: "#fafbfc" }}>
                       {briefLoading && (
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <span style={{ fontSize: "1.2rem" }}>✨</span>
-                          <span className="small muted">Generating pre-call brief…</span>
+                          <span className="small muted">Generating pre-call brief...</span>
                         </div>
                       )}
                       {briefError && <div className="small" style={{ color: "var(--red)" }}>{briefError}</div>}
@@ -305,7 +307,7 @@ export default function RoutePlanPage() {
                               <button className="btn" style={{ fontSize: "0.72rem", padding: "3px 8px", minHeight: "unset" }} onClick={() => { setBriefCustomerId(null); setBriefText(""); }}>Close</button>
                             </div>
                           </div>
-                          {renderBrief(briefText)}
+                          <BriefContent text={briefText} />
                         </div>
                       )}
                     </div>
@@ -321,10 +323,9 @@ export default function RoutePlanPage() {
         <section className="card" style={{ textAlign: "center", padding: 40 }}>
           <p style={{ fontSize: "1.5rem", marginBottom: 8 }}>📋</p>
           <p style={{ fontWeight: 600, marginBottom: 4 }}>Select a sales rep to view their route plan</p>
-          <p className="small muted">Then tap any day in the grid to see that day's scheduled customers</p>
+          <p className="small muted">Then tap any day in the grid to see that days scheduled customers</p>
         </section>
       )}
     </div>
   );
 }
-// cache-bust Thu 18 Jun 2026 16:08:41 BST
