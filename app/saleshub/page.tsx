@@ -41,6 +41,11 @@ export default function SalesHubPage() {
         </Link>
 
         {/* Route Planning hub */}
+        <Link href="/saleshub/pipeline" className="action-tile">
+          <div className="action-title">Pipeline</div>
+          <div className="action-sub">Funnel view &amp; conversion rates</div>
+        </Link>
+
         <Link href="/saleshub/route-plan" className="action-tile">
           <div className="action-title">Route Plan</div>
           <div className="action-sub">4-week cycle planner with AI briefs</div>
