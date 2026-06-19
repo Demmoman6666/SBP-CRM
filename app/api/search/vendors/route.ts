@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { Prisma } from "@prisma/client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,23 +9,19 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const q = (searchParams.get("q") || "").trim();
     const limit = Math.min(parseInt(searchParams.get("limit") || "20", 10), 100);
-    const term = q.length >= 2 ? `%${q}%` : `%`;
 
-    // Distinct vendors from OrderLineItem.productVendor
-    const rows = (await prisma.$queryRaw(
-      Prisma.sql`
-        SELECT DISTINCT "productVendor" AS name
-        FROM "OrderLineItem"
-        WHERE "productVendor" IS NOT NULL
-          AND "productVendor" ILIKE ${term}
-        ORDER BY name ASC
-        LIMIT ${Prisma.raw(String(limit))}
-      `
-    )) as Array<{ name: string | null }>;
+    // Only our own stocked brands (the same list managed in Brand Management)
+    const brands = await prisma.stockedBrand.findMany({
+      where: {
+        visibleInReports: true,
+        ...(q.length >= 2 ? { name: { contains: q, mode: "insensitive" } } : {}),
+      },
+      select: { name: true },
+      orderBy: { name: "asc" },
+      take: limit,
+    });
 
-    const results = rows
-      .map((r) => (r.name || "").trim())
-      .filter((s) => s.length > 0);
+    const results = brands.map(b => b.name.trim()).filter(s => s.length > 0);
 
     return NextResponse.json({ results });
   } catch (err: any) {
