@@ -163,8 +163,26 @@ export default function PipelineTile() {
         <Pill value="" count={data?.counts?.total ?? 0}>Total</Pill>
       </div>
 
-      {/* Table */}
-      <div style={{ overflowX: "auto" }}>
+      {/* Mobile: cards */}
+      <div className="pipeline-mobile" style={{ display: "grid", gap: 8 }}>
+        {loading && <p className="small muted">Loading...</p>}
+        {!loading && rows.length === 0 && <p className="small muted">No customers found.</p>}
+        {!loading && rows.map((r) => (
+          <Link key={r.id} href={`/customers/${r.id}`} style={{ textDecoration: "none", color: "inherit" }}>
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", background: "#fff" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 4 }}>
+                <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>{r.salonName}</span>
+                <span className="small muted">{new Date(r.createdAt).toLocaleDateString("en-GB")}</span>
+              </div>
+              <div className="small muted">{r.customerName || "—"}{r.salesRep ? " - " + r.salesRep : ""}</div>
+              <div className="small" style={{ marginTop: 4, fontWeight: 600 }}>{STAGE_LABELS[r.stage]}</div>
+            </div>
+          </Link>
+        ))}
+      </div>
+
+      {/* Desktop: table */}
+      <div className="pipeline-desktop" style={{ overflowX: "auto" }}>
         <table className="table" style={{ width: "100%" }}>
           <thead>
             <tr>

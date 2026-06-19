@@ -280,3 +280,11 @@ footer small { color: var(--muted); }
 
 /* 16) Media niceties */
 img, svg, video, canvas { max-width: 100%; height: auto; }
+
+/* Pipeline tile responsive toggle */
+.pipeline-mobile { display: grid; }
+.pipeline-desktop { display: none; }
+@media (min-width: 768px) {
+  .pipeline-mobile { display: none; }
+  .pipeline-desktop { display: block; }
+}
