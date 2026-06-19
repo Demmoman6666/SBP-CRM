@@ -43,6 +43,7 @@ enum TargetMetric {
 // Customer lifecycle/stage
 enum CustomerStage {
   LEAD
+  ENGAGED
   APPOINTMENT_BOOKED
   SAMPLING
   CUSTOMER
@@ -284,6 +285,7 @@ model CallLog {
   rep                  SalesRep? @relation("CallLogRep", fields: [repId], references: [id], onDelete: SetNull)
 
   stage                CustomerStage?
+  nextStep             String?
 
   followUpRequired     Boolean   @default(false)
   followUpAt           DateTime?
