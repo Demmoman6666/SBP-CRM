@@ -762,11 +762,24 @@ const BlockCallType = (
 
         {error && <div className="form-error">{error}</div>}
 
-        <div className="right row" style={{ gap: 8 }}>
-          <a href="/" className="btn" style={{ background: "#f3f4f6" }}>
+        <div
+          className="row"
+          style={{
+            gap: 8,
+            justifyContent: "flex-end",
+            position: isMobile ? "sticky" : "static",
+            bottom: isMobile ? 0 : "auto",
+            background: isMobile ? "#fff" : "transparent",
+            padding: isMobile ? "12px 0" : 0,
+            marginTop: isMobile ? 8 : 0,
+            borderTop: isMobile ? "1px solid var(--border)" : "none",
+            zIndex: 10,
+          }}
+        >
+          <a href="/" className="btn" style={{ background: "#f3f4f6", flex: isMobile ? 1 : "none", textAlign: "center" }}>
             Cancel
           </a>
-          <button className="primary" type="submit" disabled={submitting}>
+          <button className="primary" type="submit" disabled={submitting} style={{ flex: isMobile ? 2 : "none" }}>
             {submitting ? "Saving…" : "Save Call"}
           </button>
         </div>
