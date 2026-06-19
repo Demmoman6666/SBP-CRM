@@ -1,4 +1,3 @@
-// app/reports/customers/stock-order-par/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -50,7 +49,6 @@ const nf2 = new Intl.NumberFormat("en-GB", { minimumFractionDigits: 2, maximumFr
 const fmt0 = (n: number) => nf0.format(Math.round(Number(n) || 0));
 const fmt2 = (n: number) => nf2.format(Number(n) || 0);
 
-// Debounce
 function useDebounced<T>(value: T, delay = 250) {
   const [v, setV] = useState(value);
   useEffect(() => {
@@ -61,27 +59,23 @@ function useDebounced<T>(value: T, delay = 250) {
 }
 
 export default function StockOrderParPage() {
-  // Predictive: customer
   const [customer, setCustomer] = useState<{ id: string; name: string } | null>(null);
   const [customerQuery, setCustomerQuery] = useState("");
   const debCustomerQuery = useDebounced(customerQuery, 250);
   const [customerResults, setCustomerResults] = useState<Array<{ id: string; name: string; extra?: string }>>([]);
   const [customerOpen, setCustomerOpen] = useState(false);
 
-  // Predictive: brand
   const [brand, setBrand] = useState<string>("");
   const [brandQuery, setBrandQuery] = useState("");
   const debBrandQuery = useDebounced(brandQuery, 250);
   const [brandResults, setBrandResults] = useState<string[]>([]);
   const [brandOpen, setBrandOpen] = useState(false);
 
-  // Params
   const [timeframe, setTimeframe] = useState<ApiRes["params"]["timeframe"]>("mtd");
   const [safetyPct, setSafetyPct] = useState("0.15");
   const [coverageMonths, setCoverageMonths] = useState("1");
   const [packSize, setPackSize] = useState("1");
 
-  // Data
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<ApiRes | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,116 +83,99 @@ export default function StockOrderParPage() {
   const [editPar, setEditPar] = useState<Record<string, string>>({});
   const [sortKey, setSortKey] = useState<SortKey>("productName");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const canRun = useMemo(() => !!(customer?.id && brand.trim()), [customer, brand]);
 
-  // Predictive fetches
   useEffect(() => {
     let ok = true;
     const q = debCustomerQuery.trim();
-    if (q.length < 2) {
-      setCustomerResults([]);
-      return;
-    }
-    fetch(`/api/search/customers?q=${encodeURIComponent(q)}&limit=12`)
-      .then((r) => (r.ok ? r.json() : { results: [] }))
-      .then((j) => ok && setCustomerResults(j.results || []))
+    if (q.length < 2) { setCustomerResults([]); return; }
+    fetch("/api/search/customers?q=" + encodeURIComponent(q) + "&limit=12")
+      .then(r => (r.ok ? r.json() : { results: [] }))
+      .then(j => ok && setCustomerResults(j.results || []))
       .catch(() => ok && setCustomerResults([]));
-    return () => {
-      ok = false;
-    };
+    return () => { ok = false; };
   }, [debCustomerQuery]);
 
   useEffect(() => {
     let ok = true;
     const q = debBrandQuery.trim();
-    fetch(`/api/search/vendors?q=${encodeURIComponent(q)}&limit=20`)
-      .then((r) => (r.ok ? r.json() : { results: [] }))
-      .then((j) => ok && setBrandResults(j.results || []))
+    fetch("/api/search/vendors?q=" + encodeURIComponent(q) + "&limit=20")
+      .then(r => (r.ok ? r.json() : { results: [] }))
+      .then(j => ok && setBrandResults(j.results || []))
       .catch(() => ok && setBrandResults([]));
-    return () => {
-      ok = false;
-    };
+    return () => { ok = false; };
   }, [debBrandQuery]);
 
-  async function runReport() {
+  function runReport() {
     if (!customer?.id || !brand) return;
-    try {
-      setLoading(true);
-      setError(null);
-      setData(null);
-      setEditPar({});
+    setLoading(true);
+    setError(null);
+    setData(null);
+    setEditPar({});
 
-      const qs = new URLSearchParams({
-        customerId: customer.id,
-        brand,
-        timeframe,
-        safetyPct,
-        coverageMonths,
-        packSize,
-      }).toString();
+    const qs = new URLSearchParams({ customerId: customer.id, brand, timeframe, safetyPct, coverageMonths, packSize }).toString();
 
-      const r1 = await fetch(`/api/reports/demand-par?${qs}`);
-      if (!r1.ok) throw new Error((await r1.json().catch(() => ({})))?.error || `Report failed (${r1.status})`);
-      const json = (await r1.json()) as ApiRes;
-      json.rows = (json.rows || []).map((r) => ({ ...r, sku: r.sku ?? "" }));
-      setData(json);
+    fetch("/api/reports/demand-par?" + qs)
+      .then(r => r.json().then(j => ({ ok: r.ok, j, status: r.status })))
+      .then(({ ok, j, status }) => {
+        if (!ok) throw new Error(j?.error || "Report failed (" + status + ")");
+        const json = j as ApiRes;
+        json.rows = (json.rows || []).map(r => ({ ...r, sku: r.sku ?? "" }));
+        setData(json);
 
-      const r2 = await fetch(`/api/par/list?customerId=${encodeURIComponent(customer.id)}`);
-      if (r2.ok) {
-        const j = (await r2.json()) as { records: ParRecord[] };
-        const bySku: Record<string, ParRecord> = {};
-        (j.records || []).forEach((rec) => {
-          if (rec.sku) bySku[rec.sku] = rec;
+        return fetch("/api/par/list?customerId=" + encodeURIComponent(customer.id)).then(r2 => {
+          if (r2.ok) {
+            return r2.json().then((j2: { records: ParRecord[] }) => {
+              const bySku: Record<string, ParRecord> = {};
+              (j2.records || []).forEach(rec => { if (rec.sku) bySku[rec.sku] = rec; });
+              setPars(bySku);
+              const seed: Record<string, string> = {};
+              (json.rows || []).forEach(row => {
+                const agreed = bySku[row.sku]?.parQty ?? null;
+                seed[row.sku] = String(agreed ?? row.suggestedMonthlyPAR);
+              });
+              setEditPar(seed);
+            });
+          } else {
+            setPars({});
+          }
         });
-        setPars(bySku);
-
-        const seed: Record<string, string> = {};
-        (json.rows || []).forEach((row) => {
-          const agreed = bySku[row.sku]?.parQty ?? null;
-          seed[row.sku] = String(agreed ?? row.suggestedMonthlyPAR);
-        });
-        setEditPar(seed);
-      } else {
-        setPars({});
-      }
-    } catch (e: any) {
-      setError(e?.message || "Failed to load report");
-    } finally {
-      setLoading(false);
-    }
+      })
+      .catch((e: any) => setError(e?.message || "Failed to load report"))
+      .finally(() => setLoading(false));
   }
 
   function setEdit(sku: string, val: string) {
-    setEditPar((s) => ({ ...s, [sku]: val }));
+    setEditPar(s => ({ ...s, [sku]: val }));
   }
 
-  async function saveOne(sku: string) {
+  function saveOne(sku: string) {
     if (!customer?.id) return;
     const val = editPar[sku];
     const n = Number(val);
-    if (!sku) return alert("Missing SKU");
-    if (!Number.isFinite(n) || n < 0) return alert("Enter a valid non-negative number");
-    const res = await fetch("/api/par/upsert", {
+    if (!sku) { alert("Missing SKU"); return; }
+    if (!Number.isFinite(n) || n < 0) { alert("Enter a valid non-negative number"); return; }
+    fetch("/api/par/upsert", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ customerId: customer.id, sku, parQty: Math.round(n) }),
-    });
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      return alert(j?.error || "Save failed");
-    }
-    setPars((p) => ({ ...p, [sku]: { sku, parQty: Math.round(n), updatedAt: new Date().toISOString() } }));
+    })
+      .then(res => res.json().then(j => ({ ok: res.ok, j })))
+      .then(({ ok, j }) => {
+        if (!ok) { alert(j?.error || "Save failed"); return; }
+        setPars(p => ({ ...p, [sku]: { sku, parQty: Math.round(n), updatedAt: new Date().toISOString() } }));
+      });
   }
 
   async function saveAllVisible() {
     if (!data?.rows?.length || !customer?.id) return;
     const toSave = data.rows
-      .filter((r) => r.sku)
-      .map((r) => ({ sku: r.sku, parQty: Math.max(0, Math.round(Number(editPar[r.sku] ?? r.suggestedMonthlyPAR))) }));
+      .filter(r => r.sku)
+      .map(r => ({ sku: r.sku, parQty: Math.max(0, Math.round(Number(editPar[r.sku] ?? r.suggestedMonthlyPAR))) }));
 
     for (const item of toSave) {
-      // eslint-disable-next-line no-await-in-loop
       const res = await fetch("/api/par/upsert", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -206,23 +183,22 @@ export default function StockOrderParPage() {
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        return alert(j?.error || `Failed on ${item.sku}`);
+        alert(j?.error || "Failed on " + item.sku);
+        return;
       }
     }
-    const r2 = await fetch(`/api/par/list?customerId=${encodeURIComponent(customer.id)}`);
+    const r2 = await fetch("/api/par/list?customerId=" + encodeURIComponent(customer.id));
     if (r2.ok) {
       const j = (await r2.json()) as { records: ParRecord[] };
       const bySku: Record<string, ParRecord> = {};
-      (j.records || []).forEach((rec) => {
-        if (rec.sku) bySku[rec.sku] = rec;
-      });
+      (j.records || []).forEach(rec => { if (rec.sku) bySku[rec.sku] = rec; });
       setPars(bySku);
     }
   }
 
   const rows = useMemo(() => {
     const base = data?.rows || [];
-    const withAgreed = base.map((r) => {
+    const withAgreed = base.map(r => {
       const agreed = pars[r.sku]?.parQty ?? null;
       const delta = (r.suggestedMonthlyPAR ?? 0) - (agreed ?? 0);
       return { ...r, agreedPar: agreed, delta };
@@ -239,53 +215,35 @@ export default function StockOrderParPage() {
   }, [data, pars, sortKey, sortDir]);
 
   function toggleSort(k: SortKey) {
-    if (k === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortKey(k);
-      setSortDir("asc");
-    }
+    if (k === sortKey) setSortDir(d => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(k); setSortDir("asc"); }
   }
 
   function downloadCsv() {
     if (!rows.length || !customer) return;
-    const headers = [
-      "Customer",
-      "Brand",
-      "SKU",
-      "Product Name",
-      "Units (window)",
-      "Avg Monthly",
-      "Suggested Monthly PAR",
-      "Agreed PAR",
-      "Delta",
-    ];
+    const headers = ["Customer", "Brand", "SKU", "Product Name", "Units (window)", "Avg Monthly", "Suggested Monthly PAR", "Agreed PAR", "Delta"];
     const csv = [headers.join(",")]
-      .concat(
-        rows.map((r: any) =>
-          [
-            `"${(customer?.name || "").replaceAll('"', '\\"')}"`,
-            `"${(brand || "").replaceAll('"', '\\"')}"`,
-            r.sku,
-            `"${(r.productName || "").replaceAll('"', '\\"')}"`,
-            r.unitsInWindow,
-            (Number(r.avgMonthly ?? 0)).toFixed(2),
-            r.suggestedMonthlyPAR,
-            r.agreedPar ?? "",
-            r.delta ?? "",
-          ].join(","),
-        ),
-      )
+      .concat(rows.map((r: any) => [
+        '"' + (customer?.name || "").replace(/"/g, '\\"') + '"',
+        '"' + (brand || "").replace(/"/g, '\\"') + '"',
+        r.sku,
+        '"' + (r.productName || "").replace(/"/g, '\\"') + '"',
+        r.unitsInWindow,
+        (Number(r.avgMonthly ?? 0)).toFixed(2),
+        r.suggestedMonthlyPAR,
+        r.agreedPar ?? "",
+        r.delta ?? "",
+      ].join(",")))
       .join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `customer-par_${customer?.name}_${brand}_${timeframe}.csv`;
+    a.download = "customer-par_" + customer?.name + "_" + brand + "_" + timeframe + ".csv";
     a.click();
     URL.revokeObjectURL(url);
   }
 
-  // Close popovers
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -300,307 +258,211 @@ export default function StockOrderParPage() {
   }, []);
 
   return (
-    <div ref={rootRef} className="p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">Customers · Stock &amp; Order (PAR)</h1>
+    <div ref={rootRef} className="grid" style={{ gap: 16 }}>
+      <section className="card">
+        <h1 style={{ marginBottom: 2 }}>Stock &amp; Order (PAR)</h1>
+        <p className="small muted">Predicted demand and PAR levels per customer and brand.</p>
+      </section>
 
-      {/* CONTROLS */}
-      <div className="mx-auto max-w-5xl rounded-xl border border-slate-200 bg-white/70 shadow-sm p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-8 gap-3 items-end">
-        {/* Customer typeahead */}
-        <div className="lg:col-span-3 relative">
-          <label className="block text-sm text-slate-600 mb-1">Customer</label>
-          <input
-            className="w-full border border-slate-300 focus:border-slate-400 focus:outline-none rounded-lg px-3 py-2"
-            placeholder="Type to search customers…"
-            value={customer ? customer.name : customerQuery}
-            onChange={(e) => {
-              setCustomer(null);
-              setCustomerQuery(e.target.value);
-              setCustomerOpen(true);
-            }}
-            onFocus={() => setCustomerOpen(true)}
-          />
-          {customer && (
-            <button
-              type="button"
-              className="absolute right-2 top-[34px] text-xs text-slate-500 underline"
-              onClick={() => {
-                setCustomer(null);
-                setCustomerQuery("");
-                setCustomerResults([]);
-                setCustomerOpen(true);
-              }}
-            >
-              Clear
-            </button>
-          )}
-          {customerOpen && !customer && (
-            <ul className="absolute z-10 mt-1 w-full max-h-64 overflow-auto border border-slate-200 rounded-lg bg-white shadow-sm">
-              {debCustomerQuery.length < 2 && (
-                <li className="px-3 py-2 text-sm text-slate-500">Type at least 2 characters…</li>
-              )}
-              {debCustomerQuery.length >= 2 && customerResults.length === 0 && (
-                <li className="px-3 py-2 text-sm text-slate-500">Searching…</li>
-              )}
-              {customerResults.map((c) => (
-                <li
-                  key={c.id}
-                  className="px-3 py-2 hover:bg-slate-50 cursor-pointer"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    setCustomer({ id: c.id, name: c.name });
-                    setCustomerQuery("");
-                    setCustomerOpen(false);
-                  }}
-                >
-                  <div className="font-medium">{c.name}</div>
-                  {c.extra && <div className="text-xs text-slate-500">{c.extra}</div>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+      {/* Search controls */}
+      <section className="card" style={{ overflow: "visible" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+          <div className="field" style={{ position: "relative", margin: 0 }}>
+            <label>Customer</label>
+            <input
+              placeholder="Type to search customers..."
+              value={customer ? customer.name : customerQuery}
+              onChange={e => { setCustomer(null); setCustomerQuery(e.target.value); setCustomerOpen(true); }}
+              onFocus={() => setCustomerOpen(true)}
+            />
+            {customer && (
+              <button
+                type="button"
+                onClick={() => { setCustomer(null); setCustomerQuery(""); setCustomerResults([]); setCustomerOpen(true); }}
+                style={{ position: "absolute", right: 8, top: 30, fontSize: "0.7rem", background: "none", border: "none", color: "var(--muted)", textDecoration: "underline", cursor: "pointer", minHeight: "auto", padding: 0 }}
+              >
+                Clear
+              </button>
+            )}
+            {customerOpen && !customer && (
+              <ul style={{ position: "absolute", zIndex: 30, marginTop: 4, width: "100%", maxHeight: 256, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "#fff", boxShadow: "var(--shadow-lg)", listStyle: "none", padding: 0 }}>
+                {debCustomerQuery.length < 2 && <li style={{ padding: "8px 12px", fontSize: "0.85rem", color: "var(--muted)" }}>Type at least 2 characters...</li>}
+                {debCustomerQuery.length >= 2 && customerResults.length === 0 && <li style={{ padding: "8px 12px", fontSize: "0.85rem", color: "var(--muted)" }}>Searching...</li>}
+                {customerResults.map(c => (
+                  <li
+                    key={c.id}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => { setCustomer({ id: c.id, name: c.name }); setCustomerQuery(""); setCustomerOpen(false); }}
+                    style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid var(--border)" }}
+                    onMouseEnter={e => (e.currentTarget.style.background = "var(--surface-2)")}
+                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: "0.9rem" }}>{c.name}</div>
+                    {c.extra && <div className="small muted">{c.extra}</div>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
-        {/* Brand typeahead */}
-        <div className="lg:col-span-3 relative">
-          <label className="block text-sm text-slate-600 mb-1">Brand (vendor)</label>
-          <input
-            className="w-full border border-slate-300 focus:border-slate-400 focus:outline-none rounded-lg px-3 py-2"
-            placeholder="Type to search vendors…"
-            value={brand ? brand : brandQuery}
-            onChange={(e) => {
-              setBrand("");
-              setBrandQuery(e.target.value);
-              setBrandOpen(true);
-            }}
-            onFocus={() => setBrandOpen(true)}
-          />
-          {brand && (
-            <button
-              type="button"
-              className="absolute right-2 top-[34px] text-xs text-slate-500 underline"
-              onClick={() => {
-                setBrand("");
-                setBrandQuery("");
-                setBrandResults([]);
-                setBrandOpen(true);
-              }}
-            >
-              Clear
-            </button>
-          )}
-          {brandOpen && !brand && (
-            <ul className="absolute z-10 mt-1 w-full max-h-64 overflow-auto border border-slate-200 rounded-lg bg-white shadow-sm">
-              {brandResults.length === 0 && (
-                <li className="px-3 py-2 text-sm text-slate-500">Searching…</li>
-              )}
-              {brandResults.map((b) => (
-                <li
-                  key={b}
-                  className="px-3 py-2 hover:bg-slate-50 cursor-pointer"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    setBrand(b);
-                    setBrandQuery("");
-                    setBrandOpen(false);
-                  }}
-                >
-                  {b}
-                </li>
-              ))}
-            </ul>
-          )}
+          <div className="field" style={{ position: "relative", margin: 0 }}>
+            <label>Brand</label>
+            <input
+              placeholder="Type to search vendors..."
+              value={brand ? brand : brandQuery}
+              onChange={e => { setBrand(""); setBrandQuery(e.target.value); setBrandOpen(true); }}
+              onFocus={() => setBrandOpen(true)}
+            />
+            {brand && (
+              <button
+                type="button"
+                onClick={() => { setBrand(""); setBrandQuery(""); setBrandResults([]); setBrandOpen(true); }}
+                style={{ position: "absolute", right: 8, top: 30, fontSize: "0.7rem", background: "none", border: "none", color: "var(--muted)", textDecoration: "underline", cursor: "pointer", minHeight: "auto", padding: 0 }}
+              >
+                Clear
+              </button>
+            )}
+            {brandOpen && !brand && (
+              <ul style={{ position: "absolute", zIndex: 30, marginTop: 4, width: "100%", maxHeight: 256, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "#fff", boxShadow: "var(--shadow-lg)", listStyle: "none", padding: 0 }}>
+                {brandResults.length === 0 && <li style={{ padding: "8px 12px", fontSize: "0.85rem", color: "var(--muted)" }}>Searching...</li>}
+                {brandResults.map(b => (
+                  <li
+                    key={b}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => { setBrand(b); setBrandQuery(""); setBrandOpen(false); }}
+                    style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid var(--border)" }}
+                    onMouseEnter={e => (e.currentTarget.style.background = "var(--surface-2)")}
+                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                  >
+                    {b}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="field" style={{ margin: 0 }}>
+            <label>Timeframe</label>
+            <select value={timeframe} onChange={e => setTimeframe(e.target.value as typeof timeframe)}>
+              <option value="mtd">Month to date</option>
+              <option value="lm">Last month</option>
+              <option value="l2m">Last 2 months</option>
+              <option value="l3m">Last 3 months</option>
+            </select>
+          </div>
         </div>
 
-        {/* Timeframe */}
-        <div>
-          <label className="block text-sm text-slate-600 mb-1">Timeframe</label>
-          <select
-            className="w-full border border-slate-300 focus:border-slate-400 focus:outline-none rounded-lg px-3 py-2"
-            value={timeframe}
-            onChange={(e) => setTimeframe(e.target.value as typeof timeframe)}
-          >
-            <option value="mtd">Month to date</option>
-            <option value="lm">Last month</option>
-            <option value="l2m">Last 2 months</option>
-            <option value="l3m">Last 3 months</option>
-          </select>
-        </div>
+        <button
+          type="button"
+          onClick={() => setShowAdvanced(v => !v)}
+          className="small"
+          style={{ background: "none", border: "none", color: "var(--pink-dark)", textDecoration: "underline", cursor: "pointer", padding: 0, marginTop: 12, minHeight: "auto", fontWeight: 600 }}
+        >
+          {showAdvanced ? "Hide" : "Show"} advanced settings
+        </button>
 
-        {/* Params */}
-        <div>
-          <label className="block text-sm text-slate-600 mb-1">Safety %</label>
-          <input
-            type="number"
-            step="0.01"
-            className="w-full border border-slate-300 focus:border-slate-400 focus:outline-none rounded-lg px-3 py-2"
-            value={safetyPct}
-            onChange={(e) => setSafetyPct(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="block text-sm text-slate-600 mb-1">Coverage months</label>
-          <input
-            type="number"
-            step="1"
-            min={1}
-            className="w-full border border-slate-300 focus:border-slate-400 focus:outline-none rounded-lg px-3 py-2"
-            value={coverageMonths}
-            onChange={(e) => setCoverageMonths(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="block text-sm text-slate-600 mb-1">Pack size (round up)</label>
-          <input
-            type="number"
-            step="1"
-            min={1}
-            className="w-full border border-slate-300 focus:border-slate-400 focus:outline-none rounded-lg px-3 py-2"
-            value={packSize}
-            onChange={(e) => setPackSize(e.target.value)}
-          />
-        </div>
+        {showAdvanced && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+            <div className="field" style={{ margin: 0 }}>
+              <label>Safety %</label>
+              <input type="number" step="0.01" value={safetyPct} onChange={e => setSafetyPct(e.target.value)} />
+            </div>
+            <div className="field" style={{ margin: 0 }}>
+              <label>Coverage months</label>
+              <input type="number" step="1" min={1} value={coverageMonths} onChange={e => setCoverageMonths(e.target.value)} />
+            </div>
+            <div className="field" style={{ margin: 0 }}>
+              <label>Pack size</label>
+              <input type="number" step="1" min={1} value={packSize} onChange={e => setPackSize(e.target.value)} />
+            </div>
+          </div>
+        )}
 
-        {/* Actions */}
-        <div className="flex gap-2">
-          <button
-            onClick={runReport}
-            disabled={!canRun || loading}
-            className="px-4 py-2 rounded-lg bg-black text-white disabled:opacity-50"
-          >
-            {loading ? "Running…" : "Run report"}
+        <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+          <button className="primary" onClick={runReport} disabled={!canRun || loading}>
+            {loading ? "Running..." : "Run Report"}
           </button>
-          <button
-            onClick={downloadCsv}
-            disabled={!data?.rows?.length}
-            className="px-4 py-2 rounded-lg border border-slate-300"
-          >
+          <button className="btn" onClick={downloadCsv} disabled={!data?.rows?.length}>
             Export CSV
           </button>
-          <button
-            onClick={saveAllVisible}
-            disabled={!data?.rows?.length || loading}
-            className="px-4 py-2 rounded-lg border border-slate-300"
-            title="Saves the current 'Edit PAR' values for every visible row"
-          >
-            Save all
+          <button className="btn" onClick={saveAllVisible} disabled={!data?.rows?.length || loading} title="Saves the current Edit PAR values for every visible row">
+            Save All
           </button>
         </div>
-      </div>
 
-      {/* Status */}
-      <div className="text-sm text-slate-600">
-        {loading && <span>Loading…</span>}
-        {!loading && error && <span className="text-rose-600">Error: {error}</span>}
+        {error && <div className="small" style={{ color: "var(--red)", marginTop: 10 }}>{error}</div>}
         {!loading && !error && data && customer && (
-          <span>
-            Showing <b>{(data.rows || []).length}</b> SKUs for <b>{customer.name}</b> / <b>{data.params.brand}</b> in{" "}
-            <b>{TF_LABELS[data.params.timeframe as keyof typeof TF_LABELS]}</b>.
-          </span>
+          <div className="small muted" style={{ marginTop: 10 }}>
+            Showing <strong>{(data.rows || []).length}</strong> SKUs for <strong>{customer.name}</strong> / <strong>{data.params.brand}</strong> in{" "}
+            <strong>{TF_LABELS[data.params.timeframe as keyof typeof TF_LABELS]}</strong>
+          </div>
         )}
-      </div>
+      </section>
 
-      {/* TABLE — adjusted to show clear grid lines */}
-      <div className="mx-auto max-w-5xl overflow-x-auto rounded-xl ring-1 ring-slate-200 bg-white/70 shadow-sm">
-        <table className="min-w-full text-sm border-collapse table-fixed">
-          <thead className="sticky top-0 z-10 bg-white/90 backdrop-blur">
-            <tr>
-              <th
-                className="px-3 py-2 text-left font-medium text-slate-700 cursor-pointer select-none border border-slate-300 bg-slate-50"
-                onClick={() => toggleSort("sku")}
-              >
-                <div className="inline-flex items-center gap-1">
-                  SKU {sortKey === "sku" && <span className="text-slate-400">{sortDir === "asc" ? "▲" : "▼"}</span>}
-                </div>
-              </th>
-              <th
-                className="px-3 py-2 text-left font-medium text-slate-700 cursor-pointer select-none border border-slate-300 bg-slate-50"
-                onClick={() => toggleSort("productName")}
-              >
-                <div className="inline-flex items-center gap-1">
-                  Product {sortKey === "productName" && <span className="text-slate-400">{sortDir === "asc" ? "▲" : "▼"}</span>}
-                </div>
-              </th>
-              {["unitsInWindow", "avgMonthly", "suggestedMonthlyPAR", "agreedPar", "delta"].map((k) => (
-                <th
-                  key={k}
-                  className="px-3 py-2 text-center font-medium text-slate-700 cursor-pointer select-none border border-slate-300 bg-slate-50"
-                  onClick={() => toggleSort(k as SortKey)}
-                >
-                  <div className="inline-flex items-center gap-1">
-                    {{
-                      unitsInWindow: "Units (window)",
-                      avgMonthly: "Avg Monthly",
-                      suggestedMonthlyPAR: "Suggested PAR",
-                      agreedPar: "Agreed PAR",
-                      delta: "Δ (Sug - Agr)",
-                    }[k as keyof any]}
-                    {sortKey === k && <span className="text-slate-400">{sortDir === "asc" ? "▲" : "▼"}</span>}
-                  </div>
-                </th>
-              ))}
-              <th className="px-3 py-2 text-center font-medium text-slate-700 border border-slate-300 bg-slate-50">Edit PAR</th>
-              <th className="px-3 py-2 text-right font-medium text-slate-700 border border-slate-300 bg-slate-50">Actions</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {rows.map((r: any) => {
-              const editVal = editPar[r.sku] ?? String(r.agreedPar ?? r.suggestedMonthlyPAR ?? 0);
-              const delta = Number(r.delta || 0);
-              const deltaClass = delta > 0 ? "text-amber-700" : delta < 0 ? "text-emerald-700" : "text-slate-700";
-
-              return (
-                <tr key={r.sku || r.productName} className="even:bg-white odd:bg-slate-50/60 hover:bg-slate-100">
-                  <td className="px-3 py-2 whitespace-nowrap border border-slate-200">
-                    {r.sku || <em className="text-slate-400">—</em>}
-                  </td>
-                  <td className="px-3 py-2 border border-slate-200">{r.productName}</td>
-
-                  <td className="px-3 py-2 text-center tabular-nums border border-slate-200">{fmt0(r.unitsInWindow)}</td>
-                  <td className="px-3 py-2 text-center tabular-nums border border-slate-200">{fmt2(r.avgMonthly)}</td>
-                  <td className="px-3 py-2 text-center tabular-nums font-medium border border-slate-200">
-                    {fmt0(r.suggestedMonthlyPAR)}
-                  </td>
-                  <td className="px-3 py-2 text-center tabular-nums border border-slate-200">
-                    {r.agreedPar != null ? fmt0(r.agreedPar) : "—"}
-                  </td>
-                  <td className={`px-3 py-2 text-center tabular-nums border border-slate-200 ${deltaClass}`}>{fmt0(delta)}</td>
-
-                  <td className="px-3 py-2 text-center border border-slate-200">
-                    <input
-                      className="w-24 border border-slate-300 rounded-md px-2 py-1 text-center tabular-nums"
-                      type="number"
-                      step="1"
-                      min={0}
-                      value={editVal}
-                      onChange={(e) => setEdit(r.sku, e.target.value)}
-                    />
-                  </td>
-
-                  <td className="px-3 py-2 text-right border border-slate-200">
-                    <button
-                      className="px-3 py-1 rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
-                      onClick={() => saveOne(r.sku)}
-                      disabled={!r.sku || !customer?.id}
-                      title={!r.sku ? "Missing SKU" : "Save PAR for this SKU"}
-                    >
-                      Save
-                    </button>
-                  </td>
+      {/* Results */}
+      {rows.length > 0 && (
+        <section className="card">
+          <div className="table-wrap">
+            <table className="table" style={{ minWidth: 760 }}>
+              <thead>
+                <tr>
+                  <th onClick={() => toggleSort("sku")} style={{ cursor: "pointer" }}>SKU {sortKey === "sku" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
+                  <th onClick={() => toggleSort("productName")} style={{ cursor: "pointer" }}>Product {sortKey === "productName" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
+                  <th onClick={() => toggleSort("unitsInWindow")} style={{ cursor: "pointer", textAlign: "center" }}>Units {sortKey === "unitsInWindow" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
+                  <th onClick={() => toggleSort("avgMonthly")} style={{ cursor: "pointer", textAlign: "center" }}>Avg/Mo {sortKey === "avgMonthly" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
+                  <th onClick={() => toggleSort("suggestedMonthlyPAR")} style={{ cursor: "pointer", textAlign: "center" }}>Suggested PAR {sortKey === "suggestedMonthlyPAR" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
+                  <th onClick={() => toggleSort("agreedPar")} style={{ cursor: "pointer", textAlign: "center" }}>Agreed PAR {sortKey === "agreedPar" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
+                  <th onClick={() => toggleSort("delta")} style={{ cursor: "pointer", textAlign: "center" }}>Delta {sortKey === "delta" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
+                  <th style={{ textAlign: "center" }}>Edit PAR</th>
+                  <th style={{ textAlign: "right" }}>Action</th>
                 </tr>
-              );
-            })}
+              </thead>
+              <tbody>
+                {rows.map((r: any, i: number) => {
+                  const editVal = editPar[r.sku] ?? String(r.agreedPar ?? r.suggestedMonthlyPAR ?? 0);
+                  const delta = Number(r.delta || 0);
+                  const deltaColor = delta > 0 ? "#92400e" : delta < 0 ? "#166534" : "var(--text)";
+                  return (
+                    <tr key={r.sku || r.productName} style={{ background: i % 2 === 0 ? "#fff" : "#fafbfc" }}>
+                      <td className="small">{r.sku || <em style={{ color: "var(--muted)" }}>-</em>}</td>
+                      <td className="small">{r.productName}</td>
+                      <td className="small" style={{ textAlign: "center" }}>{fmt0(r.unitsInWindow)}</td>
+                      <td className="small" style={{ textAlign: "center" }}>{fmt2(r.avgMonthly)}</td>
+                      <td className="small" style={{ textAlign: "center", fontWeight: 700 }}>{fmt0(r.suggestedMonthlyPAR)}</td>
+                      <td className="small" style={{ textAlign: "center" }}>{r.agreedPar != null ? fmt0(r.agreedPar) : "-"}</td>
+                      <td className="small" style={{ textAlign: "center", color: deltaColor, fontWeight: 600 }}>{fmt0(delta)}</td>
+                      <td style={{ textAlign: "center" }}>
+                        <input
+                          type="number" step="1" min={0} value={editVal}
+                          onChange={e => setEdit(r.sku, e.target.value)}
+                          style={{ width: 80, height: 34, padding: "4px 8px", textAlign: "center" }}
+                        />
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <button className="btn" style={{ fontSize: "0.78rem", padding: "5px 10px" }} onClick={() => saveOne(r.sku)} disabled={!r.sku || !customer?.id}>
+                          Save
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
-            {!rows.length && !loading && !error && (
-              <tr>
-                <td colSpan={9} className="px-3 py-6 text-center text-slate-500 border border-slate-200">
-                  No data yet. Choose a customer and brand, then run the report.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {!rows.length && !loading && !error && data && (
+        <section className="card">
+          <p className="small muted" style={{ textAlign: "center", padding: "20px 0" }}>No data for this customer/brand/timeframe combination.</p>
+        </section>
+      )}
+
+      {!data && !loading && (
+        <section className="card">
+          <p className="small muted" style={{ textAlign: "center", padding: "20px 0" }}>Choose a customer and brand, then run the report.</p>
+        </section>
+      )}
     </div>
   );
 }
