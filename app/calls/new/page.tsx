@@ -539,10 +539,32 @@ export default function NewCallPage() {
         <option value="" disabled>
           — Select —
         </option>
-        <option>Sale</option>
+        <option>Not Available</option>
+        <option>Left Details / Business Card</option>
+        <option>No Interest</option>
+        <option>Interested - Follow-up Booked</option>
+        <option>Interested - Callback Requested</option>
+        <option>Sample Requested</option>
+        <option>Sample Reviewed - Positive</option>
+        <option>Sample Reviewed - Negative</option>
+        <option>Order Placed</option>
         <option>No Sale</option>
-        <option>Appointment booked</option>
-        <option>Demo Booked</option>
+      </select>
+      <div className="form-hint">Pipeline stage updates automatically based on this outcome.</div>
+    </div>
+  );
+
+  const BlockNextStep = (
+    <div className="field">
+      <label>Next Step</label>
+      <select name="nextStep" defaultValue="">
+        <option value="">— None —</option>
+        <option>Book Follow-up Call</option>
+        <option>Book Sample Review</option>
+        <option>Send Samples</option>
+        <option>Send Payment Link / Close Sale</option>
+        <option>No Further Action</option>
+        <option>Escalate to Manager</option>
       </select>
     </div>
   );
@@ -551,14 +573,15 @@ export default function NewCallPage() {
     <div className="field">
       <label>Customer Stage</label>
       <select name="stage" defaultValue="">
-        <option value="">— Select stage —</option>
+        <option value="">— Auto (recommended) —</option>
         <option value="LEAD">Lead</option>
+        <option value="ENGAGED">Engaged</option>
         <option value="APPOINTMENT_BOOKED">Appointment booked</option>
         <option value="SAMPLING">Sampling</option>
         <option value="CUSTOMER">Customer</option>
       </select>
       <div className="form-hint">
-        Optional. If chosen for an existing customer, their profile stage will be updated.
+        Leave on Auto to let the outcome decide. Only override if you need to set it manually.
       </div>
     </div>
   );
@@ -573,7 +596,9 @@ const BlockCallType = (
 
       <option value="Cold Call">Cold Call</option>
       <option value="1st Booked Call">1st Booked Call</option>
+      <option value="Booked Call">Booked Call</option>
       <option value="Sample Review">Sample Review</option>
+      <option value="Demo">Demo</option>
       <option value="Account Manage">Account Manage</option>
     </select>
   </div>
@@ -731,6 +756,7 @@ const BlockCallType = (
             <div className="grid grid-2">
               {BlockCustomer}
               {BlockOutcome}
+              {BlockNextStep}
             </div>
 
             {BlockStage}

@@ -277,6 +277,7 @@ export async function POST(req: NextRequest) {
         callType,
         summary,
         outcome,
+        nextStep: body.nextStep ? String(body.nextStep) : null,
         staff,
         stage: stageProvided ?? undefined,
         followUpRequired: !!followUpAt,
