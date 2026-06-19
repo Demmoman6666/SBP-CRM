@@ -278,7 +278,7 @@ export default function NewCustomerPage() {
         <div className="grid" style={{ gap: 8 }}>
           <b>Opening Hours</b>
 
-          <div className="card" style={{ padding: 12, border: "1px solid var(--border)" }}>
+          <div className="card" style={{ padding: 12, border: "1px solid var(--border)", overflowX: "auto" }}>
             {/* header */}
             <div
               style={{
@@ -287,6 +287,7 @@ export default function NewCustomerPage() {
                 columnGap: 8,
                 alignItems: "end",
                 marginBottom: 8,
+                minWidth: 480,
               }}
             >
               <div></div>
@@ -309,6 +310,7 @@ export default function NewCustomerPage() {
                     columnGap: 8,
                     alignItems: "center",
                     marginBottom: 8,
+                    minWidth: 480,
                   }}
                 >
                   {/* Day + checkbox */}
@@ -376,8 +378,18 @@ export default function NewCustomerPage() {
           <textarea name="notes" rows={4} placeholder="Anything useful…" />
         </div>
 
-        <div className="right">
-          <button className="primary" type="submit">Create</button>
+        <div
+          className="right"
+          style={{
+            position: "sticky",
+            bottom: 0,
+            background: "#fff",
+            padding: "12px 0",
+            borderTop: "1px solid var(--border)",
+            zIndex: 10,
+          }}
+        >
+          <button className="primary" type="submit" style={{ width: "100%", maxWidth: 320 }}>Create Customer</button>
         </div>
       </form>
     </div>
