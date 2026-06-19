@@ -2,6 +2,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import OpeningHoursEditor from "@/components/OpeningHoursEditor";
 
 type Rep = { id: string; name: string };
 type Brand = { id: string; name: string };
@@ -16,8 +17,6 @@ type DayState = {
 };
 
 const DAYS: DayKey[] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const H24 = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
-const M05 = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, "0"));
 
 const makeDefaultDay = (): DayState => ({
   enabled: false,
@@ -41,181 +40,6 @@ const COUNTRIES = [
   "New Zealand",
 ];
 
-function parseOpeningHoursJSON(initialJSON: string | undefined) {
-  try {
-    return initialJSON ? JSON.parse(initialJSON) : null;
-  } catch {
-    return null;
-  }
-}
-
-function OpeningHoursEditor({ initialJSON }: { initialJSON?: string }) {
-  // seed state from JSON if present
-  const seed = parseOpeningHoursJSON(initialJSON);
-
-  const seededDays = () => {
-    const obj: Record<DayKey, DayState> =
-      Object.fromEntries(DAYS.map((d) => [d, makeDefaultDay()])) as Record<
-        DayKey,
-        DayState
-      >;
-
-    if (seed && typeof seed === "object") {
-      for (const d of DAYS) {
-        const s = (seed as any)[d];
-        if (s && s.open === true && typeof s.from === "string" && typeof s.to === "string") {
-          const [oh, om] = String(s.from).split(":");
-          const [ch, cm] = String(s.to).split(":");
-          obj[d] = {
-            enabled: true,
-            openH: String(oh ?? "09").padStart(2, "0"),
-            openM: String(om ?? "00").padStart(2, "0"),
-            closeH: String(ch ?? "17").padStart(2, "0"),
-            closeM: String(cm ?? "00").padStart(2, "0"),
-          };
-        }
-      }
-    }
-    return obj;
-  };
-
-  const [oh, setOh] = useState<Record<DayKey, DayState>>(seededDays);
-
-  const openingHoursJSON = useMemo(() => {
-    const obj: Record<DayKey, any> = {} as any;
-    for (const d of DAYS) {
-      const s = oh[d];
-      obj[d] = s.enabled
-        ? { open: true, from: `${s.openH}:${s.openM}`, to: `${s.closeH}:${s.closeM}` }
-        : { open: false };
-    }
-    return JSON.stringify(obj);
-  }, [oh]);
-
-  function updateDay<K extends keyof DayState>(day: DayKey, key: K, val: DayState[K]) {
-    setOh((prev) => ({ ...prev, [day]: { ...prev[day], [key]: val } }));
-  }
-
-  // grid cols reused for header & rows
-  const gridCols = "120px 46px 64px 64px 50px 64px 64px";
-
-  return (
-    <>
-      <input type="hidden" name="openingHours" value={openingHoursJSON} />
-      <div className="grid" style={{ gap: 8 }}>
-        <b>Opening Hours</b>
-
-        <div className="card" style={{ padding: 12, border: "1px solid var(--border)" }}>
-          {/* header */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: gridCols,
-              columnGap: 8,
-              alignItems: "end",
-              marginBottom: 8,
-            }}
-          >
-            <div></div>
-            <div className="small muted" style={{ textAlign: "left" }}>Open</div>
-            <div className="small muted" style={{ textAlign: "left" }}>Hour</div>
-            <div className="small muted" style={{ textAlign: "left" }}>Min</div>
-            <div className="small muted" style={{ textAlign: "left" }}>Close</div>
-            <div className="small muted" style={{ textAlign: "left" }}>Hour</div>
-            <div className="small muted" style={{ textAlign: "left" }}>Min</div>
-          </div>
-
-          {DAYS.map((day) => {
-            const s = oh[day];
-            return (
-              <div
-                key={day}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: gridCols,
-                  columnGap: 8,
-                  alignItems: "center",
-                  marginBottom: 8,
-                }}
-              >
-                <label className="row" style={{ gap: 8, alignItems: "center" }}>
-                  <input
-                    type="checkbox"
-                    checked={s.enabled}
-                    onChange={(e) => updateDay(day, "enabled", e.target.checked)}
-                  />
-                  <span>{day}</span>
-                </label>
-
-                {/* spacer under "Open" */}
-                <div></div>
-
-                {/* Open Hr / Min */}
-                <select
-                  aria-label={`${day} open hour`}
-                  disabled={!s.enabled}
-                  value={s.openH}
-                  onChange={(e) => updateDay(day, "openH", e.target.value)}
-                >
-                  {H24.map((h) => (
-                    <option key={h} value={h}>
-                      {h}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label={`${day} open minutes`}
-                  disabled={!s.enabled}
-                  value={s.openM}
-                  onChange={(e) => updateDay(day, "openM", e.target.value)}
-                >
-                  {M05.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-
-                {/* spacer under "Close" */}
-                <div></div>
-
-                {/* Close Hr / Min */}
-                <select
-                  aria-label={`${day} close hour`}
-                  disabled={!s.enabled}
-                  value={s.closeH}
-                  onChange={(e) => updateDay(day, "closeH", e.target.value)}
-                >
-                  {H24.map((h) => (
-                    <option key={h} value={h}>
-                      {h}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label={`${day} close minutes`}
-                  disabled={!s.enabled}
-                  value={s.closeM}
-                  onChange={(e) => updateDay(day, "closeM", e.target.value)}
-                >
-                  {M05.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            );
-          })}
-
-          <div className="form-hint" style={{ marginTop: 4 }}>
-            Tick a day, then choose open &amp; close. Minutes step is 5.
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
 
 type EditFormProps = {
   id: string;
