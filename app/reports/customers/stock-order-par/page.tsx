@@ -221,7 +221,7 @@ export default function StockOrderParPage() {
 
   function downloadCsv() {
     if (!rows.length || !customer) return;
-    const headers = ["Customer", "Brand", "SKU", "Product Name", "Units (window)", "Avg Monthly", "Suggested Monthly PAR", "Agreed PAR", "Delta"];
+    const headers = ["Customer", "Brand", "SKU", "Product Name", "Units (window)", "Avg Monthly", "Recommended Monthly Stock", "Agreed Stock Level", "Delta"];
     const csv = [headers.join(",")]
       .concat(rows.map((r: any) => [
         '"' + (customer?.name || "").replace(/"/g, '\\"') + '"',
@@ -239,7 +239,7 @@ export default function StockOrderParPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "customer-par_" + customer?.name + "_" + brand + "_" + timeframe + ".csv";
+    a.download = "customer-stock-forecast_" + customer?.name + "_" + brand + "_" + timeframe + ".csv";
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -260,8 +260,8 @@ export default function StockOrderParPage() {
   return (
     <div ref={rootRef} className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <h1 style={{ marginBottom: 2 }}>Stock &amp; Order (PAR)</h1>
-        <p className="small muted">Predicted demand and PAR levels per customer and brand.</p>
+        <h1 style={{ marginBottom: 2 }}>Stock &amp; Order Forecast</h1>
+        <p className="small muted">Predicted demand and recommended stock levels per customer and brand.</p>
       </section>
 
       {/* Search controls */}
@@ -385,7 +385,7 @@ export default function StockOrderParPage() {
           <button className="btn" onClick={downloadCsv} disabled={!data?.rows?.length}>
             Export CSV
           </button>
-          <button className="btn" onClick={saveAllVisible} disabled={!data?.rows?.length || loading} title="Saves the current Edit PAR values for every visible row">
+          <button className="btn" onClick={saveAllVisible} disabled={!data?.rows?.length || loading} title="Saves the current agreed stock level for every visible row">
             Save All
           </button>
         </div>
@@ -410,10 +410,10 @@ export default function StockOrderParPage() {
                   <th onClick={() => toggleSort("productName")} style={{ cursor: "pointer" }}>Product {sortKey === "productName" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
                   <th onClick={() => toggleSort("unitsInWindow")} style={{ cursor: "pointer", textAlign: "center" }}>Units {sortKey === "unitsInWindow" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
                   <th onClick={() => toggleSort("avgMonthly")} style={{ cursor: "pointer", textAlign: "center" }}>Avg/Mo {sortKey === "avgMonthly" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
-                  <th onClick={() => toggleSort("suggestedMonthlyPAR")} style={{ cursor: "pointer", textAlign: "center" }}>Suggested PAR {sortKey === "suggestedMonthlyPAR" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
-                  <th onClick={() => toggleSort("agreedPar")} style={{ cursor: "pointer", textAlign: "center" }}>Agreed PAR {sortKey === "agreedPar" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
+                  <th onClick={() => toggleSort("suggestedMonthlyPAR")} style={{ cursor: "pointer", textAlign: "center" }}>Recommended Stock {sortKey === "suggestedMonthlyPAR" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
+                  <th onClick={() => toggleSort("agreedPar")} style={{ cursor: "pointer", textAlign: "center" }}>Agreed Stock Level {sortKey === "agreedPar" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
                   <th onClick={() => toggleSort("delta")} style={{ cursor: "pointer", textAlign: "center" }}>Delta {sortKey === "delta" && (sortDir === "asc" ? "\u25B2" : "\u25BC")}</th>
-                  <th style={{ textAlign: "center" }}>Edit PAR</th>
+                  <th style={{ textAlign: "center" }}>Set Stock Level</th>
                   <th style={{ textAlign: "right" }}>Action</th>
                 </tr>
               </thead>
