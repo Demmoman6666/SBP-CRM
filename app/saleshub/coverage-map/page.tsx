@@ -294,35 +294,32 @@ export default function CoverageMapPage() {
       </section>
 
       {/* Filters */}
-      <section
-        className="card"
-        style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}
-      >
-        <div className="field" style={{ width: 320 }}>
-          <label>Sales rep</label>
-          <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)}>
-            <option value="">All reps</option>
-            {reps.map((r) => (
-              <option key={r.id || r.name} value={r.name}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-        </div>
+      <section className="card">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+          <div className="field" style={{ margin: 0 }}>
+            <label>Sales rep</label>
+            <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)}>
+              <option value="">All reps</option>
+              {reps.map((r) => (
+                <option key={r.id || r.name} value={r.name}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          </div>
 
-        {/* NEW: Date range */}
-        <div className="field" style={{ width: 360 }}>
-          <label>Date range</label>
-          <div className="row" style={{ display: "flex", gap: 8 }}>
+          <div className="field" style={{ margin: 0 }}>
+            <label>From</label>
             <input
               type="date"
               value={fromDay}
               onChange={(e) => setFromDay(e.target.value)}
               aria-label="From date"
             />
-            <span className="small" style={{ alignSelf: "center" }}>
-              to
-            </span>
+          </div>
+
+          <div className="field" style={{ margin: 0 }}>
+            <label>To</label>
             <input
               type="date"
               value={toDay}
@@ -330,65 +327,37 @@ export default function CoverageMapPage() {
               aria-label="To date"
             />
           </div>
-
-          <div className="row" style={{ gap: 8, marginTop: 6, display: "flex", flexWrap: "wrap" }}>
-            <button type="button" className="btn" onClick={setToday}>
-              Today
-            </button>
-            <button type="button" className="btn" onClick={setYesterday}>
-              Yesterday
-            </button>
-            <button type="button" className="btn" onClick={setLast7}>
-              Last 7 days
-            </button>
-            <button type="button" className="btn" onClick={setThisWeek}>
-              This week
-            </button>
-            <button type="button" className="btn" onClick={clearRange} title="Show all dates">
-              Clear
-            </button>
-          </div>
         </div>
 
-        {/* Legend */}
-        <div className="row" style={{ gap: 14, marginLeft: "auto" }}>
-          <span className="small">
-            <span
-              style={{
-                display: "inline-block",
-                width: 12,
-                height: 12,
-                background: "#3b82f6",
-                borderRadius: 3,
-                marginRight: 6,
-              }}
-            />
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <button type="button" className="btn" style={{ fontSize: "0.8rem" }} onClick={setToday}>
+            Today
+          </button>
+          <button type="button" className="btn" style={{ fontSize: "0.8rem" }} onClick={setYesterday}>
+            Yesterday
+          </button>
+          <button type="button" className="btn" style={{ fontSize: "0.8rem" }} onClick={setLast7}>
+            Last 7 days
+          </button>
+          <button type="button" className="btn" style={{ fontSize: "0.8rem" }} onClick={setThisWeek}>
+            This week
+          </button>
+          <button type="button" className="btn" style={{ fontSize: "0.8rem" }} onClick={clearRange} title="Show all dates">
+            Clear
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
+          <span className="small" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f6", borderRadius: 3 }} />
             Cold Call
           </span>
-          <span className="small">
-            <span
-              style={{
-                display: "inline-block",
-                width: 12,
-                height: 12,
-                background: "#fb923c",
-                borderRadius: 3,
-                marginRight: 6,
-              }}
-            />
+          <span className="small" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ display: "inline-block", width: 10, height: 10, background: "#fb923c", borderRadius: 3 }} />
             Booked Call
           </span>
-          <span className="small">
-            <span
-              style={{
-                display: "inline-block",
-                width: 12,
-                height: 12,
-                background: "#ef4444",
-                borderRadius: 3,
-                marginRight: 6,
-              }}
-            />
+          <span className="small" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ display: "inline-block", width: 10, height: 10, background: "#ef4444", borderRadius: 3 }} />
             Booked Demo
           </span>
         </div>
@@ -396,7 +365,7 @@ export default function CoverageMapPage() {
 
       {/* Map */}
       <section className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div ref={mapDivRef} style={{ width: "100%", height: 560 }} />
+        <div ref={mapDivRef} style={{ width: "100%", height: "min(560px, 70vh)" }} />
       </section>
     </div>
   );
