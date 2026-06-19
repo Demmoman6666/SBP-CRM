@@ -74,18 +74,48 @@ function MultiSelect({ label, options, value, onChange, placeholder = "All" }: {
   const summary = allSelected ? `All ${options.length}` : value.length === 1 ? value[0] : `${value.length} selected`;
 
   return (
-    <div ref={ref} style={{ position: "relative" }}>
+    <div ref={ref} style={{ position: "relative", flex: "1 1 200px", minWidth: 0 }}>
       <label className="small" style={{ display: "block", marginBottom: 4 }}>{label}</label>
       <button
         className="btn"
         style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}
         onClick={() => setOpen((x) => !x)}
       >
-        <span>{summary}</span>
-        <span style={{ fontSize: "0.7rem" }}>▼</span>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summary}</span>
+        <span style={{ fontSize: "0.7rem", flexShrink: 0 }}>▼</span>
       </button>
       {open && (
-        <div style={{ position: "absolute", zIndex: 50, top: "100%", left: 0, right: 0, minWidth: 220, background: "#fff", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,.10)", padding: 10 }}>
+        <div
+          style={{ position: "fixed", zIndex: 200, background: "#fff", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,.15)", padding: 10, overflowY: "auto" }}
+          ref={(el) => {
+            if (!el || !ref.current) return;
+            const btnRect = ref.current.getBoundingClientRect();
+            const isMobile = window.innerWidth < 640;
+            if (isMobile) {
+              el.style.left = "12px";
+              el.style.right = "12px";
+              el.style.top = "max(12px, env(safe-area-inset-top))";
+              el.style.bottom = "max(12px, env(safe-area-inset-bottom))";
+              el.style.maxHeight = "none";
+              el.style.minWidth = "0";
+            } else {
+              const spaceBelow = window.innerHeight - btnRect.bottom;
+              const spaceAbove = btnRect.top;
+              el.style.left = btnRect.left + "px";
+              el.style.minWidth = Math.max(220, btnRect.width) + "px";
+              el.style.right = "auto";
+              if (spaceBelow >= 280 || spaceBelow >= spaceAbove) {
+                el.style.top = (btnRect.bottom + 6) + "px";
+                el.style.bottom = "auto";
+                el.style.maxHeight = Math.min(320, spaceBelow - 16) + "px";
+              } else {
+                el.style.bottom = (window.innerHeight - btnRect.top + 6) + "px";
+                el.style.top = "auto";
+                el.style.maxHeight = Math.min(320, spaceAbove - 16) + "px";
+              }
+            }
+          }}
+        >
           <input autoFocus placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
           <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
             <button className="btn" style={{ fontSize: "0.75rem", padding: "3px 10px" }} onClick={() => onChange([])}>All</button>
