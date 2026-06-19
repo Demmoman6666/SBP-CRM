@@ -1,5 +1,6 @@
 // lib/shopify.ts
 import { prisma } from "@/lib/prisma";
+import { resolveStageAfterOrder } from "@/lib/pipeline";
 import crypto from "crypto";
 
 /** ───────────────── Env ───────────────── */
@@ -309,6 +310,22 @@ export async function upsertOrderFromShopify(order: any, _shopDomain: string) {
   });
 
   if (itemsData.length) await prisma.orderLineItem.createMany({ data: itemsData });
+
+  // Auto-advance pipeline stage based on order value (forward-only)
+  if (linkedCustomer) {
+    try {
+      const total = toNumber(order.total_price) ?? 0;
+      const newStage = resolveStageAfterOrder(linkedCustomer.stage as any, total);
+      if (newStage) {
+        await prisma.customer.update({
+          where: { id: linkedCustomer.id },
+          data: { stage: newStage as any },
+        });
+      }
+    } catch (e) {
+      console.error("Auto-advance stage from order failed:", e);
+    }
+  }
 
   return ord;
 }
