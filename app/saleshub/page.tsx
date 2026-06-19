@@ -1,6 +1,5 @@
 // app/saleshub/page.tsx
 import Link from "next/link";
-import PipelineTile from "@/components/PipelineTile";
 
 export const dynamic = "force-static";
 export const revalidate = 1;
@@ -69,9 +68,6 @@ export default function SalesHubPage() {
           <div className="action-sub">Training, resources &amp; events</div>
         </Link>
       </section>
-
-      {/* Pipeline tile (counts + table) */}
-      <PipelineTile />
     </div>
   );
 }
