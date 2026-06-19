@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import RepReviewPanel from "./RepReviewPanel";
 
 type Rep = { id: string; name: string; email: string | null; phone: string | null; territory: string | null; createdAt: string; };
 type Stats = { totalCustomers: number; totalCalls: number; pendingFollowUps: number; customersByStage: Record<string, number>; };
@@ -62,6 +63,8 @@ export default function RepProfilePage() {
           <div key={stage} className="card" style={{ textAlign: "center" }}><div style={{ fontSize: "1.8rem", fontWeight: 800 }}>{count}</div><div className="small muted">{STAGE_LABEL[stage] ?? stage}</div></div>
         ))}
       </div>
+
+      <RepReviewPanel repId={rep.id} repName={rep.name} />
 
       <section className="card">
         <h2 style={{ marginBottom: 12 }}>Jump to Reports</h2>
