@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveStageAfterOutcome } from "@/lib/pipeline";
 import { createCalendarEvent } from "@/lib/google";
 import { getCurrentUser } from "@/lib/auth";
 
@@ -319,6 +320,23 @@ export async function POST(req: NextRequest) {
         where: { id: customerId },
         data: { stage: stageProvided },
       });
+    } else if (customerId && outcome) {
+      // Auto-advance pipeline stage based on call outcome (forward-only)
+      try {
+        const cust = await prisma.customer.findUnique({
+          where: { id: customerId },
+          select: { stage: true },
+        });
+        const newStage = resolveStageAfterOutcome(cust?.stage as any, outcome);
+        if (newStage) {
+          await prisma.customer.update({
+            where: { id: customerId },
+            data: { stage: newStage as any },
+          });
+        }
+      } catch (e) {
+        console.error("Auto-advance stage failed:", e);
+      }
     }
 
     await maybeCreateFollowUpEvent({
