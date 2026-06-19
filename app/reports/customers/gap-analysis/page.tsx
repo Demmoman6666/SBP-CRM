@@ -424,7 +424,7 @@ export default function GapAnalysisPage() {
               </div>
               <div className="field"><label>Since</label><input type="date" value={since} onChange={(e) => setSince(e.target.value)} /></div>
               <div className="field"><label>Until</label><input type="date" value={until} onChange={(e) => setUntil(e.target.value)} /></div>
-              <div className="field" style={{ position: "relative" }}>
+              <div className="field" id="gap-customer-search-field" style={{ position: "relative" }}>
                 <label>Filter by customer (optional)</label>
                 <input
                   value={customerQuery}
@@ -433,10 +433,41 @@ export default function GapAnalysisPage() {
                     setCustomerOpen(true);
                     if (!e.target.value) setCustomerId("");
                   }}
-                  placeholder="Type to search salons…"
+                  placeholder="Type to search salons..."
                 />
                 {customerOpen && customerResults.length > 0 && (
-                  <div style={{ position: "absolute", zIndex: 50, top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,.12)", maxHeight: 240, overflowY: "auto" }}>
+                  <div
+                    style={{ position: "fixed", zIndex: 200, background: "#fff", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,.15)", overflowY: "auto" }}
+                    ref={(el) => {
+                      if (!el) return;
+                      const fieldEl = document.getElementById("gap-customer-search-field");
+                      if (!fieldEl) return;
+                      const rect = fieldEl.getBoundingClientRect();
+                      const isMobile = window.innerWidth < 640;
+                      if (isMobile) {
+                        el.style.left = "12px";
+                        el.style.right = "12px";
+                        el.style.top = "max(12px, env(safe-area-inset-top))";
+                        el.style.bottom = "max(12px, env(safe-area-inset-bottom))";
+                        el.style.maxHeight = "none";
+                      } else {
+                        const spaceBelow = window.innerHeight - rect.bottom;
+                        const spaceAbove = rect.top;
+                        el.style.left = rect.left + "px";
+                        el.style.width = rect.width + "px";
+                        el.style.right = "auto";
+                        if (spaceBelow >= 240 || spaceBelow >= spaceAbove) {
+                          el.style.top = (rect.bottom + 4) + "px";
+                          el.style.bottom = "auto";
+                          el.style.maxHeight = Math.min(240, spaceBelow - 16) + "px";
+                        } else {
+                          el.style.bottom = (window.innerHeight - rect.top + 4) + "px";
+                          el.style.top = "auto";
+                          el.style.maxHeight = Math.min(240, spaceAbove - 16) + "px";
+                        }
+                      }
+                    }}
+                  >
                     {customerResults.map((c) => (
                       <div
                         key={c.id}
