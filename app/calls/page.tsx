@@ -189,13 +189,54 @@ export default function CallsListPage() {
         {showFilters && (
           <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
-              <div className="field">
-                <label>From</label>
-                <input type="date" value={from} onChange={e => setFrom(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>To</label>
-                <input type="date" value={to} onChange={e => setTo(e.target.value)} />
+              <div className="field" style={{ gridColumn: "1 / -1" }}>
+                <label>Date Range</label>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                  {[
+                    { label: "Today", days: 0 },
+                    { label: "Yesterday", days: 1, single: true },
+                    { label: "Last 7 days", days: 7 },
+                    { label: "Last 30 days", days: 30 },
+                    { label: "This month", thisMonth: true },
+                  ].map(preset => (
+                    <button
+                      key={preset.label}
+                      className="btn"
+                      style={{ fontSize: "0.75rem", padding: "4px 10px" }}
+                      onClick={() => {
+                        const now = new Date();
+                        const toStr = now.toISOString().slice(0, 10);
+                        if (preset.thisMonth) {
+                          const first = new Date(now.getFullYear(), now.getMonth(), 1);
+                          setFrom(first.toISOString().slice(0, 10));
+                          setTo(toStr);
+                        } else if (preset.single) {
+                          const d = new Date(now);
+                          d.setDate(d.getDate() - preset.days!);
+                          const s = d.toISOString().slice(0, 10);
+                          setFrom(s);
+                          setTo(s);
+                        } else {
+                          const d = new Date(now);
+                          d.setDate(d.getDate() - preset.days!);
+                          setFrom(d.toISOString().slice(0, 10));
+                          setTo(toStr);
+                        }
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  {(from || to) && (
+                    <button className="btn" style={{ fontSize: "0.75rem", padding: "4px 10px" }} onClick={() => { setFrom(""); setTo(""); }}>
+                      Clear dates
+                    </button>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input type="date" value={from} onChange={e => setFrom(e.target.value)} style={{ flex: 1 }} />
+                  <input type="date" value={to} onChange={e => setTo(e.target.value)} style={{ flex: 1 }} />
+                </div>
               </div>
               <div className="field">
                 <label>Call Type</label>
