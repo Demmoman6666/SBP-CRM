@@ -162,53 +162,56 @@ export default function PerformanceDashboard() {
     <div className="grid" style={{ gap: 16 }}>
 
       <section className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" as const, gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" as const, gap: 10 }}>
           <div>
             <h1 style={{ marginBottom: 4 }}>Performance Dashboard</h1>
             <p className="small muted">
-              {data ? `${formatDateRange()}${data.rep.name ? ` · ${data.rep.name}` : " · All reps"}` : "Set filters and run"}
+              {data ? formatDateRange() + (data.rep.name ? " · " + data.rep.name : " · All reps") : "Set filters and run"}
             </p>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.875rem", color: "var(--muted)", fontWeight: 500, textTransform: "none" as const, letterSpacing: 0 }}>
-              <input type="checkbox" checked={autoRun} onChange={e => setAutoRun(e.target.checked)} />
-              Auto-refresh
-            </label>
-            <button className="primary" onClick={() => run()} disabled={loading}>
-              {loading ? "Running…" : "Run"}
-            </button>
-          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.875rem", color: "var(--muted)", fontWeight: 500 }}>
+            <input type="checkbox" checked={autoRun} onChange={e => setAutoRun(e.target.checked)} />
+            Auto-refresh
+          </label>
         </div>
       </section>
 
       <section className="card" style={{ overflow: "visible" }}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" as const, alignItems: "flex-end" }}>
-          <div className="field" style={{ minWidth: 160 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 14 }}>
+          <div className="field" style={{ margin: 0 }}>
             <label>Sales Rep</label>
             <select value={selectedRepId} onChange={e => setSelectedRepId(e.target.value)}>
               <option value="">All reps</option>
               {reps.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.05em", color: "var(--muted)", marginBottom: 6 }}>Date Range</div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" as const }}>
-              {PRESETS.map(p => (
-                <button key={p.key} onClick={() => setPreset(p.key)} style={{ padding: "5px 12px", borderRadius: 999, fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", border: "1px solid var(--border)", background: preset === p.key ? "var(--pink)" : "#fff", color: preset === p.key ? "#fff" : "var(--text)" }}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
+          {preset === "custom" && (
+            <>
+              <div className="field" style={{ margin: 0 }}><label>From</label><input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} /></div>
+              <div className="field" style={{ margin: 0 }}><label>To</label><input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} /></div>
+            </>
+          )}
+        </div>
+
+        <div style={{ marginBottom: 6 }}>
+          <div style={{ fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.05em", color: "var(--muted)", marginBottom: 8 }}>Date Range</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" as const }}>
+            {PRESETS.map(p => (
+              <button key={p.key} onClick={() => setPreset(p.key)} style={{ padding: "6px 14px", borderRadius: 999, fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", border: "1px solid var(--border)", background: preset === p.key ? "var(--pink)" : "#fff", color: preset === p.key ? "#fff" : "var(--text)" }}>
+                {p.label}
+              </button>
+            ))}
           </div>
         </div>
 
-        {preset === "custom" && (
-          <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" as const, alignItems: "flex-end" }}>
-            <div className="field"><label>From</label><input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} /></div>
-            <div className="field"><label>To</label><input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} /></div>
-            <button className="primary" onClick={() => run()} disabled={loading}>Apply</button>
-          </div>
-        )}
+        <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" as const }}>
+          <button className="primary" onClick={() => run()} disabled={loading} style={{ minWidth: 100 }}>
+            {loading ? "Running..." : "Run"}
+          </button>
+          {preset === "custom" && (
+            <span className="small muted">Select From/To dates above then click Run</span>
+          )}
+        </div>
 
         {error && <div className="small" style={{ color: "var(--red)", marginTop: 8 }}>{error}</div>}
       </section>

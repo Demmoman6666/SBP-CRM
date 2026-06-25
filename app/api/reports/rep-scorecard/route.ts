@@ -374,19 +374,35 @@ export async function GET(req: Request) {
         const ct = norm(c.callType);
         const oc = norm(c.outcome);
 
+        // Helper: did this outcome represent a booked follow-up/appointment?
+        const isBookedOutcome = (
+          oc.includes("appointment") ||
+          oc.includes("follow-up booked") ||
+          oc.includes("follow up booked") ||
+          oc.includes("callback requested") ||
+          oc === "interested - follow-up booked" ||
+          oc === "interested - callback requested" ||
+          oc === "demo booked"
+        );
+        // Helper: did this outcome represent a sale?
+        const isSaleOutcome = (
+          oc === "sale" ||
+          oc === "order placed"
+        );
+
         if (ct.includes("cold")) {
           coldCalls++;
-          if (oc.includes("appointment")) coldCallsToAppointment++;
+          if (isBookedOutcome) coldCallsToAppointment++;
         }
-        if (ct.includes("1st booked") || ct === "booked call") {
+        if (ct.includes("1st booked") || ct.includes("booked call") || ct === "booked call") {
           firstBookedCalls++;
-          bookedCalls++; // keep legacy counter
-          if (oc.includes("appointment")) firstBookedToAppointment++;
+          bookedCalls++;
+          if (isBookedOutcome) firstBookedToAppointment++;
         }
-        if (ct.includes("booked demo")) bookedDemos++;
+        if (ct.includes("booked demo") || ct.includes("demo")) bookedDemos++;
         if (ct.includes("sample review")) {
           sampleReviews++;
-          if (oc === "sale") sampleReviewsToSale++;
+          if (isSaleOutcome) sampleReviewsToSale++;
         }
         if (ct.includes("account manage")) accountManage++;
 
