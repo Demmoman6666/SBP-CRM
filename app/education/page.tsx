@@ -1,27 +1,212 @@
-// app/education/page.tsx
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
 
-export const dynamic = "force-static";
-export const revalidate = 1;
+type Stats = {
+  requested: number;
+  booked: number;
+  cancelled: number;
+  total: number;
+};
+
+type Request = {
+  id: string;
+  createdAt: string;
+  status: "REQUESTED" | "BOOKED" | "CANCELLED";
+  salonName: string | null;
+  contactName: string | null;
+  town: string | null;
+  brands: string[];
+  educationTypes: string[];
+  notes: string | null;
+};
+
+type Educator = { id: string; name: string };
+
+const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
+  REQUESTED: { bg: "#fef9c3", fg: "#92400e" },
+  BOOKED: { bg: "#dcfce7", fg: "#166534" },
+  CANCELLED: { bg: "#fee2e2", fg: "#991b1b" },
+};
+
+function fmtDate(d: string) {
+  return new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function fmtType(t: string) {
+  return t.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
 
 export default function EducationPage() {
+  const [requests, setRequests] = useState<Request[]>([]);
+  const [educators, setEducators] = useState<Educator[]>([]);
+  const [stats, setStats] = useState<Stats>({ requested: 0, booked: 0, cancelled: 0, total: 0 });
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<string>("REQUESTED");
+  const [search, setSearch] = useState("");
+
+  function load() {
+    setLoading(true);
+    Promise.all([
+      fetch("/api/education/requests?limit=200", { cache: "no-store" }).then(r => r.json()),
+      fetch("/api/educators", { cache: "no-store" }).then(r => r.json()),
+    ]).then(([reqData, eduData]) => {
+      const reqs: Request[] = Array.isArray(reqData) ? reqData : (reqData.requests || []);
+      setRequests(reqs);
+      setEducators(Array.isArray(eduData) ? eduData : []);
+      setStats({
+        requested: reqs.filter(r => r.status === "REQUESTED").length,
+        booked: reqs.filter(r => r.status === "BOOKED").length,
+        cancelled: reqs.filter(r => r.status === "CANCELLED").length,
+        total: reqs.length,
+      });
+    }).catch(() => {}).finally(() => setLoading(false));
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function updateStatus(id: string, status: string) {
+    await fetch("/api/education/requests/" + id, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    load();
+  }
+
+  const filtered = requests.filter(r => {
+    if (statusFilter && r.status !== statusFilter) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return (r.salonName || "").toLowerCase().includes(q) ||
+             (r.contactName || "").toLowerCase().includes(q) ||
+             (r.town || "").toLowerCase().includes(q);
+    }
+    return true;
+  });
+
   return (
     <div className="grid" style={{ gap: 16 }}>
       <section className="card">
-        <h1>Education</h1>
-        <p className="small">Manage education requests and confirmed bookings.</p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <h1 style={{ marginBottom: 2 }}>Education</h1>
+            <p className="small muted">Manage education requests, bookings and educators.</p>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Link href="/education/requests/new" className="primary">+ New Request</Link>
+            <Link href="/education/educators" className="btn">Educators</Link>
+            <Link href="/education/booked" className="btn">Booked Sessions</Link>
+          </div>
+        </div>
       </section>
 
-      <section className="home-actions">
-        <Link href="/education/requests" className="action-tile">
-          <div className="action-title">Education Requested</div>
-          <div className="action-sub">Leads asking for training</div>
-        </Link>
+      {/* Stats */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12 }}>
+        {[
+          { label: "Requested", value: stats.requested, color: "#92400e", bg: "#fef9c3", filter: "REQUESTED" },
+          { label: "Booked", value: stats.booked, color: "#166534", bg: "#dcfce7", filter: "BOOKED" },
+          { label: "Cancelled", value: stats.cancelled, color: "#991b1b", bg: "#fee2e2", filter: "CANCELLED" },
+          { label: "Total", value: stats.total, color: "var(--text)", bg: "var(--surface-2)", filter: "" },
+        ].map(s => (
+          <button
+            key={s.label}
+            onClick={() => setStatusFilter(statusFilter === s.filter ? "" : s.filter)}
+            style={{ background: statusFilter === s.filter ? s.bg : "#fff", border: statusFilter === s.filter ? "2px solid " + s.color : "1px solid var(--border)", borderRadius: 12, padding: "14px", textAlign: "center", cursor: "pointer", transition: "all 0.15s" }}
+          >
+            <div style={{ fontSize: "1.8rem", fontWeight: 800, color: s.color }}>{s.value}</div>
+            <div className="small muted">{s.label}</div>
+          </button>
+        ))}
+      </div>
 
-        <Link href="/education/booked" className="action-tile">
-          <div className="action-title">Education Booked</div>
-          <div className="action-sub">Confirmed education sessions</div>
-        </Link>
+      {/* Filters */}
+      <section className="card">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search salon, contact, town..."
+            style={{ flex: "1 1 200px" }}
+          />
+          {statusFilter && (
+            <button className="btn" style={{ fontSize: "0.8rem" }} onClick={() => setStatusFilter("")}>
+              Clear filter
+            </button>
+          )}
+        </div>
+      </section>
+
+      {/* Request list */}
+      <section className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h2 style={{ margin: 0 }}>
+            {statusFilter ? statusFilter.charAt(0) + statusFilter.slice(1).toLowerCase() : "All"} Requests
+          </h2>
+          <span className="small muted">{filtered.length} shown</span>
+        </div>
+
+        {loading && <p className="small muted">Loading...</p>}
+
+        {!loading && filtered.length === 0 && (
+          <p className="small muted" style={{ textAlign: "center", padding: "20px 0" }}>No requests found.</p>
+        )}
+
+        <div style={{ display: "grid", gap: 10 }}>
+          {filtered.map(r => {
+            const colors = STATUS_COLORS[r.status] || STATUS_COLORS.REQUESTED;
+            return (
+              <div key={r.id} style={{ border: "1px solid var(--border)", borderRadius: 12, background: "#fff", overflow: "hidden" }}>
+                <div style={{ padding: "12px 14px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: "0.95rem" }}>{r.salonName || "Unknown Salon"}</div>
+                      <div className="small muted">
+                        {r.contactName}{r.town ? " - " + r.town : ""} - {fmtDate(r.createdAt)}
+                      </div>
+                    </div>
+                    <span style={{ padding: "3px 10px", borderRadius: 999, fontSize: "0.72rem", fontWeight: 600, background: colors.bg, color: colors.fg, flexShrink: 0 }}>
+                      {r.status.charAt(0) + r.status.slice(1).toLowerCase()}
+                    </span>
+                  </div>
+
+                  {(r.brands.length > 0 || r.educationTypes.length > 0) && (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+                      {r.brands.map(b => (
+                        <span key={b} style={{ padding: "2px 8px", borderRadius: 999, fontSize: "0.72rem", background: "var(--pink-light)", color: "var(--pink-dark)", fontWeight: 600 }}>{b}</span>
+                      ))}
+                      {r.educationTypes.map(t => (
+                        <span key={t} style={{ padding: "2px 8px", borderRadius: 999, fontSize: "0.72rem", background: "#f3f4f6", fontWeight: 600 }}>{fmtType(t)}</span>
+                      ))}
+                    </div>
+                  )}
+
+                  {r.notes && <div className="small muted">{r.notes.slice(0, 120)}{r.notes.length > 120 ? "..." : ""}</div>}
+                </div>
+
+                <div style={{ display: "flex", gap: 8, padding: "8px 14px", borderTop: "1px solid var(--border)", background: "var(--surface-2)", flexWrap: "wrap" }}>
+                  <Link href={"/education/requests/" + r.id} className="btn" style={{ fontSize: "0.78rem", padding: "5px 10px" }}>View</Link>
+                  {r.status === "REQUESTED" && (
+                    <button className="primary" style={{ fontSize: "0.78rem", padding: "5px 10px" }} onClick={() => updateStatus(r.id, "BOOKED")}>
+                      Mark Booked
+                    </button>
+                  )}
+                  {r.status !== "CANCELLED" && (
+                    <button className="btn" style={{ fontSize: "0.78rem", padding: "5px 10px", color: "#dc2626" }} onClick={() => updateStatus(r.id, "CANCELLED")}>
+                      Cancel
+                    </button>
+                  )}
+                  {r.status === "CANCELLED" && (
+                    <button className="btn" style={{ fontSize: "0.78rem", padding: "5px 10px" }} onClick={() => updateStatus(r.id, "REQUESTED")}>
+                      Reopen
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </section>
     </div>
   );
