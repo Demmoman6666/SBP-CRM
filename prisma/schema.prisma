@@ -53,6 +53,7 @@ enum CustomerStage {
 enum EducationRequestStatus {
   REQUESTED
   BOOKED
+  COMPLETED
   CANCELLED
 }
 
