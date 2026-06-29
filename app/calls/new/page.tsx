@@ -101,6 +101,41 @@ export default function NewCallPage() {
       .catch(() => setReps([]));
   }, []);
 
+  /* URL param pre-fill (customerId, callType, educationRequestId) */
+  const [initCallType, setInitCallType] = useState("");
+  const [educationRequestId, setEducationRequestId] = useState("");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const cid = params.get("customerId");
+    const ct = params.get("callType");
+    const erid = params.get("educationRequestId");
+    if (ct) setInitCallType(ct);
+    if (erid) setEducationRequestId(erid);
+    if (cid) {
+      setIsExisting(true);
+      fetch("/api/customers/" + cid, { cache: "no-store" })
+        .then(r => r.json())
+        .then(j => {
+          if (j?.id) {
+            const hit = {
+              id: j.id,
+              salonName: j.salonName || "",
+              customerName: j.customerName || "",
+              town: j.town || "",
+              postCode: j.postCode || "",
+              salesRep: j.salesRep || "",
+            };
+            setCustSelected(hit);
+            setCustTerm(fmtCustomerLine(hit));
+          }
+        })
+        .catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /* Brand lists (only those toggled to be visible in Global Settings) */
   const [stockedBrands, setStockedBrands] = useState<BrandOpt[]>([]);
   const [competitorBrands, setCompetitorBrands] = useState<BrandOpt[]>([]);
@@ -447,6 +482,7 @@ export default function NewCallPage() {
       />
       {/* Hidden values server can use */}
       <input type="hidden" name="customerId" value={custSelected?.id || ""} />
+      <input type="hidden" name="educationRequestId" value={educationRequestId} />
       <input type="hidden" name="customerResolved" value={fmtCustomerLine(custSelected) || ""} />
 
       {/* Suggestion panel */}
@@ -590,7 +626,7 @@ export default function NewCallPage() {
 const BlockCallType = (
   <div className="field">
     <label>Call Type</label>
-    <select name="callType" defaultValue="">
+    <select name="callType" defaultValue={initCallType}>
       <option value="" disabled>
         — Select —
       </option>

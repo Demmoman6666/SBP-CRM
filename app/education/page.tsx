@@ -6,7 +6,8 @@ import Link from "next/link";
 type Request = {
   id: string;
   createdAt: string;
-  status: "REQUESTED" | "BOOKED" | "CANCELLED";
+  customerId: string;
+  status: "REQUESTED" | "BOOKED" | "CANCELLED" | "COMPLETED";
   salonName: string | null;
   contactName: string | null;
   town: string | null;
@@ -18,6 +19,7 @@ type Request = {
 const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   REQUESTED: { bg: "#fef9c3", fg: "#92400e" },
   BOOKED: { bg: "#dcfce7", fg: "#166534" },
+  COMPLETED: { bg: "#e0e7ff", fg: "#3730a3" },
   CANCELLED: { bg: "#fee2e2", fg: "#991b1b" },
 };
 
@@ -65,6 +67,7 @@ export default function EducationPage() {
   const stats = {
     requested: requests.filter(r => r.status === "REQUESTED").length,
     booked: requests.filter(r => r.status === "BOOKED").length,
+    completed: requests.filter(r => r.status === "COMPLETED").length,
     cancelled: requests.filter(r => r.status === "CANCELLED").length,
   };
 
@@ -98,6 +101,7 @@ export default function EducationPage() {
         {[
           { label: "Requested", value: stats.requested, color: "#92400e", bg: "#fef9c3", filter: "REQUESTED" },
           { label: "Booked", value: stats.booked, color: "#166534", bg: "#dcfce7", filter: "BOOKED" },
+          { label: "Completed", value: stats.completed, color: "#3730a3", bg: "#e0e7ff", filter: "COMPLETED" },
           { label: "Cancelled", value: stats.cancelled, color: "#991b1b", bg: "#fee2e2", filter: "CANCELLED" },
           { label: "Total", value: requests.length, color: "var(--text)", bg: "var(--surface-2)", filter: "" },
         ].map(s => (
@@ -160,11 +164,23 @@ export default function EducationPage() {
                     </button>
                   )}
                   {r.status === "BOOKED" && (
+                    <Link
+                      href={"/calls/new?customerId=" + (r as any).customerId + "&callType=Education+Visit&educationRequestId=" + r.id}
+                      className="primary"
+                      style={{ fontSize: "0.78rem", padding: "5px 10px" }}
+                    >
+                      Log Education Call
+                    </Link>
+                  )}
+                  {r.status === "BOOKED" && (
                     <button className="btn" style={{ fontSize: "0.78rem", padding: "5px 10px" }} disabled={isUpdating} onClick={() => updateStatus(r.id, "REQUESTED")}>
                       {isUpdating ? "..." : "Unbook"}
                     </button>
                   )}
-                  {r.status !== "CANCELLED" && (
+                  {r.status === "COMPLETED" && (
+                    <span className="small" style={{ color: "#3730a3", fontWeight: 600, alignSelf: "center" }}>✓ Education completed</span>
+                  )}
+                  {r.status !== "CANCELLED" && r.status !== "COMPLETED" && (
                     <button className="btn" style={{ fontSize: "0.78rem", padding: "5px 10px", color: "#dc2626" }} disabled={isUpdating} onClick={() => updateStatus(r.id, "CANCELLED")}>
                       {isUpdating ? "..." : "Cancel"}
                     </button>
