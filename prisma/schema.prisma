@@ -289,6 +289,8 @@ model CallLog {
 
   followUpRequired     Boolean   @default(false)
   followUpAt           DateTime?
+  educationRequestId   String?
+  educationRequest     EducationRequest? @relation("CallEducationRequest", fields: [educationRequestId], references: [id], onDelete: SetNull)
 
   startTime            DateTime?
   endTime              DateTime?
