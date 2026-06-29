@@ -549,6 +549,7 @@ export default function NewCallPage() {
         <option>Sample Reviewed - Negative</option>
         <option>Order Placed</option>
         <option>No Sale</option>
+        <option>Education Requested</option>
       </select>
       <div className="form-hint">Pipeline stage updates automatically based on this outcome.</div>
     </div>
@@ -600,6 +601,7 @@ const BlockCallType = (
       <option value="Sample Review">Sample Review</option>
       <option value="Demo">Demo</option>
       <option value="Account Manage">Account Manage</option>
+      <option value="Education Visit">Education Visit</option>
     </select>
   </div>
 );

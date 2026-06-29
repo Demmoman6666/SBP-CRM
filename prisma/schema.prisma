@@ -513,6 +513,9 @@ model EducationRequest {
   // 1:1 link to a created booking
   booking      EducationBooking?  @relation("RequestBooking")
 
+  // Calls that triggered this request
+  callLogs     CallLog[]          @relation("CallEducationRequest")
+
   @@index([customerId, createdAt])
   @@index([status])
 }
@@ -525,6 +528,10 @@ model EducationBooking {
   // 1:1 back to the request — FK must be unique
   requestId      String?           @unique
   request        EducationRequest? @relation("RequestBooking", fields: [requestId], references: [id], onDelete: SetNull)
+
+  // Educator assigned to this booking
+  educatorId     String?
+  educator       Educator?         @relation(fields: [educatorId], references: [id], onDelete: SetNull)
 
   customerId     String
   customer       Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
@@ -801,4 +808,17 @@ model CycleSettings {
   id             Int      @id @default(1)
   cycleStartDate DateTime // The Monday of Week 1
   updatedAt      DateTime @updatedAt
+}
+
+// ---------------- Educators ----------------
+model Educator {
+  id          String             @id @default(cuid())
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  name        String
+  email       String?
+  phone       String?
+  specialisms String[]           @default([])
+  active      Boolean            @default(true)
+  bookings    EducationBooking[]
 }

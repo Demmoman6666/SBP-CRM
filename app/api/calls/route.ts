@@ -340,6 +340,51 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Auto-create education request if outcome is "Education Requested"
+    const isEduOutcome = outcome && (
+      String(outcome).toLowerCase() === "education requested" ||
+      String(outcome).toLowerCase().includes("education request")
+    );
+    if (isEduOutcome && customerId) {
+      try {
+        const cust = await prisma.customer.findUnique({
+          where: { id: customerId },
+          select: {
+            salonName: true, customerName: true, customerTelephone: true,
+            customerEmailAddress: true, addressLine1: true, addressLine2: true,
+            town: true, county: true, postCode: true, country: true,
+          },
+        });
+        if (cust) {
+          const eduRequest = await (prisma as any).educationRequest.create({
+            data: {
+              customerId,
+              status: "REQUESTED",
+              salonName: cust.salonName ?? null,
+              contactName: cust.customerName ?? null,
+              phone: cust.customerTelephone ?? null,
+              email: cust.customerEmailAddress ?? null,
+              addressLine1: cust.addressLine1 ?? null,
+              addressLine2: cust.addressLine2 ?? null,
+              town: cust.town ?? null,
+              county: cust.county ?? null,
+              postCode: cust.postCode ?? null,
+              country: cust.country ?? null,
+              notes: body.summary ? String(body.summary) : null,
+              brands: body.brandInterest ? [String(body.brandInterest)] : [],
+            },
+          });
+          // Link the call to the education request
+          await (prisma as any).callLog.update({
+            where: { id: created.id },
+            data: { educationRequestId: eduRequest.id },
+          });
+        }
+      } catch (e) {
+        console.error("Auto-create education request failed:", e);
+      }
+    }
+
     await maybeCreateFollowUpEvent({
       id: created.id,
       summary,
