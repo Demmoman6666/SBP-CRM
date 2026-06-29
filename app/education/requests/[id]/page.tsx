@@ -33,8 +33,10 @@ function toDateAtLocal(dateStr?: string | null, timeStr?: string | null): Date |
 }
 
 const EDU_LABELS: Record<string, string> = {
-  PERMANENT_COLOR: "Permanent colour",
-  SEMI_PERMANENT_COLOR: "Semi permanent hair colour",
+  PERMANENT_COLOR: "Permanent Colour",
+  PERMANENT_COLOUR: "Permanent Colour",
+  SEMI_PERMANENT_COLOR: "Semi-Permanent Colour",
+  SEMI_PERMANENT_COLOUR: "Semi-Permanent Colour",
   CARE_RANGE: "Care Range",
   STYLING_RANGE: "Styling Range",
 };
@@ -145,13 +147,19 @@ export default async function EducationRequestReviewPage({
     );
   }
 
+  const educators = await (prisma as any).educator.findMany({
+    where: { active: true },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true },
+  });
+
   /* -------- Server action: create booking + move to BOOKED -------- */
   async function createBooking(formData: FormData) {
     "use server";
 
     const dateStr = String(formData.get("date") || "");
     const timeStr = String(formData.get("time") || "");
-    const educator = String(formData.get("educator") || "");
+    const educatorId = String(formData.get("educatorId") || "") || null;
     const location = String(formData.get("location") || "");
     const internalNotes = String(formData.get("internalNotes") || "");
 
@@ -164,9 +172,7 @@ export default async function EducationRequestReviewPage({
       data: {
         requestId: req.id,
         customerId: req.customerId,
-        // If your model has these, uncomment:
-        // educator: educator || null,
-        // location: location || null,
+        educatorId: educatorId || null,
         notes: internalNotes || null,
       },
       select: { id: true },
@@ -276,7 +282,12 @@ export default async function EducationRequestReviewPage({
           <div className="grid grid-2">
             <div className="field">
               <label>Educator (optional)</label>
-              <input name="educator" placeholder="Trainer name" />
+              <select name="educatorId">
+                <option value="">— Select educator —</option>
+                {educators.map((e: any) => (
+                  <option key={e.id} value={e.id}>{e.name}</option>
+                ))}
+              </select>
             </div>
             <div className="field">
               <label>Location (optional)</label>
